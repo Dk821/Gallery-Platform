@@ -1,0 +1,25 @@
+# Python dependencies only - pip-installable packages. See
+# SYSTEM_REQUIREMENTS.md for the one non-pip dependency (ffmpeg, needed
+# for video thumbnail/poster generation) that must be installed at the OS
+# level separately.
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.35
+pymysql==1.1.1
+cryptography==43.0.1
+pydantic==2.9.2
+pydantic-settings==2.5.2
+argon2-cffi==23.1.0
+python-multipart==0.0.9
+python-dotenv==1.0.1
+itsdangerous==2.2.0
+alembic==1.13.2
+google-api-python-client==2.144.0
+google-auth==2.34.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+Pillow==10.4.0
+slowapi==0.1.9
+pytest==8.3.3
+pytest-asyncio==0.24.0
+httpx==0.27.2

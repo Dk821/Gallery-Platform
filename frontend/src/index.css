@@ -1,0 +1,291 @@
+:root {
+  color-scheme: light;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f5f3ef;
+}
+
+/* A single, visible focus style used everywhere (buttons, links, inputs,
+   custom controls) so keyboard navigation is never silently lost, without
+   sprinkling focus rules across every component's own stylesheet. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent, #e7a93d);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------- Admin login (professional, understated) ---------- */
+
+.auth-page {
+  position: relative;
+  overflow: hidden;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: var(--bg, #f5f3ef);
+}
+
+/* Shared floating-decoration layer for both login pages - a photography
+   studio's own "bokeh" (soft out-of-focus circles of light) on the admin
+   side, and drifting petals on the client side (see the --petal/--bokeh
+   variants below and each page's own float configs). Sits behind the
+   login card, ignored by layout (absolute + pointer-events: none), and
+   frozen by the global prefers-reduced-motion rule at the top of this
+   file like every other animation in the app. */
+.login-float-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.login-float {
+  position: absolute;
+  opacity: 0;
+  animation-name: login-float-drift;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@keyframes login-float-drift {
+  0% {
+    transform: translateY(10%) translateX(0) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: var(--float-opacity, 0.4);
+  }
+  90% {
+    opacity: var(--float-opacity, 0.4);
+  }
+  100% {
+    transform: translateY(-120%) translateX(var(--float-drift, 20px)) rotate(var(--float-rotate, 30deg));
+    opacity: 0;
+  }
+}
+
+/* Admin: quiet, monochrome gold bokeh - a photographer's own lens
+   language, not a generic decoration. Sized and saturated to actually
+   read against the cream page background rather than disappear into it. */
+.login-float--bokeh {
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 35% 35%,
+    rgba(180, 133, 59, 0.9),
+    rgba(180, 133, 59, 0.35) 55%,
+    rgba(180, 133, 59, 0) 75%
+  );
+  filter: blur(1.5px);
+}
+
+/* Client: soft drifting petals - a warm, romantic wedding-day detail
+   the guest-facing entrance is allowed to spend more on than the admin's
+   back office. */
+.login-float--petal {
+  background: linear-gradient(135deg, rgba(196, 138, 124, 0.95), rgba(196, 138, 124, 0.35));
+  border-radius: 60% 40% 65% 35% / 55% 45% 55% 45%;
+  box-shadow: 0 0 14px rgba(196, 138, 124, 0.3);
+}
+
+/* Shared script-wordmark treatment for both login pages ("sam" +
+   "PHOTOGRAPHY") - lifted from the admin sidebar's own brand block
+   (.admin-sidebar__logo-script/-sub in admin.css) rather than invented,
+   so the studio's mark reads the same whether you're a guest at the
+   gallery door or the owner signing into the back office. */
+.login-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  margin-bottom: 0.35rem;
+}
+
+.login-brand__script {
+  font-family: var(--font-script, 'Alex Brush', cursive);
+  font-size: 2.6rem;
+  line-height: 1;
+  color: var(--text, #1f1b16);
+  font-weight: 400;
+  margin-bottom: -3px;
+}
+
+.login-brand__sub {
+  font-family: var(--font-ui, 'Montserrat', sans-serif);
+  font-size: 0.58rem;
+  letter-spacing: 0.38em;
+  font-weight: 600;
+  color: var(--text-muted, #6f665b);
+  text-transform: uppercase;
+}
+
+.login-brand__tag {
+  display: inline-block;
+  margin-top: 0.6rem;
+  font-size: 0.56rem;
+  letter-spacing: 0.2em;
+  font-weight: 700;
+  color: var(--accent, #b4853b);
+  background: var(--accent-soft, rgba(180, 133, 59, 0.12));
+  padding: 0.22rem 0.7rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+
+@keyframes login-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.auth-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 380px;
+  background: var(--panel, #ffffff);
+  border: 1px solid var(--hairline, #e0dbd5);
+  border-radius: 12px;
+  padding: 2.5rem 2.25rem 2.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+  animation: login-card-in 0.4s ease both;
+}
+
+/* The one signature flourish distinguishing the admin's "back office"
+   door from the client's softer entrance below: a thin precise gold
+   edge, not a glow - restrained on purpose. */
+.auth-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent, #b4853b), var(--accent-hover, #9b702e));
+}
+
+.auth-card h1 {
+  margin: 0;
+  font-family: var(--font-display, serif);
+  font-weight: 500;
+  font-size: 1.45rem;
+  color: var(--text, #1f1b16);
+  text-align: center;
+}
+
+.auth-subtitle {
+  margin: -0.5rem 0 0;
+  color: var(--text-muted, #6f665b);
+  font-size: 0.9rem;
+}
+
+.auth-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--text-muted, #6f665b);
+}
+
+.auth-card input {
+  padding: 0.6rem 0.75rem;
+  border-radius: 6px;
+  border: 1px solid var(--hairline, #e0dbd5);
+  background: var(--bg, #f5f3ef);
+  color: var(--text, #1f1b16);
+  font-size: 1rem;
+  transition: border-color 0.15s ease;
+}
+
+.auth-card input:focus {
+  border-color: var(--accent, #b9822b);
+}
+
+.auth-card button {
+  margin-top: 0.5rem;
+  padding: 0.7rem;
+  border-radius: 7px;
+  border: none;
+  background: var(--accent, #e7a93d);
+  color: var(--accent-text, #1c1a17);
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+
+.auth-card button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.auth-card button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* The submit button uses the app's dark "primary action" convention
+   (matching .btn-dark in admin.css and the client entrance's own submit
+   button) rather than the gold accent - gold stays reserved for
+   highlights/badges, not primary CTAs, everywhere else in the app.
+   Qualified with the element type to out-specificity the plain
+   ".auth-card button" rule above without resorting to !important. */
+.auth-card button.auth-card__submit {
+  background: var(--btn-dark, #1a1917);
+  color: #ffffff;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.auth-card button.auth-card__submit:hover:not(:disabled) {
+  filter: none;
+  background: var(--btn-dark-hover, #2e2a25);
+}
+
+.auth-error {
+  background: rgba(193, 68, 60, 0.08);
+  color: #a63b34;
+  border: 1px solid rgba(193, 68, 60, 0.25);
+  padding: 0.6rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.page-placeholder {
+  padding: 2rem;
+  color: #475569;
+  font-family: system-ui, sans-serif;
+}

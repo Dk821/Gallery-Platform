@@ -1,0 +1,13 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Local environment overrides - never commit real config/secrets here.
+# .env.example is the one meant to be committed.
+.env
+.env.*.local
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
