@@ -6,7 +6,9 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "http://localhost:8000",
+        // Kept for the fallback case where VITE_API_BASE_URL is unset,
+        // matching the production backend (never localhost).
+        target: "https://api.madgen.space",
         changeOrigin: true,
       },
     },

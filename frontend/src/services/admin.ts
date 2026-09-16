@@ -169,17 +169,7 @@ export const adminService = {
   updateClient: (clientId: number, payload: { client_name?: string }) =>
     api.patch<ClientDetail>(`/admin/clients/${clientId}`, payload),
 
-  removeClient: async (clientId: number) => {
-    const res = await fetch(`${API_BASE_URL}/api/admin/clients/${clientId}`, {
-      method: "DELETE",
-      credentials: "include",
-    });
-    const body = await res.json();
-    if (!res.ok || !body.success) {
-      throw new Error(body.error?.message ?? "Failed to delete client.");
-    }
-    return body.data;
-  },
+  removeClient: (clientId: number) => api.delete<null>(`/admin/clients/${clientId}`),
 
   listAlbums: (page = 1, limit = 50) =>
     api.get<Page<AlbumItem>>(`/admin/albums?page=${page}&limit=${limit}`),
@@ -198,17 +188,7 @@ export const adminService = {
     updates: { album_name?: string; description?: string; expires_at?: string | null }
   ) => api.put<AlbumItem>(`/admin/albums/${albumId}`, updates),
 
-  removeAlbum: async (albumId: number) => {
-    const res = await fetch(`${API_BASE_URL}/api/admin/albums/${albumId}`, {
-      method: "DELETE",
-      credentials: "include",
-    });
-    const body = await res.json();
-    if (!res.ok || !body.success) {
-      throw new Error(body.error?.message ?? "Failed to delete album.");
-    }
-    return body.data;
-  },
+  removeAlbum: (albumId: number) => api.delete<null>(`/admin/albums/${albumId}`),
 
   // --- Album media management (admin) ---
 
@@ -237,17 +217,7 @@ export const adminService = {
   moveMedia: (mediaId: number, targetAlbumId: number) =>
     api.post<MediaItem>(`/admin/media/${mediaId}/move`, { target_album_id: targetAlbumId }),
 
-  removeMedia: async (mediaId: number) => {
-    const res = await fetch(`${API_BASE_URL}/api/admin/media/${mediaId}`, {
-      method: "DELETE",
-      credentials: "include",
-    });
-    const body = await res.json();
-    if (!res.ok || !body.success) {
-      throw new Error(body.error?.message ?? "Failed to delete media.");
-    }
-    return body.data;
-  },
+  removeMedia: (mediaId: number) => api.delete<null>(`/admin/media/${mediaId}`),
 
   bulkDeleteMedia: (mediaIds: number[]) =>
     api.post<BulkResult>("/admin/media/bulk-delete", { media_ids: mediaIds }),
