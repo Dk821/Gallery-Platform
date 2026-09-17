@@ -376,13 +376,29 @@ export default function Uploads() {
     // video. Poll the real server-side status (Section 8) so the UI
     // keeps showing genuine progress instead of sitting at a misleading
     // 100% while the request is actually still in flight.
-    watchedIdsRef.current.add(uploadId);
-    const stopPolling = pollServerStatus(uploadId, item.id, setItems);
-
+    // watchedIdsRef.current.add(uploadId);
+    // const stopPolling = pollServerStatus(uploadId, item.id, setItems);
+    let stopPolling: (() => void) | null = null;
+    // promise
+    //   .then(() => {
+    //     setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "done", progress: 100 } : i)));
+    //   })
     promise
-      .then(() => {
-        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "done", progress: 100 } : i)));
-      })
+  .then(() => {
+    // The upload request has completed, so the server-side
+    // UploadSession definitely exists by this point.
+    watchedIdsRef.current.add(uploadId);
+
+    stopPolling = pollServerStatus(uploadId, item.id, setItems);
+
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === item.id
+          ? { ...i, status: "done", progress: 100 }
+          : i
+      )
+    );
+  })
       .catch((err) => {
         const message = err instanceof Error ? err.message : "Upload failed.";
         // xhr.abort() (see cancelItem below) rejects with this exact
@@ -400,10 +416,12 @@ export default function Uploads() {
           )
         );
       })
-      .finally(() => {
-        stopPolling();
-        watchedIdsRef.current.delete(uploadId);
-      });
+   .finally(() => {
+  if (stopPolling) {
+    stopPolling();
+  }
+  watchedIdsRef.current.delete(uploadId);
+});
   }
 
   // Aborts an in-flight/uploading file, or - for one that hasn't started
