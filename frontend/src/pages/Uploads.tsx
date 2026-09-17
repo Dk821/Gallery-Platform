@@ -109,7 +109,10 @@ function pollServerStatus(uploadId: string, itemId: string, setItems: StatusSett
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let pollCount = 0;
   let notFoundCount = 0;
-  const MAX_NOT_FOUND_RETRIES = 10;
+// Large uploads can take several minutes to reach the FastAPI handler
+// because Starlette buffers the multipart request before the handler runs.
+// Keep polling tolerant of that initial period.
+const MAX_NOT_FOUND_RETRIES = 1200; // ~30 minutes
   const poll = () => {
     if (!polling) return;
     pollCount += 1;
