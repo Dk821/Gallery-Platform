@@ -109,10 +109,13 @@ function pollServerStatus(uploadId: string, itemId: string, setItems: StatusSett
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let pollCount = 0;
   let notFoundCount = 0;
-// Large uploads can take several minutes to reach the FastAPI handler
-// because Starlette buffers the multipart request before the handler runs.
-// Keep polling tolerant of that initial period.
-const MAX_NOT_FOUND_RETRIES = 1200; // ~30 minutes
+// A 404 here is now a genuine anomaly: the page pre-creates the session
+// via POST /upload-session before polling starts (and before the upload
+// request), and restored sessions come from the server's own ledger - so
+// a missing session means it was deleted/cleaned up. Keep a small retry
+// budget instead of the old MAX_NOT_FOUND_RETRIES=1200 (~30 min) hack
+// that existed to paper over the pre-session polling race.
+const MAX_NOT_FOUND_RETRIES = 5;
   const poll = () => {
     if (!polling) return;
     pollCount += 1;
@@ -127,7 +130,17 @@ const MAX_NOT_FOUND_RETRIES = 1200; // ~30 minutes
         notFoundCount = 0;
         if (status.status === "uploading" || status.status === "queued") {
           setItems((prev) =>
-            prev.map((i) => (i.id === itemId ? { ...i, status: "finalizing", progress: status.percentage } : i))
+            prev.map((i) => {
+              if (i.id !== itemId) return i;
+              // A live upload is in "uploading" the whole time the browser
+              // is pushing bytes - its XHR progress handler and cancel
+              // button stay valid. Only fold in server-side status for
+              // items already past the send phase (restored "finalizing"
+              // sessions), otherwise the first poll tick would wrongly
+              // drop a mid-send large file to "finalizing 0%".
+              if (i.status === "uploading") return i;
+              return { ...i, status: "finalizing", progress: status.percentage };
+            })
           );
           pollTimer = setTimeout(poll, 1000);
         } else if (status.status === "completed") {
@@ -359,69 +372,92 @@ export default function Uploads() {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  function startUpload(item: UploadItem) {
+  async function startUpload(item: UploadItem) {
     if (!albumId || !item.file) return;
     // item.id is reused verbatim as the upload_id on every retry of THIS
     // item (see retryItem/retryAllFailed below), so the backend can tell
     // "the browser retried this exact upload" apart from "this is a new
     // upload" (Section 4) - a real retry never produces a duplicate file.
     const uploadId = item.id;
-    const { promise, cancel } = adminService.uploadMedia(albumId, item.file, uploadId, (percent) => {
-      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, progress: percent } : i)));
-    });
-    setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "uploading", cancel } : i)));
 
-    // Once the browser has finished sending the file, our server may
-    // still be relaying it to Drive - that can take a while for a large
-    // video. Poll the real server-side status (Section 8) so the UI
-    // keeps showing genuine progress instead of sitting at a misleading
-    // 100% while the request is actually still in flight.
-    // watchedIdsRef.current.add(uploadId);
-    // const stopPolling = pollServerStatus(uploadId, item.id, setItems);
-    let stopPolling: (() => void) | null = null;
-    // promise
-    //   .then(() => {
-    //     setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "done", progress: 100 } : i)));
-    //   })
-    promise
-  .then(() => {
-    // The upload request has completed, so the server-side
-    // UploadSession definitely exists by this point.
-    watchedIdsRef.current.add(uploadId);
-
-    stopPolling = pollServerStatus(uploadId, item.id, setItems);
-
+    // Mark the item "uploading" with a pre-flight cancel synchronously so
+    // the concurrency scheduler counts this slot as taken while we await
+    // session reservation below - otherwise the item would still be
+    // "queued" (no `cancel`) during the async window and a re-run of the
+    // scheduler would re-pick it (or oversubscribe the slot).
+    let cancelledEarly = false;
+    const preflightCancel = () => {
+      cancelledEarly = true;
+      setItems((prev) =>
+        prev.map((i) => (i.id === item.id ? { ...i, status: "cancelled", cancel: undefined } : i))
+      );
+    };
     setItems((prev) =>
-      prev.map((i) =>
-        i.id === item.id
-          ? { ...i, status: "done", progress: 100 }
-          : i
-      )
+      prev.map((i) => (i.id === item.id ? { ...i, status: "uploading", cancel: preflightCancel } : i))
     );
-  })
-      .catch((err) => {
-        const message = err instanceof Error ? err.message : "Upload failed.";
-        // xhr.abort() (see cancelItem below) rejects with this exact
-        // message - distinguish "the person cancelled it" from an actual
-        // failure so it doesn't get counted/labelled as an error, doesn't
-        // block the panel's auto-clear, and doesn't show a retry button.
-        const wasCancelled = message === "Upload cancelled.";
-        setItems((prev) =>
-          prev.map((i) =>
-            i.id === item.id
-              ? wasCancelled
-                ? { ...i, status: "cancelled" }
-                : { ...i, status: "error", error: message }
-              : i
-          )
-        );
-      })
-   .finally(() => {
-  if (stopPolling) {
-    stopPolling();
-  }
-  watchedIdsRef.current.delete(uploadId);
-});
+
+    let stopPolling: (() => void) | null = null;
+    let pollStarted = false;
+
+    try {
+      // 1. Reserve the session FIRST (status="queued") so the status poll
+      // below can never 404. For a large video, FastAPI buffers the whole
+      // multipart body before the /upload handler even runs - polling
+      // before this step was what produced UPLOAD_NOT_FOUND.
+      const session = await adminService.createUploadSession(
+        albumId,
+        uploadId,
+        item.filename,
+        item.file.size
+      );
+      if (cancelledEarly) return; // user cancelled during reservation
+
+      if (session.status === "completed") {
+        // Idempotent replay: this upload_id already finished earlier -
+        // nothing to send.
+        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "done", progress: 100 } : i)));
+        return;
+      }
+
+      // 2. Start polling right away - the session row is guaranteed to
+      // exist now, so the first poll succeeds instead of 404ing.
+      watchedIdsRef.current.add(uploadId);
+      pollStarted = true;
+      stopPolling = pollServerStatus(uploadId, item.id, setItems);
+
+      // 3. Send the actual file bytes.
+      const { promise, cancel } = adminService.uploadMedia(albumId, item.file, uploadId, (percent) => {
+        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, progress: percent } : i)));
+      });
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, cancel } : i)));
+
+      // 4. The /upload response only arrives after the server has
+      // finished relaying to Drive, saved the Media row, and marked the
+      // session "completed" - so mark it done immediately rather than
+      // waiting on the next poll tick.
+      await promise;
+      if (cancelledEarly) return;
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "done", progress: 100 } : i)));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Upload failed.";
+      // xhr.abort() (see cancelItem below) rejects with this exact
+      // message - distinguish "the person cancelled it" from an actual
+      // failure so it doesn't get counted/labelled as an error, doesn't
+      // block the panel's auto-clear, and doesn't show a retry button.
+      const wasCancelled = message === "Upload cancelled." || cancelledEarly;
+      setItems((prev) =>
+        prev.map((i) =>
+          i.id === item.id
+            ? wasCancelled
+              ? { ...i, status: "cancelled" }
+              : { ...i, status: "error", error: message }
+            : i
+        )
+      );
+    } finally {
+      if (stopPolling) stopPolling();
+      if (pollStarted) watchedIdsRef.current.delete(uploadId);
+    }
   }
 
   // Aborts an in-flight/uploading file, or - for one that hasn't started

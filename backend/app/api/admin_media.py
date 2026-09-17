@@ -11,11 +11,18 @@ from app.config.settings import Settings, get_settings
 from app.database.connection import get_db
 from app.models.admin import Admin
 from app.models.audit_log import AuditLog
-from app.schemas.media import BulkDeleteRequest, BulkMoveRequest, MediaMoveRequest, MediaUpdateRequest
+from app.schemas.media import (
+    BulkDeleteRequest,
+    BulkMoveRequest,
+    CreateUploadSessionRequest,
+    MediaMoveRequest,
+    MediaUpdateRequest,
+)
 from app.services.album_service import get_album_or_404
 from app.services.media_service import (
     bulk_delete_media,
     bulk_move_media,
+    create_upload_session,
     delete_media,
     get_media_or_404,
     get_upload_session_status,
@@ -102,6 +109,28 @@ def upload_media_route(
     )
     _log(db, admin.id, "media_uploaded", media.id, request)
     return {"success": True, "data": media_to_response(media)}
+
+
+@router.post("/upload-session")
+def create_upload_session_route(
+    payload: CreateUploadSessionRequest,
+    db: DbSession = Depends(get_db),
+    admin: Admin = Depends(get_current_admin),
+):
+    # Pre-created with status='queued' so the frontend can start polling
+    # /upload-status immediately, BEFORE the large multipart file has even
+    # finished buffering on the server - previously that window returned
+    # 404 UPLOAD_NOT_FOUND. upload_media_to_album() flips queued ->
+    # uploading when the actual /upload request arrives.
+    session = create_upload_session(
+        db,
+        admin.id,
+        payload.upload_id,
+        payload.album_id,
+        payload.filename,
+        payload.file_size,
+    )
+    return {"success": True, "data": upload_session_to_response(session)}
 
 
 @router.get("/upload-status/{upload_id}")

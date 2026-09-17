@@ -290,6 +290,22 @@ export const adminService = {
     return { promise, cancel: () => xhr.abort() };
   },
 
+  // Pre-creates the UploadSession (status="queued") BEFORE the actual file
+  // upload so the status poll never 404s. Large files take a while to
+  // buffer on the server, and previously the frontend started polling
+  // before the session row existed.
+  createUploadSession: (albumId: number, uploadId: string, filename: string, fileSize: number) =>
+    api.post<{
+      upload_id: string;
+      status: "queued" | "uploading" | "completed" | "failed" | "cancelled";
+      total_bytes: number;
+      bytes_uploaded: number;
+      percentage: number;
+      media_id: number | null;
+      error_code: string | null;
+      error_message: string | null;
+    }>("/admin/media/upload-session", { album_id: albumId, upload_id: uploadId, filename, file_size: fileSize }),
+
   // Real, Drive-side transfer progress (Section 8) - distinct from the
   // browser's own upload.progress event, which only reflects bytes sent
   // to OUR server, not bytes actually confirmed by Google Drive. Polled

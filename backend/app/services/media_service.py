@@ -329,6 +329,101 @@ def _reserve_upload_session(
     return session, None
 
 
+def create_upload_session(
+    db: DbSession, admin_id: int | None, upload_id: str, album_id: int, filename: str, file_size: int
+) -> UploadSession:
+    """
+    Pre-creates an UploadSession with status='queued' before the actual
+    file upload begins (POST /upload-session).  This eliminates the race
+    condition where the frontend starts polling /upload-status before
+    FastAPI has finished buffering the large multipart body and the
+    handler has created the session.
+
+    The session stays 'queued' until upload_media_to_album() picks it up
+    via _reserve_upload_session() and flips it to 'uploading'.  Creating
+    it as 'uploading' here would cause _reserve_upload_session() to
+    reject it as a duplicate (409 UPLOAD_ALREADY_IN_PROGRESS).
+    """
+    if not upload_id or len(upload_id) > UPLOAD_ID_MAX_LENGTH:
+        raise ApiError(
+            400,
+            "INVALID_UPLOAD_ID",
+            f"upload_id must be 1-{UPLOAD_ID_MAX_LENGTH} characters (got {len(upload_id)}).",
+        )
+
+    session = (
+        db.query(UploadSession)
+        .filter(UploadSession.admin_id == admin_id, UploadSession.upload_id == upload_id)
+        .first()
+    )
+
+    if session is not None:
+        if session.status == "completed" and session.media_id:
+            # Already finished — return it so the caller can short-circuit
+            # (the idempotent-replay path in upload_media_to_album).
+            return session
+        if session.status in ("uploading", "queued"):
+            raise ApiError(
+                409,
+                "UPLOAD_ALREADY_IN_PROGRESS",
+                "This upload is already being processed. Please wait.",
+            )
+        # Failed / cancelled — reset for retry.
+        session.album_id = album_id
+        session.filename = filename
+        session.total_bytes = file_size
+        session.bytes_uploaded = 0
+        session.status = "queued"
+        session.error_code = None
+        session.error_message = None
+        db.commit()
+        db.refresh(session)
+        log_event(
+            logger,
+            "upload_session_created",
+            upload_id=upload_id,
+            album_id=album_id,
+            filename=filename,
+            file_size=file_size,
+        )
+        return session
+
+    session = UploadSession(
+        upload_id=upload_id,
+        admin_id=admin_id,
+        album_id=album_id,
+        filename=filename,
+        total_bytes=file_size,
+        bytes_uploaded=0,
+        status="queued",
+    )
+    db.add(session)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = (
+            db.query(UploadSession)
+            .filter(UploadSession.admin_id == admin_id, UploadSession.upload_id == upload_id)
+            .first()
+        )
+        if existing is not None:
+            return existing
+        raise ApiError(
+            409, "UPLOAD_IN_PROGRESS", "This upload is already being processed."
+        )
+    db.refresh(session)
+    log_event(
+        logger,
+        "upload_session_created",
+        upload_id=upload_id,
+        album_id=album_id,
+        filename=filename,
+        file_size=file_size,
+    )
+    return session
+
+
 def _fail_upload_session(db: DbSession, session: UploadSession, code: str, message: str) -> None:
     try:
         session.status = "failed"

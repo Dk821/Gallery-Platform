@@ -60,6 +60,20 @@ class BulkMoveRequest(BaseModel):
     target_album_id: int
 
 
+class CreateUploadSessionRequest(BaseModel):
+    """
+    Pre-creates an UploadSession before the browser starts sending the
+    multipart file (POST /upload-session).  Eliminates the race condition
+    where the frontend polls /upload-status before the backend has
+    buffered the upload and created the session row.
+    """
+
+    album_id: int
+    upload_id: str
+    filename: str
+    file_size: int
+
+
 class UploadStatusResponse(BaseModel):
     """
     Polled by the frontend to show real Drive-transfer progress
