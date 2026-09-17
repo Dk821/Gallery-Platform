@@ -110,11 +110,23 @@ def get_upload_status_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    # Real Drive-transfer progress (Section 8), scoped to the requesting
-    # admin so one admin can't poll another's upload_id.
-    session = get_upload_session_status(db, admin.id, upload_id)
-    return {"success": True, "data": upload_session_to_response(session)}
+    print(
+        f"[UPLOAD STATUS] upload_id={upload_id} "
+        f"admin_id={admin.id}"
+    )
 
+    session = get_upload_session_status(db, admin.id, upload_id)
+
+    print(
+        f"[UPLOAD STATUS] FOUND id={session.id} "
+        f"status={session.status} "
+        f"admin_id={session.admin_id}"
+    )
+
+    return {
+        "success": True,
+        "data": upload_session_to_response(session),
+    }
 
 @router.get("/upload-sessions")
 def list_upload_sessions_route(
