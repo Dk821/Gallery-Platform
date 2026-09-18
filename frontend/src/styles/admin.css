@@ -3772,6 +3772,48 @@
   color: #fff;
 }
 
+/* Global upload badge (visible on every admin page except Uploads itself,
+   while a batch is still active - see GlobalUploadBadge.tsx). Deliberately
+   styled close to .upload-toast so it reads as "part of the same upload
+   feature" rather than a separate notification system. */
+.global-upload-badge {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.7rem 1.05rem;
+  border-radius: 999px;
+  background: var(--accent, #2563eb);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  animation: upload-toast-in 0.25s ease-out;
+}
+
+.global-upload-badge:hover {
+  filter: brightness(1.08);
+}
+
+.global-upload-badge__spinner {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  animation: global-upload-badge-spin 0.7s linear infinite;
+}
+
+@keyframes global-upload-badge-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 
 
 /* ------------------------------------------------------------------ */
