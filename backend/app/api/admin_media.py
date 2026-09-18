@@ -1,12 +1,14 @@
-import os
-import uuid
-
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session as DbSession
 
 from app.api.deps import get_current_admin
 from app.api.media_streaming import stream_media_file, stream_media_thumbnail
-from app.api.presenters import media_to_response, upload_session_list_item, upload_session_to_response
+from app.api.presenters import (
+    media_to_response,
+    upload_session_list_item,
+    upload_session_start_response,
+    upload_session_to_response,
+)
 from app.config.settings import Settings, get_settings
 from app.database.connection import get_db
 from app.models.admin import Admin
@@ -14,22 +16,26 @@ from app.models.audit_log import AuditLog
 from app.schemas.media import (
     BulkDeleteRequest,
     BulkMoveRequest,
+    CompleteUploadRequest,
     CreateUploadSessionRequest,
     MediaMoveRequest,
     MediaUpdateRequest,
+    UploadProgressRequest,
 )
 from app.services.album_service import get_album_or_404
 from app.services.media_service import (
+    abandon_direct_upload,
     bulk_delete_media,
     bulk_move_media,
-    create_upload_session,
+    complete_direct_upload,
     delete_media,
     get_media_or_404,
     get_upload_session_status,
     list_recent_upload_sessions,
     move_media_to_album,
+    report_upload_progress,
+    start_direct_upload,
     update_media_metadata,
-    upload_media_to_album,
 )
 from app.services.orphan_reconciliation import reconcile_orphans
 from app.services.storage_provider import get_storage_service
@@ -66,70 +72,92 @@ def _log_bulk(db: DbSession, admin_id: int, action: str, request: Request, count
     db.commit()
 
 
-@router.post("/upload")
-def upload_media_route(
-    request: Request,
-    album_id: int = Form(...),
-    file: UploadFile = File(...),
-    # Client-generated idempotency key (Section 4). Optional for backward
-    # compatibility with older frontends - if omitted, a fresh id is
-    # generated per-request, which behaves exactly as before (no
-    # duplicate-retry protection, but nothing breaks).
-    upload_id: str | None = Form(default=None),
+@router.post("/upload-session")
+def start_direct_upload_route(
+    payload: CreateUploadSessionRequest,
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
     settings: Settings = Depends(get_settings),
 ):
-    album = get_album_or_404(db, album_id)
-
-    # UploadFile.file is a SpooledTemporaryFile - by the time this handler
-    # runs the whole upload has already been received and, for anything
-    # bigger than Starlette's in-memory threshold, spooled to disk. Reading
-    # it via .seek()/.tell() here does not pull the whole thing into RAM.
-    raw = file.file
-    raw.seek(0, os.SEEK_END)
-    file_size = raw.tell()
-    raw.seek(0)
-    header_bytes = raw.read(4096)
-    raw.seek(0)
-
-    media = upload_media_to_album(
+    # Browser -> Drive direct upload, step 1 of 2: this server never
+    # receives the file's bytes. It validates the request, reserves the
+    # idempotency-ledger row (Section 4), and asks Drive to open a
+    # resumable upload session - the browser PUTs its bytes straight to
+    # the returned upload_url from here on, then calls POST
+    # /upload-complete when done.
+    album = get_album_or_404(db, payload.album_id)
+    session, upload_url, existing_media = start_direct_upload(
         db,
         storage,
         settings,
+        admin.id,
+        payload.upload_id,
         album,
-        filename=file.filename or "upload",
-        declared_content_type=file.content_type or "application/octet-stream",
-        file_obj=raw,
-        file_size=file_size,
-        header_bytes=header_bytes,
-        upload_id=upload_id or str(uuid.uuid4()),
-        admin_id=admin.id,
+        payload.filename,
+        payload.file_size,
+    )
+    if existing_media is not None:
+        # Idempotent replay of an already-completed upload - nothing left
+        # to send, the frontend should treat this as done.
+        return {"success": True, "data": upload_session_start_response(session, None)}
+    return {"success": True, "data": upload_session_start_response(session, upload_url)}
+
+
+@router.post("/upload-complete")
+def complete_direct_upload_route(
+    payload: CompleteUploadRequest,
+    request: Request,
+    db: DbSession = Depends(get_db),
+    admin: Admin = Depends(get_current_admin),
+    storage: StorageService = Depends(get_storage_service),
+    settings: Settings = Depends(get_settings),
+):
+    # Browser -> Drive direct upload, step 2 of 2: called once the
+    # browser's direct PUT to the Drive resumable session URL has
+    # finished. This server re-confirms the file with Drive itself
+    # (never trusts the browser's report for the actual Media record),
+    # then creates the Media row.
+    media = complete_direct_upload(
+        db,
+        storage,
+        settings,
+        admin.id,
+        payload.upload_id,
+        payload.drive_file_id,
+        payload.reported_size,
+        payload.reported_mime_type,
     )
     _log(db, admin.id, "media_uploaded", media.id, request)
     return {"success": True, "data": media_to_response(media)}
 
 
-@router.post("/upload-session")
-def create_upload_session_route(
-    payload: CreateUploadSessionRequest,
+@router.post("/upload-session/{upload_id}/abandon")
+def abandon_direct_upload_route(
+    upload_id: str,
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    # Pre-created with status='queued' so the frontend can start polling
-    # /upload-status immediately, BEFORE the large multipart file has even
-    # finished buffering on the server - previously that window returned
-    # 404 UPLOAD_NOT_FOUND. upload_media_to_album() flips queued ->
-    # uploading when the actual /upload request arrives.
-    session = create_upload_session(
-        db,
-        admin.id,
-        payload.upload_id,
-        payload.album_id,
-        payload.filename,
-        payload.file_size,
-    )
+    # Fired (best-effort, from the frontend) when the browser's own direct
+    # PUT to Drive fails or is cancelled - this server was never in that
+    # data path, so it has no other way to learn the attempt failed. Lets
+    # an immediate retry with the same upload_id proceed instead of 409ing
+    # as "already in progress" (Section 4/9).
+    abandon_direct_upload(db, admin.id, upload_id)
+    return {"success": True, "data": None}
+
+
+@router.post("/upload-progress/{upload_id}")
+def report_upload_progress_route(
+    upload_id: str,
+    payload: UploadProgressRequest,
+    db: DbSession = Depends(get_db),
+    admin: Admin = Depends(get_current_admin),
+):
+    # Best-effort progress ping from the browser while it PUTs bytes
+    # directly to Drive (Section 8) - purely cosmetic, throttled
+    # client-side; never trusted for anything beyond display.
+    session = report_upload_progress(db, admin.id, upload_id, payload.bytes_uploaded)
     return {"success": True, "data": upload_session_to_response(session)}
 
 
@@ -139,23 +167,12 @@ def get_upload_status_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    print(
-        f"[UPLOAD STATUS] upload_id={upload_id} "
-        f"admin_id={admin.id}"
-    )
-
     session = get_upload_session_status(db, admin.id, upload_id)
-
-    print(
-        f"[UPLOAD STATUS] FOUND id={session.id} "
-        f"status={session.status} "
-        f"admin_id={session.admin_id}"
-    )
-
     return {
         "success": True,
         "data": upload_session_to_response(session),
     }
+
 
 @router.get("/upload-sessions")
 def list_upload_sessions_route(

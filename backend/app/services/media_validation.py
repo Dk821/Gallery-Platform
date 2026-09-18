@@ -93,6 +93,51 @@ def _has_iso_bmff_box(head: bytes, wanted: set[bytes]) -> bool:
     return False
 
 
+def guess_mime_type(filename: str) -> str:
+    """
+    Canonical mime type from the filename's extension alone - used before
+    the direct-upload session is even created (Drive's X-Upload-Content-Type
+    header), when no file bytes exist on this server yet to sniff. The
+    authoritative type check still happens post-upload in validate_upload()
+    below, against actual header bytes read back from Drive.
+    """
+    ext = _get_extension(filename)
+    return _MIME_BY_EXTENSION.get(ext, "application/octet-stream")
+
+
+def validate_upload_intent(settings: Settings, filename: str, file_size: int) -> str:
+    """
+    Cheap pre-flight check run BEFORE a Google Drive resumable session is
+    minted for a direct browser upload - only the extension and the
+    client-declared size are available at this point (no bytes exist on
+    this server to sniff, by design). Returns the file's extension on
+    success, raises ApiError otherwise.
+
+    This intentionally mirrors only the extension/size portion of
+    validate_upload() below - the magic-byte signature check still happens
+    afterwards, once the file has landed in Drive and a small header slice
+    can be read back (see complete_direct_upload in media_service.py).
+    A file that fails signature validation at that point is deleted from
+    Drive - this pre-check exists purely so an obviously-wrong request
+    (wrong extension, oversized) fails fast without spending a Drive
+    resumable-session round trip on it.
+    """
+    ext = _get_extension(filename)
+    allowed_image = settings.allowed_image_extensions
+    allowed_video = settings.allowed_video_extensions
+
+    if ext not in allowed_image and ext not in allowed_video:
+        raise bad_request(f"File type '.{ext}' is not allowed.", code="UNSUPPORTED_FILE_TYPE")
+
+    if file_size <= 0:
+        raise bad_request("Uploaded file is empty.", code="EMPTY_FILE")
+
+    if file_size > settings.effective_max_upload_bytes:
+        raise bad_request("File exceeds the maximum allowed upload size.", code="FILE_TOO_LARGE")
+
+    return ext
+
+
 def validate_upload(
     settings: Settings, filename: str, declared_content_type: str, file_size: int, header_bytes: bytes
 ) -> tuple[str, str]:

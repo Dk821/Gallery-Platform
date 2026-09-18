@@ -4,10 +4,10 @@ uploaded but never got a matching Media row - e.g. the VPS process died
 between "Drive accepted the file" and "we saved the DB record" (Section 9).
 
 Detection doesn't rely on filenames or on listing everything in the whole
-Drive account: `upload_media_to_album` durably records drive_file_id on
-the UploadSession row (and commits it) the moment the Drive upload
-succeeds, before the Media row is created. That ledger IS the
-"application-managed" record - an UploadSession that:
+Drive account: `complete_direct_upload` durably records drive_file_id on
+the UploadSession row (and commits it) the moment it learns the browser's
+direct-to-Drive upload succeeded, before the Media row is created. That
+ledger IS the "application-managed" record - an UploadSession that:
   - has a drive_file_id (so a Drive file really was created for it), and
   - never reached status="completed" (so no Media row was ever finalized
     for it), and
@@ -17,6 +17,19 @@ is a candidate orphan. Before actually deleting anything we re-check
 against Media once more (a completion could have landed between the
 candidate query and now), so a slow-but-still-succeeding upload is never
 mistaken for one that's truly abandoned.
+
+KNOWN GAP (direct browser -> Drive upload architecture): this ledger only
+gains a drive_file_id once the browser calls POST /upload-complete after
+its direct PUT to Drive finishes. If the browser's tab is closed/crashes
+in the narrow window AFTER Drive has fully accepted the file but BEFORE
+that finalize call reaches this server, the file exists in Drive with no
+UploadSession.drive_file_id ever recorded for it - this scan will never
+find it, since it only looks at rows that already have one. Such a file
+is still tagged with appProperties (gallery_managed / gallery_upload_id)
+at session-creation time (see GoogleDriveStorage.create_resumable_session),
+so a future enhancement here would be to ALSO list Drive directly by that
+appProperty and cross-reference against UploadSession.upload_id, rather
+than relying solely on this table. Not implemented yet.
 """
 
 import datetime

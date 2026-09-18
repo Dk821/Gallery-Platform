@@ -117,6 +117,20 @@ export interface MediaUpdatePayload {
   description?: string;
 }
 
+// Shared shape for both GET /upload-status and (as a base) POST
+// /upload-session's response - mirrors the backend's UploadStatusResponse
+// exactly (app/schemas/media.py).
+export interface UploadSessionStatus {
+  upload_id: string;
+  status: "queued" | "uploading" | "completed" | "failed" | "cancelled";
+  total_bytes: number;
+  bytes_uploaded: number;
+  percentage: number;
+  media_id: number | null;
+  error_code: string | null;
+  error_message: string | null;
+}
+
 export const adminService = {
   getDashboard: () => api.get<DashboardSummary>("/admin/dashboard"),
 
@@ -243,85 +257,109 @@ export const adminService = {
 
   downloadJobFileUrl: (jobId: number) => `${API_BASE_URL}/api/admin/download-jobs/${jobId}/file`,
 
-  // XMLHttpRequest instead of fetch here specifically because fetch has no
-  // upload progress event - XHR's upload.onprogress is what drives the
-  // per-file progress bar on the Uploads page.
-  uploadMedia: (
-    albumId: number,
-    file: File,
-    uploadId: string,
-    onProgress: (percent: number) => void
-  ): { promise: Promise<MediaItem>; cancel: () => void } => {
-    const xhr = new XMLHttpRequest();
-    const formData = new FormData();
-    formData.append("album_id", String(albumId));
-    formData.append("file", file);
-    // Idempotency key (Section 4): the caller passes the SAME uploadId on
-    // every retry of the same logical upload, so a browser retry after a
-    // lost response never creates a duplicate Drive file or Media record.
-    formData.append("upload_id", uploadId);
+  // Browser -> Google Drive DIRECT upload (Section: architecture change).
+  // This server is never in the byte-transfer path for the main file -
+  // startUploadSession() only exchanges metadata and gets back a Drive
+  // resumable session URL; uploadToDrive() PUTs the actual bytes straight
+  // to Google; completeUpload() tells our backend the transfer finished
+  // so it can confirm with Drive and create the Media record.
 
-    const promise = new Promise<MediaItem>((resolve, reject) => {
+  // Step 1: ask the backend to reserve the upload-session row (Section 4
+  // idempotency ledger) and open a Google Drive resumable-upload session.
+  // upload_url is null only on an idempotent replay of an
+  // already-completed upload (media_id will be set instead - nothing left
+  // to send).
+  createUploadSession: (albumId: number, uploadId: string, filename: string, fileSize: number) =>
+    api.post<UploadSessionStatus & { upload_url: string | null }>("/admin/media/upload-session", {
+      album_id: albumId,
+      upload_id: uploadId,
+      filename,
+      file_size: fileSize,
+    }),
+
+  // Step 2: PUT the file directly to the Drive resumable session URL from
+  // startUploadSession/createUploadSession above. This is a request to
+  // googleapis.com, NOT to our own API - no credentials, no API_BASE_URL,
+  // and XMLHttpRequest (not fetch) specifically because fetch has no
+  // upload-progress event, which is what drives the per-file progress bar
+  // on the Uploads page. The session URL itself is the (short-lived,
+  // single-use) credential for this request - Drive's resumable-upload
+  // protocol doesn't need an Authorization header replayed against it.
+  uploadToDrive: (
+    uploadUrl: string,
+    file: File,
+    onProgress: (percent: number) => void
+  ): { promise: Promise<{ driveFileId: string; size: number; mimeType: string }>; cancel: () => void } => {
+    const xhr = new XMLHttpRequest();
+
+    const promise = new Promise<{ driveFileId: string; size: number; mimeType: string }>((resolve, reject) => {
       xhr.upload.addEventListener("progress", (e) => {
         if (e.lengthComputable) {
           onProgress(Math.round((e.loaded / e.total) * 100));
         }
       });
       xhr.addEventListener("load", () => {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(new Error(`Upload to Google Drive failed (status ${xhr.status}).`));
+          return;
+        }
         try {
           const body = JSON.parse(xhr.responseText);
-          if (xhr.status >= 200 && xhr.status < 300 && body.success) {
-            resolve(body.data as MediaItem);
-          } else {
-            reject(new Error(body.error?.message ?? "Upload failed."));
-          }
+          resolve({
+            driveFileId: body.id as string,
+            size: Number(body.size ?? file.size),
+            mimeType: (body.mimeType as string) ?? file.type,
+          });
         } catch {
-          reject(new Error("Upload failed."));
+          reject(new Error("Upload to Google Drive succeeded but the response could not be read."));
         }
       });
-      xhr.addEventListener("error", () => reject(new Error("Network error during upload.")));
+      xhr.addEventListener("error", () => reject(new Error("Network error while uploading to Google Drive.")));
       xhr.addEventListener("abort", () => reject(new Error("Upload cancelled.")));
 
-      xhr.open("POST", `${API_BASE_URL}/api/admin/media/upload`);
-      xhr.withCredentials = true;
-      xhr.send(formData);
+      xhr.open("PUT", uploadUrl);
+      xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+      xhr.send(file);
     });
 
     return { promise, cancel: () => xhr.abort() };
   },
 
-  // Pre-creates the UploadSession (status="queued") BEFORE the actual file
-  // upload so the status poll never 404s. Large files take a while to
-  // buffer on the server, and previously the frontend started polling
-  // before the session row existed.
-  createUploadSession: (albumId: number, uploadId: string, filename: string, fileSize: number) =>
-    api.post<{
-      upload_id: string;
-      status: "queued" | "uploading" | "completed" | "failed" | "cancelled";
-      total_bytes: number;
-      bytes_uploaded: number;
-      percentage: number;
-      media_id: number | null;
-      error_code: string | null;
-      error_message: string | null;
-    }>("/admin/media/upload-session", { album_id: albumId, upload_id: uploadId, filename, file_size: fileSize }),
+  // Step 3: tell the backend the direct-to-Drive transfer finished, so it
+  // can re-confirm the file WITH DRIVE ITSELF (never trusting these
+  // reported values for the actual Media record - see
+  // complete_direct_upload on the backend) and create the Media row.
+  completeUpload: (uploadId: string, driveFileId: string, reportedSize: number, reportedMimeType: string) =>
+    api.post<MediaItem>("/admin/media/upload-complete", {
+      upload_id: uploadId,
+      drive_file_id: driveFileId,
+      reported_size: reportedSize,
+      reported_mime_type: reportedMimeType,
+    }),
 
-  // Real, Drive-side transfer progress (Section 8) - distinct from the
-  // browser's own upload.progress event, which only reflects bytes sent
-  // to OUR server, not bytes actually confirmed by Google Drive. Polled
-  // by the UI once the browser has finished sending the file, while the
-  // server is still relaying it to storage.
-  getUploadStatus: (uploadId: string) =>
-    api.get<{
-      upload_id: string;
-      status: "queued" | "uploading" | "completed" | "failed" | "cancelled";
-      total_bytes: number;
-      bytes_uploaded: number;
-      percentage: number;
-      media_id: number | null;
-      error_code: string | null;
-      error_message: string | null;
-    }>(`/admin/media/upload-status/${uploadId}`),
+  // Best-effort, throttled progress ping while uploadToDrive() is running
+  // (Section 8) - purely cosmetic, lets OTHER views of this admin's
+  // upload list (e.g. a second tab, or this page after a refresh) see
+  // live-ish progress even though this server isn't relaying the bytes
+  // itself anymore. Callers should throttle this to roughly once a
+  // second and swallow failures (a missed ping is never fatal).
+  reportUploadProgress: (uploadId: string, bytesUploaded: number) =>
+    api.post<UploadSessionStatus>(`/admin/media/upload-progress/${uploadId}`, { bytes_uploaded: bytesUploaded }),
+
+  // Real, server-confirmed status (Section 8) - reflects what the backend
+  // actually knows (queued/uploading/completed/failed), not just what the
+  // browser has reported via reportUploadProgress above. Polled by the UI
+  // as the authoritative source of truth, e.g. after a page refresh or
+  // once completeUpload() has been called.
+  getUploadStatus: (uploadId: string) => api.get<UploadSessionStatus>(`/admin/media/upload-status/${uploadId}`),
+
+  // Tells the backend a direct-to-Drive attempt failed/was cancelled in
+  // the browser, so the SAME upload_id can be retried immediately rather
+  // than being rejected as "already in progress" - this server has no
+  // other way to learn that a direct browser<->Drive transfer failed.
+  // Best-effort: callers should swallow failures from this call itself.
+  abandonUploadSession: (uploadId: string) =>
+    api.post<null>(`/admin/media/upload-session/${uploadId}/abandon`),
 
   // Backs the Uploads page's refresh-recovery: the server persists every
   // upload session (idempotency ledger), so after a page reload the page

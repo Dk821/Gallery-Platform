@@ -87,6 +87,23 @@ class Settings(BaseSettings):
     # before it's eligible to be treated as a confirmed orphan.
     orphan_file_grace_period_hours: int = 48
 
+    # --- Post-direct-upload thumbnail generation ----------------------------
+    # Now that the original file goes Browser -> Drive directly, this
+    # server never holds its bytes during upload. Thumbnail/poster
+    # generation still needs actual pixel data, so it's done as a
+    # deliberate, separate, best-effort step AFTER the file is already
+    # safely in Drive: a small/bounded read-back of the just-uploaded
+    # file, not a re-transfer of the original upload path. These caps keep
+    # that read-back small and bound its impact on VPS bandwidth/disk.
+    # A file over the relevant cap simply gets no thumbnail (Section 15/22:
+    # already a non-fatal, best-effort feature).
+    thumbnail_image_source_max_mb: float = 25
+    # Videos are read back to a temp file (ffmpeg needs to seek a real
+    # file) reusing disk_service's same reservation tracker used for the
+    # old upload-spooling path, so this still can't run the VPS out of
+    # disk even for a large video.
+    thumbnail_video_source_max_mb: float = 1024
+
     environment: str = "development"
 
     @property
@@ -111,6 +128,14 @@ class Settings(BaseSettings):
     @property
     def upload_min_free_disk_bytes(self) -> int:
         return int(self.upload_min_free_disk_gb * 1024 * 1024 * 1024)
+
+    @property
+    def thumbnail_image_source_max_bytes(self) -> int:
+        return int(self.thumbnail_image_source_max_mb * 1024 * 1024)
+
+    @property
+    def thumbnail_video_source_max_bytes(self) -> int:
+        return int(self.thumbnail_video_source_max_mb * 1024 * 1024)
 
     @property
     def effective_max_upload_bytes(self) -> int:

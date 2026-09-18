@@ -89,6 +89,39 @@ class StorageService(ABC):
         locally). upload_id, if given, is used for structured logging and
         (where the provider supports it) tagging the created file so it can
         later be identified as application-managed for orphan reconciliation.
+
+        Kept for callers that still hand over local bytes (e.g. the
+        thumbnail/poster upload after a direct upload completes - see
+        create_resumable_session below for the main-file, browser-direct
+        path).
+        """
+
+    @abstractmethod
+    def create_resumable_session(
+        self,
+        filename: str,
+        mime_type: str,
+        file_size: int,
+        parent_folder_id: str,
+        *,
+        upload_id: str | None = None,
+    ) -> str:
+        """
+        Initiates a provider-side resumable upload session for a file this
+        server will NEVER receive the bytes of, and returns the session URL
+        the BROWSER should PUT/POST its bytes to directly. This call only
+        exchanges metadata (filename/mime/size/parent) with the provider -
+        implementations must not read or expect any file content.
+
+        upload_id, if given, is used the same way upload() uses it: tagging
+        the eventual file as application-managed so it can be found by
+        orphan reconciliation later, even though this server never
+        transfers its bytes.
+
+        The returned URL is short-lived and single-use (per the provider's
+        resumable-upload protocol) - callers must not persist it long-term
+        as a durable reference to anything, only as a hand-off to the
+        browser for the current upload attempt.
         """
 
     @abstractmethod

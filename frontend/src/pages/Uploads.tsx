@@ -1,15 +1,12 @@
 import {
   ChangeEvent,
-  Dispatch,
   DragEvent,
-  SetStateAction,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import AdminLayout from "../components/AdminLayout";
-import { ApiRequestError } from "../services/api";
 import { adminService, AlbumItem, ClientListItem, UploadSessionListItem } from "../services/admin";
 
 // Generates a short, DB-safe unique id for an upload attempt. Deliberately
@@ -37,6 +34,13 @@ interface UploadItem {
   error?: string;
   cancel?: () => void;
   restored?: boolean;
+  // Set once the browser's direct PUT to Drive has finished (Section:
+  // architecture change) - lets retryItem() below skip straight to
+  // re-confirming with the backend instead of re-uploading the whole
+  // file again, if only that last confirmation step failed.
+  driveFileId?: string;
+  reportedSize?: number;
+  reportedMimeType?: string;
 }
 
 const STATUS_LABEL: Record<UploadItem["status"], string> = {
@@ -70,126 +74,15 @@ function isVideoFilename(filename: string): boolean {
   return VIDEO_EXTENSIONS.has(ext);
 }
 
-// Polls the server's per-upload session status and folds it back into the
-// page's items. Used by both the live upload path (after the browser
-// finishes sending the bytes, while the server relays to Drive) and by
-// refresh-recovery (re-hydrating in-flight uploads from upload_sessions).
-// Returns a stop() function; the caller is responsible for invoking it
-// when the item reaches a terminal state or the page unmounts.
-//
-// A hard poll cap keeps a single stuck session from becoming an infinite
-// poll loop (each poll costs the server two DB SELECTs). The server side
-// is the real guard: it flips dead sessions to "failed" on the first
-// status read (staleness sweep in _fail_stale_upload_sessions), which ends
-// the loop via the normal terminal-result path. This cap is only a
-// belt-and-suspenders ceiling in case a session never reaches a terminal
-// state and the server sweep somehow misses it. It deliberately does NOT
-// try to detect "no progress" - a slow-but-working upload can legitimately
-// sit on one chunk for up to upload_chunk_timeout seconds with an
-// unchanged percentage, so progress-based detection would false-positive.
-type StatusSetter = Dispatch<SetStateAction<UploadItem[]>>;
-
-const STOP_AFTER_POLLS = 600; // ~10 minutes at 1s intervals, then give up
-
-// Caps how many files this page will have in flight (sending bytes, or
-// already sent and waiting on the server's relay-to-Drive) at once. Without
-// this, selecting a big batch (a whole shoot: 100+ photos and videos) fired
-// every file's XHR simultaneously - which the browser's own per-origin
-// connection limit would partly queue anyway, but the rest landed on the
-// server all at once and blew past its own admission control
-// (UPLOAD_MAX_CONCURRENT_REQUESTS), coming back as a wave of "server busy"
-// (503) failures instead of a batch that just quietly works its way
-// through. Kept comfortably under the server's default outer limit (8) so
-// there's headroom for a manual retry or another admin uploading at the
-// same time.
+// Caps how many files this page will have in flight (sending bytes
+// directly to Drive, or awaiting the backend's post-upload confirmation)
+// at once. Without this, selecting a big batch (a whole shoot: 100+
+// photos and videos) fired every file's direct-to-Drive PUT
+// simultaneously - which the browser's own per-origin connection limit
+// would partly queue anyway, but a large burst is still harder to reason
+// about and retry than a batch that quietly works its way through a
+// small number of slots.
 const MAX_CONCURRENT_UPLOADS = 4;
-
-function pollServerStatus(uploadId: string, itemId: string, setItems: StatusSetter): () => void {
-  let polling = true;
-  let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let pollCount = 0;
-  let notFoundCount = 0;
-// A 404 here is now a genuine anomaly: the page pre-creates the session
-// via POST /upload-session before polling starts (and before the upload
-// request), and restored sessions come from the server's own ledger - so
-// a missing session means it was deleted/cleaned up. Keep a small retry
-// budget instead of the old MAX_NOT_FOUND_RETRIES=1200 (~30 min) hack
-// that existed to paper over the pre-session polling race.
-const MAX_NOT_FOUND_RETRIES = 5;
-  const poll = () => {
-    if (!polling) return;
-    pollCount += 1;
-    if (pollCount > STOP_AFTER_POLLS) {
-      polling = false;
-      return;
-    }
-    adminService
-      .getUploadStatus(uploadId)
-      .then((status) => {
-        if (!polling) return;
-        notFoundCount = 0;
-        if (status.status === "uploading" || status.status === "queued") {
-          setItems((prev) =>
-            prev.map((i) => {
-              if (i.id !== itemId) return i;
-              // A live upload is in "uploading" the whole time the browser
-              // is pushing bytes - its XHR progress handler and cancel
-              // button stay valid. Only fold in server-side status for
-              // items already past the send phase (restored "finalizing"
-              // sessions), otherwise the first poll tick would wrongly
-              // drop a mid-send large file to "finalizing 0%".
-              if (i.status === "uploading") return i;
-              return { ...i, status: "finalizing", progress: status.percentage };
-            })
-          );
-          pollTimer = setTimeout(poll, 1000);
-        } else if (status.status === "completed") {
-          setItems((prev) => prev.map((i) => (i.id === itemId ? { ...i, status: "done", progress: 100 } : i)));
-          polling = false;
-        } else if (status.status === "cancelled") {
-          setItems((prev) => prev.map((i) => (i.id === itemId ? { ...i, status: "cancelled" } : i)));
-          polling = false;
-        } else {
-          // failed
-          setItems((prev) =>
-            prev.map((i) =>
-              i.id === itemId
-                ? { ...i, status: "error", error: status.error_message ?? "Upload failed." }
-                : i
-            )
-          );
-          polling = false;
-        }
-      })
-      .catch((err) => {
-        if (!polling) return;
-        // A 404 means the session hasn't been created yet (large file
-        // still being buffered by the backend) or was deleted from the
-        // server. Retry a limited number of times: active uploads will
-        // have the session appear shortly; restored uploads that are
-        // truly gone will stop after MAX_NOT_FOUND_RETRIES.
-        if (err instanceof ApiRequestError && err.code === "UPLOAD_NOT_FOUND") {
-          notFoundCount += 1;
-          if (notFoundCount > MAX_NOT_FOUND_RETRIES) {
-            setItems((prev) =>
-              prev.map((i) =>
-                i.id === itemId ? { ...i, status: "error", error: "Upload session expired." } : i
-              )
-            );
-            polling = false;
-            return;
-          }
-        }
-        // Transient polling failures aren't fatal - retry again shortly.
-        pollTimer = setTimeout(poll, 1500);
-      });
-  };
-  pollTimer = setTimeout(poll, 1000);
-  return () => {
-    polling = false;
-    if (pollTimer) clearTimeout(pollTimer);
-  };
-}
 
 export default function Uploads() {
   const [clients, setClients] = useState<ClientListItem[]>([]);
@@ -201,21 +94,7 @@ export default function Uploads() {
   const [dragActive, setDragActive] = useState(false);
   const [paused, setPaused] = useState(false);
   const [toast, setToast] = useState<{ text: string; kind: "success" | "warn" } | null>(null);
-  const watchersRef = useRef<Array<() => void>>([]);
-  const watchedIdsRef = useRef<Set<string>>(new Set());
   const toastShownRef = useRef(false);
-
-  // Stop every in-flight status watcher (both live uploads and restored
-  // ones) when the page unmounts - otherwise a background poll could call
-  // setItems() on an unmounted component.
-  useEffect(() => {
-    const watchers = watchersRef.current;
-    const ids = watchedIdsRef.current;
-    return () => {
-      watchers.forEach((stop) => stop());
-      ids.clear();
-    };
-  }, []);
 
   useEffect(() => {
     Promise.all([adminService.listClients(1, 200), adminService.listAlbums(1, 200)])
@@ -242,31 +121,27 @@ export default function Uploads() {
         const active = sessions.filter(
           (s) => s.status === "queued" || s.status === "uploading"
         );
+        // Unlike the old byte-relaying flow, a restored "active" session
+        // can never actually resume: the browser talks to Drive directly
+        // now, and the File object that PUT was reading from is gone the
+        // moment the tab was closed/refreshed - there is nothing left on
+        // this server that could still be transferring it. Show these as
+        // needing a fresh upload rather than polling a session that will
+        // just sit there until the server's own staleness sweep eventually
+        // times it out.
         const restored: UploadItem[] = active.map((s) => ({
           id: s.upload_id,
           file: null,
           filename: s.filename,
           size: s.total_bytes,
           progress: s.percentage,
-          status: "finalizing",
+          status: "error",
+          error: "This upload was interrupted (browser closed or refreshed). Please re-select and upload this file again.",
           restored: true,
         }));
         setItems((prev) => {
           const ids = new Set(prev.map((i) => i.id));
           return [...prev, ...restored.filter((r) => !ids.has(r.id))];
-        });
-        // Resume following in-flight transfers. Only start a watcher if
-        // one isn't already running for this upload_id (prevents duplicate
-        // polling from React StrictMode double-mounts or rapid remounts).
-        restored.forEach((r) => {
-          if (!watchedIdsRef.current.has(r.id)) {
-            watchedIdsRef.current.add(r.id);
-            watchersRef.current.push(
-              pollServerStatus(r.id, r.id, (updater) => {
-                setItems(updater);
-              })
-            );
-          }
         });
       })
       .catch(() => {
@@ -357,8 +232,6 @@ export default function Uploads() {
     if (summary.failed === 0) {
       const timer = setTimeout(() => {
         setItems([]);
-        watchersRef.current = [];
-        watchedIdsRef.current.clear();
         toastShownRef.current = false;
       }, 3000);
       return () => clearTimeout(timer);
@@ -371,6 +244,102 @@ export default function Uploads() {
     const timer = setTimeout(() => setToast(null), 5000);
     return () => clearTimeout(timer);
   }, [toast]);
+
+  // Best-effort progress reporting to the backend (Section 8) while
+  // uploadToDrive's own onProgress already drives the visible bar - this
+  // just lets OTHER views (a second tab, this page after a refresh) see
+  // roughly where things stand. Throttled to ~1/second; a dropped ping is
+  // never fatal, so failures are swallowed here rather than surfaced.
+  function makeThrottledProgressReporter(uploadId: string) {
+    let lastSent = 0;
+    let inFlight = false;
+    return (bytesUploaded: number) => {
+      const now = Date.now();
+      if (inFlight || now - lastSent < 1000) return;
+      lastSent = now;
+      inFlight = true;
+      adminService
+        .reportUploadProgress(uploadId, bytesUploaded)
+        .catch(() => {
+          /* cosmetic only - never blocks or fails the upload */
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+  }
+
+  // Runs the direct-to-Drive PUT and the backend's finalize call for an
+  // item that already has a resumable upload_url in hand - shared by
+  // startUpload (fresh uploads) and retryItem's "just retry the
+  // confirmation" path (an item that already has a cached driveFileId).
+  async function runDirectUpload(item: UploadItem, uploadUrl: string) {
+    const uploadId = item.id;
+    if (!item.file) return;
+
+    const reportProgress = makeThrottledProgressReporter(uploadId);
+
+    const { promise, cancel } = adminService.uploadToDrive(uploadUrl, item.file, (percent) => {
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, progress: percent } : i)));
+      if (item.file) reportProgress(Math.round((percent / 100) * item.file.size));
+    });
+    setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, cancel } : i)));
+
+    let driveResult: { driveFileId: string; size: number; mimeType: string };
+    try {
+      driveResult = await promise;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Upload to Google Drive failed.";
+      const wasCancelled = message === "Upload cancelled.";
+      if (!wasCancelled) {
+        // This server never saw the failure (the browser talked to Drive
+        // directly) - tell it explicitly so a retry with the same
+        // upload_id doesn't get rejected as "already in progress"
+        // (Section 4/9's idempotency check would otherwise 409 forever,
+        // since nothing here ever flips this session out of "uploading").
+        adminService.abandonUploadSession(uploadId).catch(() => {});
+      }
+      setItems((prev) =>
+        prev.map((i) =>
+          i.id === item.id
+            ? wasCancelled
+              ? { ...i, status: "cancelled" }
+              : { ...i, status: "error", error: message }
+            : i
+        )
+      );
+      return;
+    }
+
+    // Cache what Drive told us BEFORE calling completeUpload - if that
+    // next call fails (network drop, server restart), retryItem() can
+    // skip straight back here instead of re-uploading the whole file.
+    setItems((prev) =>
+      prev.map((i) =>
+        i.id === item.id
+          ? {
+              ...i,
+              status: "finalizing",
+              progress: 100,
+              driveFileId: driveResult.driveFileId,
+              reportedSize: driveResult.size,
+              reportedMimeType: driveResult.mimeType,
+            }
+          : i
+      )
+    );
+
+    try {
+      await adminService.completeUpload(uploadId, driveResult.driveFileId, driveResult.size, driveResult.mimeType);
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "done", progress: 100 } : i)));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not confirm the upload.";
+      // driveFileId (set above) stays on the item - the file is already
+      // safely in Drive, so a retry from here should call completeUpload
+      // again, NOT re-upload the bytes (see retryItem below).
+      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "error", error: message } : i)));
+    }
+  }
 
   async function startUpload(item: UploadItem) {
     if (!albumId || !item.file) return;
@@ -396,54 +365,26 @@ export default function Uploads() {
       prev.map((i) => (i.id === item.id ? { ...i, status: "uploading", cancel: preflightCancel } : i))
     );
 
-    let stopPolling: (() => void) | null = null;
-    let pollStarted = false;
-
     try {
-      // 1. Reserve the session FIRST (status="queued") so the status poll
-      // below can never 404. For a large video, FastAPI buffers the whole
-      // multipart body before the /upload handler even runs - polling
-      // before this step was what produced UPLOAD_NOT_FOUND.
-      const session = await adminService.createUploadSession(
-        albumId,
-        uploadId,
-        item.filename,
-        item.file.size
-      );
+      // 1. Ask the backend to open a Google Drive resumable-upload session
+      // - this server never receives the file's bytes at all. The
+      // returned upload_url is what the BROWSER PUTs directly to Google
+      // from here on (step 2, inside runDirectUpload).
+      const session = await adminService.createUploadSession(albumId, uploadId, item.filename, item.file.size);
       if (cancelledEarly) return; // user cancelled during reservation
 
-      if (session.status === "completed") {
+      if (!session.upload_url) {
         // Idempotent replay: this upload_id already finished earlier -
         // nothing to send.
         setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "done", progress: 100 } : i)));
         return;
       }
 
-      // 2. Start polling right away - the session row is guaranteed to
-      // exist now, so the first poll succeeds instead of 404ing.
-      watchedIdsRef.current.add(uploadId);
-      pollStarted = true;
-      stopPolling = pollServerStatus(uploadId, item.id, setItems);
-
-      // 3. Send the actual file bytes.
-      const { promise, cancel } = adminService.uploadMedia(albumId, item.file, uploadId, (percent) => {
-        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, progress: percent } : i)));
-      });
-      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, cancel } : i)));
-
-      // 4. The /upload response only arrives after the server has
-      // finished relaying to Drive, saved the Media row, and marked the
-      // session "completed" - so mark it done immediately rather than
-      // waiting on the next poll tick.
-      await promise;
-      if (cancelledEarly) return;
-      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "done", progress: 100 } : i)));
+      // 2 & 3. PUT the bytes straight to Drive, then confirm with the
+      // backend so it can create the Media record.
+      await runDirectUpload(item, session.upload_url);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Upload failed.";
-      // xhr.abort() (see cancelItem below) rejects with this exact
-      // message - distinguish "the person cancelled it" from an actual
-      // failure so it doesn't get counted/labelled as an error, doesn't
-      // block the panel's auto-clear, and doesn't show a retry button.
       const wasCancelled = message === "Upload cancelled." || cancelledEarly;
       setItems((prev) =>
         prev.map((i) =>
@@ -454,9 +395,6 @@ export default function Uploads() {
             : i
         )
       );
-    } finally {
-      if (stopPolling) stopPolling();
-      if (pollStarted) watchedIdsRef.current.delete(uploadId);
     }
   }
 
@@ -468,6 +406,13 @@ export default function Uploads() {
       item.cancel();
     } else {
       setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "cancelled" } : i)));
+    }
+    if (item.status === "uploading" || item.status === "finalizing") {
+      // Tell the backend too (best-effort): without this the session
+      // just sits in "uploading" server-side until the staleness sweep
+      // eventually times it out (Section 4/9) - this server has no other
+      // way to learn the browser gave up on a direct-to-Drive transfer.
+      adminService.abandonUploadSession(item.id).catch(() => {});
     }
   }
 
@@ -504,11 +449,45 @@ export default function Uploads() {
     handleFiles(Array.from(e.dataTransfer.files));
   }
 
+  // Retries only the backend-confirmation step for an item whose file
+  // already landed safely in Drive last time (driveFileId is cached) -
+  // shared by retryItem and retryAllFailed below so a completeUpload
+  // failure never means re-uploading the whole file again.
+  function retryCompleteOnly(item: UploadItem) {
+    setItems((prev) =>
+      prev.map((i) => (i.id === item.id ? { ...i, status: "finalizing", cancel: undefined, error: undefined } : i))
+    );
+    adminService
+      .completeUpload(
+        item.id,
+        item.driveFileId as string,
+        item.reportedSize ?? item.file?.size ?? 0,
+        item.reportedMimeType ?? item.file?.type ?? "application/octet-stream"
+      )
+      .then(() => {
+        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "done", progress: 100 } : i)));
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : "Could not confirm the upload.";
+        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "error", error: message } : i)));
+      });
+  }
+
   function retryItem(item: UploadItem) {
     if (!item.file) return; // restored items no longer have the File bytes
     toastShownRef.current = false;
+    if (item.driveFileId) {
+      // The file already landed safely in Drive last time - only the
+      // backend's confirmation step failed (e.g. a dropped connection).
+      // Retry that step directly rather than opening a brand new Drive
+      // session and re-uploading the whole file.
+      retryCompleteOnly(item);
+      return;
+    }
     setItems((prev) =>
-      prev.map((i) => (i.id === item.id ? { ...i, status: "queued", progress: 0, cancel: undefined } : i))
+      prev.map((i) =>
+        i.id === item.id ? { ...i, status: "queued", progress: 0, cancel: undefined, error: undefined } : i
+      )
     );
     // The concurrency scheduler effect picks this back up as soon as a
     // slot is free, same as any other queued item.
@@ -516,19 +495,24 @@ export default function Uploads() {
 
   function retryAllFailed() {
     toastShownRef.current = false;
-    // Just move every failed item back to "queued" - the concurrency
+    // Items with a cached driveFileId only need the confirmation step
+    // retried - kick those off directly rather than routing them back
+    // through the "queued" scheduler, which would re-upload their bytes.
+    items.filter((i) => i.status === "error" && i.file && i.driveFileId).forEach(retryCompleteOnly);
+    // Everything else just moves back to "queued" - the concurrency
     // scheduler effect restarts them MAX_CONCURRENT_UPLOADS at a time
     // rather than firing them all back at the server in one burst, which
     // is exactly the "retry a big failed batch" case this matters most for.
     setItems((prev) =>
-      prev.map((i) => (i.status === "error" && i.file ? { ...i, status: "queued", progress: 0, cancel: undefined } : i))
+      prev.map((i) =>
+        i.status === "error" && i.file && !i.driveFileId
+          ? { ...i, status: "queued", progress: 0, cancel: undefined, error: undefined }
+          : i
+      )
     );
   }
 
   function clearList() {
-    watchersRef.current.forEach((stop) => stop());
-    watchersRef.current = [];
-    watchedIdsRef.current.clear();
     setItems([]);
     toastShownRef.current = false;
   }

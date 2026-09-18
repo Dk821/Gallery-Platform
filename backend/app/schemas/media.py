@@ -74,6 +74,39 @@ class CreateUploadSessionRequest(BaseModel):
     file_size: int
 
 
+class CompleteUploadRequest(BaseModel):
+    """
+    Sent by the browser once it has finished PUTting the file's bytes
+    directly to the Google Drive resumable session URL it got back from
+    POST /upload-session. This server never saw those bytes - it
+    re-confirms the file with Drive itself (storage.get_file /
+    storage.download for a signature check) rather than trusting these
+    client-reported values for the actual Media record.
+    """
+
+    upload_id: str
+    drive_file_id: str
+    # What the browser observed Drive's own final response say - used only
+    # to detect a badly mismatched client, never written to the DB as-is;
+    # the authoritative size/mime always come from storage.get_file().
+    reported_size: int
+    reported_mime_type: str | None = None
+
+
+class UploadProgressRequest(BaseModel):
+    """
+    Periodic, best-effort progress ping from the browser while it's
+    PUTting bytes directly to Drive (Section 8) - this server is no
+    longer in that data path, so it can only know real progress if the
+    browser tells it. Never trusted for anything beyond display (the
+    authoritative "did this file actually land in Drive" check happens in
+    complete_direct_upload, independent of whatever progress was reported
+    here).
+    """
+
+    bytes_uploaded: int
+
+
 class UploadStatusResponse(BaseModel):
     """
     Polled by the frontend to show real Drive-transfer progress
@@ -91,6 +124,19 @@ class UploadStatusResponse(BaseModel):
     media_id: int | None
     error_code: str | None
     error_message: str | None
+
+
+class DirectUploadSessionResponse(UploadStatusResponse):
+    """
+    Response for POST /upload-session: everything UploadStatusResponse
+    already carries, plus the Drive resumable session URL the browser
+    PUTs its bytes to directly. `upload_url` is None whenever it isn't
+    the browser's turn to have one (e.g. an idempotent replay of an
+    already-completed upload) - the frontend should treat a missing url
+    as "nothing to upload, check status/media_id instead."
+    """
+
+    upload_url: str | None
 
 
 class UploadSessionListItem(BaseModel):

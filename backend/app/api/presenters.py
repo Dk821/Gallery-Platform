@@ -6,6 +6,7 @@ from app.models.upload_session import UploadSession
 from app.schemas.album import AlbumResponse
 from app.schemas.download_job import DownloadJobResponse
 from app.schemas.media import (
+    DirectUploadSessionResponse,
     MediaResponse,
     UploadSessionListItem,
     UploadStatusResponse,
@@ -80,6 +81,19 @@ def upload_session_to_response(session: UploadSession) -> UploadStatusResponse:
         error_code=session.error_code,
         error_message=session.error_message,
     )
+
+
+def upload_session_start_response(session: UploadSession, upload_url: str | None) -> DirectUploadSessionResponse:
+    """
+    upload_url is passed in separately rather than read off the session -
+    the session only durably stores it for refresh-recovery bookkeeping
+    (see UploadSession.drive_resumable_upload_url's docstring); the
+    response always reflects what start_direct_upload() just decided for
+    THIS request (e.g. None on an idempotent-replay-of-a-completed-upload
+    path, where there's nothing left to upload).
+    """
+    base = upload_session_to_response(session)
+    return DirectUploadSessionResponse(upload_url=upload_url, **base.model_dump())
 
 
 def upload_session_list_item(

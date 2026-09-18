@@ -1,9 +1,9 @@
 import datetime
 import io
 import logging
-import time
+import os
+import tempfile
 import uuid
-from typing import BinaryIO
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -19,9 +19,8 @@ from app.schemas.media import MediaUpdateRequest
 from app.schemas.pagination import paginate_params
 from app.services.album_service import check_album_not_expired
 from app.services.disk_service import InsufficientDiskSpaceError, get_disk_tracker
-from app.services.media_validation import validate_upload
-from app.services.storage_service import StorageError, StorageNotFoundError, StorageService, StorageTimeoutError
-from app.services.upload_concurrency import UploadQueueTimeoutError, get_upload_limiter
+from app.services.media_validation import guess_mime_type, validate_upload, validate_upload_intent
+from app.services.storage_service import StorageError, StorageNotFoundError, StorageService
 from app.services.upload_logging import log_event
 from app.workers.thumbnail_worker import generate_image_thumbnail, generate_video_poster
 
@@ -234,40 +233,100 @@ def move_media_to_album(db: DbSession, storage: StorageService, media: Media, ta
 
 UPLOAD_ID_MAX_LENGTH = 100  # must match UploadSession.upload_id's String(100) column
 
+# Bytes read back from Drive (a ranged download, never the whole file) to
+# run the same magic-byte signature check the old byte-relaying flow ran
+# against locally-spooled bytes (Section 16). Matches the header size the
+# old /upload route read from its SpooledTemporaryFile.
+HEADER_SIGNATURE_BYTES = 4096
 
-def _reserve_upload_session(
-    db: DbSession, admin_id: int | None, upload_id: str, album: Album, filename: str, file_size: int
-) -> tuple[UploadSession, Media | None]:
-    """
-    Implements the idempotency rules from Section 4:
-      - first request                       -> new row, proceed
-      - duplicate while uploading            -> 409, do not proceed
-      - retry after timeout / lost response / server error, when the
-        previous attempt failed              -> reuse the row, proceed
-      - duplicate after successful completion -> return the SAME Media,
-        no re-upload, no new DB row
-      - two identical requests arriving simultaneously -> the DB's unique
-        constraint on (admin_id, upload_id) lets exactly one insert win;
-        the other treats the race as "already in progress"
-    Returns (session, existing_media_or_None). A non-None second element
-    means the caller should return that Media immediately without
-    touching storage again.
-    """
+
+def _validate_upload_id(upload_id: str) -> None:
     # Validated here, not just trusted from the client: upload_id is
     # client-minted (see the module docstring on UploadSession), and a
     # value longer than the DB column previously reached db.commit()
     # unchecked - MySQL's strict mode then raised a raw DataError mid-flush
     # (1406 "Data too long for column 'upload_id'"), surfacing as an ugly
-    # 500 with a full SQLAlchemy traceback instead of a clean 400. This is
-    # exactly what happens if a client embeds a long filename directly
-    # into the id it mints (the actual frontend bug that triggered this -
-    # fixed there too, but this check is the backend's own safety net
-    # regardless of what any client sends).
+    # 500 with a full SQLAlchemy traceback instead of a clean 400.
     if not upload_id or len(upload_id) > UPLOAD_ID_MAX_LENGTH:
+        length = len(upload_id) if upload_id else 0
         raise ApiError(
-            400,
-            "INVALID_UPLOAD_ID",
-            f"upload_id must be 1-{UPLOAD_ID_MAX_LENGTH} characters (got {len(upload_id)}).",
+            400, "INVALID_UPLOAD_ID", f"upload_id must be 1-{UPLOAD_ID_MAX_LENGTH} characters (got {length})."
+        )
+
+
+def _delete_from_storage_best_effort(storage: StorageService, provider_file_id: str) -> None:
+    try:
+        storage.delete(provider_file_id)
+    except StorageError as exc:
+        logger.critical(
+            "FAILED to clean up orphaned Drive file %s - manual reconciliation required: %s",
+            provider_file_id,
+            exc,
+        )
+
+
+def _open_drive_session(
+    db: DbSession,
+    storage: StorageService,
+    session: UploadSession,
+    admin_id: int | None,
+    upload_id: str,
+    album: Album,
+    filename: str,
+    file_size: int,
+) -> str:
+    """
+    Asks Drive to open a resumable upload session and returns its URL.
+    Any failure here fails the session the same way a failed transfer
+    used to (Section 9) - the caller never gets a session back in a state
+    that claims to be 'uploading' without a real Drive session behind it.
+    """
+    mime_type = guess_mime_type(filename)
+    try:
+        return storage.create_resumable_session(
+            filename, mime_type, file_size, album.drive_folder_id, upload_id=upload_id
+        )
+    except StorageError as exc:
+        logger.error("Failed to open Drive resumable session for upload_id=%s: %s", upload_id, exc)
+        _fail_upload_session(db, session, "STORAGE_SESSION_FAILED", str(exc))
+        raise ApiError(502, "STORAGE_SESSION_FAILED", "Could not start the upload with storage. Please retry.")
+
+
+def start_direct_upload(
+    db: DbSession,
+    storage: StorageService,
+    settings: Settings,
+    admin_id: int | None,
+    upload_id: str,
+    album: Album,
+    filename: str,
+    file_size: int,
+) -> tuple[UploadSession, str | None, Media | None]:
+    """
+    Browser -> Drive direct upload, step 1 of 2 (POST /upload-session).
+
+    This server never receives the file's bytes at all: it validates the
+    request's shape (extension/declared size only - nothing deeper is
+    possible yet, since no bytes exist here to sniff), reserves the same
+    idempotency-ledger row the old byte-relaying flow used (Section 4),
+    then asks Drive to open a resumable upload session and hands its URL
+    back for the BROWSER to PUT its bytes to directly from this point on.
+
+    Returns (session, upload_url, existing_media):
+      - existing_media is non-None only on an idempotent replay of an
+        already-completed upload - callers should return it as-is;
+        upload_url is None in that case (nothing left to upload).
+      - Otherwise upload_url is the fresh Drive resumable session URL the
+        browser should PUT to.
+    """
+    _validate_upload_id(upload_id)
+    validate_upload_intent(settings, filename, file_size)
+
+    if not album.drive_folder_id:
+        # Should be impossible for an album created through create_album(),
+        # but guards against pre-Phase-3 albums or manual DB edits.
+        raise ApiError(
+            409, "ALBUM_STORAGE_NOT_PROVISIONED", "This album has no storage folder. Recreate the album."
         )
 
     session = (
@@ -281,13 +340,15 @@ def _reserve_upload_session(
             media = db.query(Media).filter(Media.id == session.media_id).first()
             if media is not None:
                 log_event(logger, "upload_completed", upload_id=upload_id, note="idempotent_replay")
-                return session, media
+                return session, None, media
             # Session says completed but the Media row is gone (e.g.
             # deleted since) - fall through and treat as a fresh retry.
         if session.status == "uploading":
             raise ApiError(
                 409, "UPLOAD_ALREADY_IN_PROGRESS", "This upload is already being processed. Please wait."
             )
+
+        upload_url = _open_drive_session(db, storage, session, admin_id, upload_id, album, filename, file_size)
         session.album_id = album.id
         session.filename = filename
         session.total_bytes = file_size
@@ -295,103 +356,16 @@ def _reserve_upload_session(
         session.status = "uploading"
         session.error_code = None
         session.error_message = None
+        session.drive_file_id = None
+        session.thumbnail_drive_file_id = None
+        session.drive_resumable_upload_url = upload_url
         db.commit()
-        return session, None
+        return session, upload_url, None
 
     session = UploadSession(
         upload_id=upload_id,
         admin_id=admin_id,
         album_id=album.id,
-        filename=filename,
-        total_bytes=file_size,
-        bytes_uploaded=0,
-        status="uploading",
-    )
-    db.add(session)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        existing = (
-            db.query(UploadSession)
-            .filter(UploadSession.admin_id == admin_id, UploadSession.upload_id == upload_id)
-            .first()
-        )
-        if existing is not None and existing.status == "completed" and existing.media_id:
-            media = db.query(Media).filter(Media.id == existing.media_id).first()
-            if media is not None:
-                return existing, media
-        raise ApiError(
-            409, "UPLOAD_ALREADY_IN_PROGRESS", "This upload is already being processed. Please wait."
-        )
-    db.refresh(session)
-    log_event(logger, "upload_started", upload_id=upload_id, album_id=album.id, filename=filename, file_size=file_size)
-    return session, None
-
-
-def create_upload_session(
-    db: DbSession, admin_id: int | None, upload_id: str, album_id: int, filename: str, file_size: int
-) -> UploadSession:
-    """
-    Pre-creates an UploadSession with status='queued' before the actual
-    file upload begins (POST /upload-session).  This eliminates the race
-    condition where the frontend starts polling /upload-status before
-    FastAPI has finished buffering the large multipart body and the
-    handler has created the session.
-
-    The session stays 'queued' until upload_media_to_album() picks it up
-    via _reserve_upload_session() and flips it to 'uploading'.  Creating
-    it as 'uploading' here would cause _reserve_upload_session() to
-    reject it as a duplicate (409 UPLOAD_ALREADY_IN_PROGRESS).
-    """
-    if not upload_id or len(upload_id) > UPLOAD_ID_MAX_LENGTH:
-        raise ApiError(
-            400,
-            "INVALID_UPLOAD_ID",
-            f"upload_id must be 1-{UPLOAD_ID_MAX_LENGTH} characters (got {len(upload_id)}).",
-        )
-
-    session = (
-        db.query(UploadSession)
-        .filter(UploadSession.admin_id == admin_id, UploadSession.upload_id == upload_id)
-        .first()
-    )
-
-    if session is not None:
-        if session.status == "completed" and session.media_id:
-            # Already finished — return it so the caller can short-circuit
-            # (the idempotent-replay path in upload_media_to_album).
-            return session
-        if session.status in ("uploading", "queued"):
-            raise ApiError(
-                409,
-                "UPLOAD_ALREADY_IN_PROGRESS",
-                "This upload is already being processed. Please wait.",
-            )
-        # Failed / cancelled — reset for retry.
-        session.album_id = album_id
-        session.filename = filename
-        session.total_bytes = file_size
-        session.bytes_uploaded = 0
-        session.status = "queued"
-        session.error_code = None
-        session.error_message = None
-        db.commit()
-        db.refresh(session)
-        log_event(
-            logger,
-            "upload_session_created",
-            upload_id=upload_id,
-            album_id=album_id,
-            filename=filename,
-            file_size=file_size,
-        )
-        return session
-
-    session = UploadSession(
-        upload_id=upload_id,
-        admin_id=admin_id,
-        album_id=album_id,
         filename=filename,
         total_bytes=file_size,
         bytes_uploaded=0,
@@ -407,20 +381,48 @@ def create_upload_session(
             .filter(UploadSession.admin_id == admin_id, UploadSession.upload_id == upload_id)
             .first()
         )
-        if existing is not None:
-            return existing
+        if existing is not None and existing.status == "completed" and existing.media_id:
+            media = db.query(Media).filter(Media.id == existing.media_id).first()
+            if media is not None:
+                return existing, None, media
         raise ApiError(
-            409, "UPLOAD_IN_PROGRESS", "This upload is already being processed."
+            409, "UPLOAD_ALREADY_IN_PROGRESS", "This upload is already being processed. Please wait."
         )
     db.refresh(session)
-    log_event(
-        logger,
-        "upload_session_created",
-        upload_id=upload_id,
-        album_id=album_id,
-        filename=filename,
-        file_size=file_size,
+
+    upload_url = _open_drive_session(db, storage, session, admin_id, upload_id, album, filename, file_size)
+    session.status = "uploading"
+    session.drive_resumable_upload_url = upload_url
+    db.commit()
+
+    log_event(logger, "upload_started", upload_id=upload_id, album_id=album.id, filename=filename, file_size=file_size)
+    return session, upload_url, None
+
+
+def report_upload_progress(db: DbSession, admin_id: int | None, upload_id: str, bytes_uploaded: int) -> UploadSession:
+    """
+    Best-effort progress ping sent by the browser while it PUTs bytes
+    directly to Drive (Section 8) - the only way this server can reflect
+    real transfer progress now that it isn't the one relaying the bytes.
+    Purely cosmetic: never trusted for anything beyond display. A session
+    that isn't currently 'uploading' silently ignores a late/stray ping
+    (a race with completion/failure, not a bug) rather than erroring.
+    """
+    session = (
+        db.query(UploadSession)
+        .filter(UploadSession.admin_id == admin_id, UploadSession.upload_id == upload_id)
+        .first()
     )
+    if session is None:
+        raise not_found("Upload not found.", code="UPLOAD_NOT_FOUND")
+    if session.status != "uploading":
+        return session
+
+    capped = max(0, bytes_uploaded)
+    if session.total_bytes:
+        capped = min(capped, session.total_bytes)
+    session.bytes_uploaded = capped
+    db.commit()
     return session
 
 
@@ -429,39 +431,17 @@ def _fail_upload_session(db: DbSession, session: UploadSession, code: str, messa
         session.status = "failed"
         session.error_code = code
         session.error_message = message[:2000]
+        # A failed session's Drive resumable URL is either already
+        # unusable (session expired/aborted) or must not be handed out
+        # again - clearing it means a stray late browser retry against
+        # the OLD url fails cleanly at Drive rather than silently landing
+        # bytes for a session this server has already given up on.
+        session.drive_resumable_upload_url = None
         db.commit()
     except Exception:  # noqa: BLE001 - never let bookkeeping failure mask the real error
         db.rollback()
         logger.error("Failed to persist failure state for upload_id=%s", session.upload_id)
     log_event(logger, "upload_failed", upload_id=session.upload_id, error_code=code)
-
-
-def _make_progress_updater(db: DbSession, session: UploadSession):
-    state = {"last_commit": 0.0}
-
-    def _update(bytes_uploaded: int, total_bytes: int) -> None:
-        now = time.monotonic()
-        is_final = total_bytes > 0 and bytes_uploaded >= total_bytes
-        # Throttle DB writes to roughly once a second (plus always on the
-        # final chunk) - a multi-GB upload can have hundreds of chunks and
-        # committing on every single one would be wasteful.
-        if not is_final and now - state["last_commit"] < 1.0:
-            return
-        state["last_commit"] = now
-        session.bytes_uploaded = min(bytes_uploaded, total_bytes) if total_bytes else bytes_uploaded
-        try:
-            db.commit()
-        except Exception:  # noqa: BLE001 - progress reporting must never break the upload itself
-            db.rollback()
-        log_event(
-            logger,
-            "upload_progress",
-            upload_id=session.upload_id,
-            bytes_uploaded=bytes_uploaded,
-            total_bytes=total_bytes,
-        )
-
-    return _update
 
 
 def _db_utcnow(db: DbSession) -> datetime.datetime:
@@ -482,19 +462,21 @@ def _db_utcnow(db: DbSession) -> datetime.datetime:
 
 def _fail_stale_upload_sessions(db: DbSession, admin_id: int | None) -> None:
     """
-    Lazily cleans up sessions that will NEVER finish: a server restart /
-    crash leaves rows stuck in 'uploading' or 'queued' with no thread
-    behind them. The frontend polls upload-status every ~1s while a
-    session looks in-flight, so without this every stuck row would be
-    polled forever, hammering the DB. A session is stale when it hasn't
-    been touched in *longer than* the maximum a live upload can possibly
-    exist - upload_session_timeout covers the sum of queue wait (the row
-    is created as 'uploading' before the concurrency limiter grants a
-    slot) plus every chunk transfer (progress commits keep updated_at
-    fresh), so any row older than that is guaranteed orphaned and never a
-    false-positive. The cutoff is derived from the DATABASE's own now()
-    because updated_at itself is stamped by the DB's clock (MySQL local
-    server time), not Python's.
+    Lazily cleans up sessions that will NEVER finish. Two ways a row gets
+    stuck now that the browser talks to Drive directly: a server restart
+    with rows created moments before (rare, since starting a session is
+    now a single fast round trip rather than a multi-minute transfer), or
+    - more commonly in this architecture - a browser that opened a
+    session and then never finished (or never reported finishing) its
+    direct PUT to Drive: closed tab, lost network, etc. The frontend polls
+    upload-status every ~1s while a session looks in-flight, so without
+    this every abandoned row would be polled forever. A session is stale
+    when it hasn't been touched in *longer than* upload_session_timeout -
+    generous enough to cover a genuinely large direct-to-Drive transfer
+    plus its progress pings, so this never false-positives on a real
+    upload still in flight. The cutoff is derived from the DATABASE's own
+    now() because updated_at itself is stamped by the DB's clock (MySQL
+    local server time), not Python's.
     """
     idle = get_settings().upload_session_timeout
     cutoff = _db_utcnow(db) - datetime.timedelta(seconds=idle)
@@ -512,8 +494,28 @@ def _fail_stale_upload_sessions(db: DbSession, admin_id: int | None) -> None:
             db,
             session,
             "UPLOAD_STALE",
-            "This upload was interrupted (server restart or process crash) and will not resume.",
+            "This upload was interrupted (browser closed, lost connection, or server restart) and will not resume.",
         )
+
+
+def abandon_direct_upload(db: DbSession, admin_id: int | None, upload_id: str) -> None:
+    """
+    Called by the browser when its own direct-to-Drive PUT fails or is
+    cancelled, so a subsequent retry with the SAME upload_id isn't
+    rejected as "already in progress" (Section 4/9's idempotency check) -
+    this server has no other way to learn a direct browser<->Drive
+    transfer failed, since it was never in that data path to observe the
+    failure itself. A no-op if the session has already reached a terminal
+    state - this must never be able to undo a genuine completion.
+    """
+    session = (
+        db.query(UploadSession)
+        .filter(UploadSession.admin_id == admin_id, UploadSession.upload_id == upload_id)
+        .first()
+    )
+    if session is None or session.status not in ("queued", "uploading"):
+        return
+    _fail_upload_session(db, session, "UPLOAD_ABANDONED", "Upload attempt was abandoned by the browser.")
 
 
 def get_upload_session_status(db: DbSession, admin_id: int | None, upload_id: str) -> UploadSession:
@@ -581,104 +583,196 @@ def list_recent_upload_sessions(
     ]
 
 
-def upload_media_to_album(
+def _generate_thumbnail_from_storage(
+    storage: StorageService,
+    settings: Settings,
+    drive_file_id: str,
+    file_type: str,
+    file_size: int,
+    filename: str,
+) -> bytes | None:
+    """
+    Reads back a bounded copy of the just-uploaded file from Drive purely
+    to generate a thumbnail/poster (Section 15/22). This is now the ONLY
+    place (besides the small header check in complete_direct_upload) this
+    server touches the uploaded file's actual content - it's a deliberate,
+    separate, capped read-back AFTER the original already landed safely
+    in Drive, not a re-transfer of the upload path itself. Returns None
+    (no thumbnail - already a non-fatal, best-effort feature) for
+    anything over the configured caps, exactly like a generation failure
+    would.
+    """
+    if file_type == "photo":
+        if file_size > settings.thumbnail_image_source_max_bytes:
+            logger.info("Skipping thumbnail for %s - image exceeds thumbnail_image_source_max_mb.", filename)
+            return None
+        # Images are small enough (Section 16's allowed types) to hold
+        # entirely in memory - no VPS disk touched for this path at all.
+        buffer = io.BytesIO()
+        for chunk in storage.download(drive_file_id):
+            buffer.write(chunk)
+        buffer.seek(0)
+        return generate_image_thumbnail(buffer)
+
+    if file_type == "video":
+        if file_size > settings.thumbnail_video_source_max_bytes:
+            logger.info("Skipping poster for %s - video exceeds thumbnail_video_source_max_mb.", filename)
+            return None
+        # ffmpeg needs a real, seekable file on disk - reuse the same disk
+        # reservation tracker the old upload-spooling path used, so this
+        # optional, post-upload read-back still can't run the VPS out of
+        # disk even for a large video.
+        tracker = get_disk_tracker()
+        reservation_key = f"thumbnail:{uuid.uuid4()}"
+        try:
+            tracker.try_reserve(reservation_key, file_size, min_free_bytes=settings.upload_min_free_disk_bytes)
+        except InsufficientDiskSpaceError:
+            logger.info("Skipping poster for %s - insufficient disk headroom for the read-back.", filename)
+            return None
+
+        suffix = os.path.splitext(filename)[1] or ".mp4"
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                for chunk in storage.download(drive_file_id):
+                    tmp.write(chunk)
+                tmp_path = tmp.name
+            with open(tmp_path, "rb") as f:
+                return generate_video_poster(f, filename)
+        finally:
+            tracker.release(reservation_key)
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+    return None
+
+
+def complete_direct_upload(
     db: DbSession,
     storage: StorageService,
     settings: Settings,
-    album: Album,
-    filename: str,
-    declared_content_type: str,
-    file_obj: BinaryIO,
-    file_size: int,
-    header_bytes: bytes,
-    *,
-    upload_id: str | None = None,
-    admin_id: int | None = None,
+    admin_id: int | None,
+    upload_id: str,
+    drive_file_id: str,
+    reported_size: int,
+    reported_mime_type: str | None,
 ) -> Media:
     """
-    Validates, uploads to Drive, then saves metadata. If the DB save fails
-    after a successful Drive upload, attempts to delete the now-orphaned
-    Drive file rather than silently losing track of it (Section 7).
-
-    upload_id + admin_id drive the idempotency ledger (Section 4): the
-    same (admin_id, upload_id) pair always represents the same logical
-    upload, so a browser retry after a lost response, a timeout, or a
-    5xx never produces a duplicate Drive file or a duplicate Media row.
+    Browser -> Drive direct upload, step 2 of 2 (POST /upload-complete),
+    called once the browser's direct PUT to the Drive resumable session
+    URL has finished. This server never received the file's bytes - what
+    it does here instead:
+      1. re-confirms the file actually exists in Drive and reads its
+         AUTHORITATIVE size/mime straight from the provider (Section 13:
+         never trust what the browser reports for the DB record itself),
+      2. reads back a small header slice (a ranged download, never the
+         whole file) to run the same magic-byte signature check the old
+         byte-relaying flow ran against locally-spooled bytes (Section 16),
+      3. generates a thumbnail/poster the same best-effort, non-fatal way
+         as before (Section 15/22), sourced from a bounded read-back
+         rather than local upload bytes this server no longer has,
+      4. creates the Media row, with the same orphan-safe durable
+         checkpoint and cleanup-on-DB-failure behavior as before
+         (Section 7/9).
     """
-    file_type, mime_type = validate_upload(settings, filename, declared_content_type, file_size, header_bytes)
+    session = (
+        db.query(UploadSession)
+        .filter(UploadSession.admin_id == admin_id, UploadSession.upload_id == upload_id)
+        .first()
+    )
+    if session is None:
+        raise not_found("Upload not found.", code="UPLOAD_NOT_FOUND")
 
-    if not album.drive_folder_id:
-        # Should be impossible for an album created through create_album(),
-        # but guards against pre-Phase-3 albums or manual DB edits.
+    if session.status == "completed" and session.media_id:
+        media = db.query(Media).filter(Media.id == session.media_id).first()
+        if media is not None:
+            log_event(logger, "upload_completed", upload_id=upload_id, note="idempotent_replay")
+            return media
+
+    if session.status != "uploading":
         raise ApiError(
-            409, "ALBUM_STORAGE_NOT_PROVISIONED", "This album has no storage folder. Recreate the album."
+            409,
+            "UPLOAD_NOT_IN_PROGRESS",
+            f"This upload session is '{session.status}', not awaiting completion.",
         )
 
-    upload_id = upload_id or str(uuid.uuid4())
-    session, existing_media = _reserve_upload_session(db, admin_id, upload_id, album, filename, file_size)
-    if existing_media is not None:
-        return existing_media
+    album = db.query(Album).filter(Album.id == session.album_id).first()
+    if album is None:
+        _fail_upload_session(db, session, "ALBUM_NOT_FOUND", "The target album no longer exists.")
+        raise not_found("Album not found.", code="ALBUM_NOT_FOUND")
 
-    # Section 3 (outer gate): caps how many uploads may be in the
-    # reserve-disk -> transfer-to-storage pipeline at once, server-wide.
-    # Protects against a burst of many files selected at once (e.g. a
-    # whole shoot uploaded in one go) all landing on the server
-    # simultaneously. This wraps a STRICTER, separate limiter further
-    # inside (storage.upload() itself only allows upload_max_concurrent
-    # transfers to Drive at a time) - waiting here just means "your disk
-    # reservation is held, your turn to actually transfer is coming."
-    limiter = get_upload_limiter(settings.upload_max_concurrent_requests)
+    # Durable checkpoint (Section 9): recorded as soon as we're told a
+    # Drive file id exists at all, BEFORE any further validation - so a
+    # crash (or a signature-mismatch deletion) after this point still
+    # leaves evidence an orphan-reconciliation pass can find, exactly the
+    # same guarantee the old flow gave right after storage.upload()
+    # returned.
+    session.drive_file_id = drive_file_id
+    db.commit()
+
     try:
-        with limiter.slot(timeout=settings.upload_queue_wait_seconds):
-            # Section 5: disk-space protection. Reserved for the lifetime of
-            # this upload attempt and always released below, on every exit path.
-            tracker = get_disk_tracker()
-            reservation_key = f"upload:{admin_id}:{upload_id}"
-            try:
-                tracker.try_reserve(reservation_key, file_size, min_free_bytes=settings.upload_min_free_disk_bytes)
-            except InsufficientDiskSpaceError as exc:
-                _fail_upload_session(db, session, "INSUFFICIENT_DISK_SPACE", str(exc))
-                raise ApiError(
-                    507,
-                    "INSUFFICIENT_DISK_SPACE",
-                    "Not enough disk space is available to accept this upload right now. Please retry shortly.",
-                )
-
-            progress_cb = _make_progress_updater(db, session)
-
-            try:
-                stored = storage.upload(
-                    file_obj,
-                    filename,
-                    mime_type,
-                    album.drive_folder_id,
-                    progress_callback=progress_cb,
-                    upload_id=upload_id,
-                )
-            except StorageTimeoutError as exc:
-                logger.error("Drive upload timed out for album %s upload_id=%s: %s", album.id, upload_id, exc)
-                _fail_upload_session(db, session, "UPLOAD_TIMEOUT", str(exc))
-                raise ApiError(504, "UPLOAD_TIMEOUT", "The upload timed out. Please retry.")
-            except StorageError as exc:
-                logger.error("Drive upload failed for album %s: %s", album.id, exc)
-                _fail_upload_session(db, session, "STORAGE_UPLOAD_FAILED", str(exc))
-                raise ApiError(502, "STORAGE_UPLOAD_FAILED", "Upload to storage failed. Please retry.")
-            finally:
-                tracker.release(reservation_key)
-    except UploadQueueTimeoutError as exc:
-        logger.warning("Upload queue timed out for album %s upload_id=%s: %s", album.id, upload_id, exc)
-        _fail_upload_session(db, session, "SERVER_BUSY", str(exc))
-        raise ApiError(
-            503,
-            "SERVER_BUSY",
-            "The server is processing too many uploads right now. Please retry in a moment.",
+        stored = storage.get_file(drive_file_id)
+    except StorageNotFoundError:
+        _fail_upload_session(
+            db,
+            session,
+            "UPLOAD_NOT_FOUND_IN_STORAGE",
+            "The browser reported a completed upload, but storage has no matching file.",
         )
+        raise ApiError(
+            409,
+            "UPLOAD_NOT_FOUND_IN_STORAGE",
+            "Could not confirm the upload with storage. Please retry.",
+        )
+    except StorageError as exc:
+        logger.error("Could not confirm direct upload for upload_id=%s: %s", upload_id, exc)
+        _fail_upload_session(db, session, "STORAGE_CONFIRM_FAILED", str(exc))
+        raise ApiError(502, "STORAGE_CONFIRM_FAILED", "Could not confirm the upload with storage. Please retry.")
 
-    # Durable checkpoint (Section 9): committed BEFORE the Media row is
-    # created, specifically so a crash in the next few lines still leaves
-    # evidence an orphan-reconciliation pass can find and safely clean up.
-    session.drive_file_id = stored.provider_file_id
-    session.bytes_uploaded = stored.size or file_size
+    # Authoritative size comes from Drive, never from the browser's report
+    # (Section 13) - reported_size only ever mattered for the pre-flight
+    # sanity check the frontend/backend already did before minting the
+    # Drive session in the first place.
+    file_size = stored.size or reported_size
+    if file_size <= 0:
+        _delete_from_storage_best_effort(storage, drive_file_id)
+        _fail_upload_session(db, session, "EMPTY_FILE", "Uploaded file is empty.")
+        raise ApiError(400, "EMPTY_FILE", "Uploaded file is empty.")
+    if file_size > settings.effective_max_upload_bytes:
+        _delete_from_storage_best_effort(storage, drive_file_id)
+        _fail_upload_session(db, session, "FILE_TOO_LARGE", "File exceeds the maximum allowed upload size.")
+        raise ApiError(400, "FILE_TOO_LARGE", "File exceeds the maximum allowed upload size.")
+
+    # A small ranged read-back, NOT the whole file (Section 16) - the one
+    # place besides thumbnail generation below that this server touches
+    # the uploaded file's actual bytes, and it's bounded to a few KB
+    # regardless of the file's real size.
+    try:
+        header_bytes = b"".join(
+            storage.download(drive_file_id, range_start=0, range_end=HEADER_SIGNATURE_BYTES - 1)
+        )
+    except StorageError as exc:
+        logger.error("Could not read back header bytes for upload_id=%s: %s", upload_id, exc)
+        _fail_upload_session(db, session, "STORAGE_CONFIRM_FAILED", str(exc))
+        raise ApiError(502, "STORAGE_CONFIRM_FAILED", "Could not confirm the upload with storage. Please retry.")
+
+    try:
+        file_type, mime_type = validate_upload(
+            settings, session.filename, reported_mime_type or "", file_size, header_bytes
+        )
+    except ApiError:
+        logger.warning("Signature validation failed for upload_id=%s - deleting Drive file.", upload_id)
+        _delete_from_storage_best_effort(storage, drive_file_id)
+        _fail_upload_session(
+            db, session, "FILE_SIGNATURE_MISMATCH", "File contents did not match the declared type."
+        )
+        raise
+
+    session.bytes_uploaded = file_size
+    session.total_bytes = file_size
     db.commit()
 
     # Thumbnail/poster generation is best-effort and non-fatal: a failure
@@ -686,14 +780,11 @@ def upload_media_to_album(
     # item, not a failed upload (Section 15 wants thumbnails, but the
     # original file existing safely in storage matters more).
     thumbnail_file_id = None
+    file_uuid = str(uuid.uuid4())
     try:
-        file_uuid = str(uuid.uuid4())
-        thumb_bytes = None
-        if file_type == "photo":
-            thumb_bytes = generate_image_thumbnail(file_obj)
-        elif file_type == "video":
-            thumb_bytes = generate_video_poster(file_obj, filename)
-
+        thumb_bytes = _generate_thumbnail_from_storage(
+            storage, settings, drive_file_id, file_type, file_size, session.filename
+        )
         if thumb_bytes:
             thumb_stream = io.BytesIO(thumb_bytes)
             thumb_stored = storage.upload(
@@ -711,11 +802,11 @@ def upload_media_to_album(
             client_id=album.client_id,
             album_id=album.id,
             file_uuid=file_uuid,
-            file_name=filename,
+            file_name=session.filename,
             file_type=file_type,
             mime_type=mime_type,
-            file_size=stored.size or file_size,
-            google_drive_file_id=stored.provider_file_id,
+            file_size=file_size,
+            google_drive_file_id=drive_file_id,
             thumbnail_reference=thumbnail_file_id,
             status="ready",
         )
@@ -725,39 +816,23 @@ def upload_media_to_album(
     except Exception:
         db.rollback()
         logger.critical(
-            "DB save failed after successful Drive upload - orphaned file %s in album %s. Attempting cleanup.",
-            stored.provider_file_id,
+            "DB save failed after successful direct Drive upload - orphaned file %s in album %s. Attempting cleanup.",
+            drive_file_id,
             album.id,
         )
-        try:
-            storage.delete(stored.provider_file_id)
-            logger.info("Cleaned up orphaned Drive file %s after DB failure.", stored.provider_file_id)
-        except StorageError as cleanup_exc:
-            logger.critical(
-                "FAILED to clean up orphaned Drive file %s - manual reconciliation required: %s",
-                stored.provider_file_id,
-                cleanup_exc,
-            )
+        _delete_from_storage_best_effort(storage, drive_file_id)
         if thumbnail_file_id:
-            try:
-                storage.delete(thumbnail_file_id)
-            except StorageError as cleanup_exc:
-                logger.critical(
-                    "FAILED to clean up orphaned thumbnail %s - manual reconciliation required: %s",
-                    thumbnail_file_id,
-                    cleanup_exc,
-                )
+            _delete_from_storage_best_effort(storage, thumbnail_file_id)
         _fail_upload_session(db, session, "MEDIA_SAVE_FAILED", "DB save failed after successful Drive upload.")
         raise ApiError(500, "MEDIA_SAVE_FAILED", "Upload succeeded but saving the record failed. Please retry.")
 
     session.status = "completed"
     session.media_id = media.id
-    session.bytes_uploaded = file_size
+    session.drive_resumable_upload_url = None
     db.commit()
     log_event(logger, "upload_completed", upload_id=upload_id, media_id=media.id, file_size=file_size)
 
     return media
-
 
 def delete_media(db: DbSession, storage: StorageService, media: Media) -> None:
     for file_id in filter(None, [media.google_drive_file_id, media.thumbnail_reference]):

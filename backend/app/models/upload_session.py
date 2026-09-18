@@ -52,6 +52,17 @@ class UploadSession(Base, IdMixin, TimestampMixin):
     drive_file_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     thumbnail_drive_file_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # The provider-issued resumable upload session URL handed to the
+    # browser so it can PUT bytes DIRECTLY to Google Drive (this server
+    # never receives them). Short-lived and single-use per Drive's own
+    # resumable-upload protocol - kept here only so a page refresh mid
+    # upload can detect "this session's URL is gone, needs re-upload"
+    # rather than for any other durability guarantee. Never exposed to any
+    # OTHER admin/session, and cleared once the session reaches a terminal
+    # state. Drive session URLs carry long opaque tokens, hence Text
+    # rather than a short varchar.
+    drive_resumable_upload_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     media_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("media.id", ondelete="SET NULL"), nullable=True
     )
