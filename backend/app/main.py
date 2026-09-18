@@ -161,7 +161,7 @@ if getattr(settings, "trusted_hosts", None):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list or ["https://lovestory.madgen.space"],
+    allow_origins=settings.effective_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

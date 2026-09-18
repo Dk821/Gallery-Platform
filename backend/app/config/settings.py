@@ -111,6 +111,19 @@ class Settings(BaseSettings):
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @property
+    def effective_cors_origins(self) -> list[str]:
+        # The single source of truth for "which origins does this
+        # deployment actually trust" - cors_origin_list alone omits the
+        # localhost:5173 dev fallback that main.py's CORSMiddleware falls
+        # back to when CORS_ORIGINS is unset, so anything else that needs
+        # to check "is this origin one we trust" (e.g. validating the
+        # Origin forwarded to Drive's resumable-session initiation, see
+        # admin_media.py) must use THIS, not cors_origin_list directly, or
+        # it silently disagrees with what the CORS middleware itself
+        # allows in local dev.
+        return self.cors_origin_list or ["http://localhost:5173"]
+
+    @property
     def allowed_image_extensions(self) -> set[str]:
         return {e.strip().lower() for e in self.allowed_image_types.split(",") if e.strip()}
 

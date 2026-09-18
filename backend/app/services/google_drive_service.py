@@ -8,6 +8,7 @@ this class is only ever instantiated server-side.
 
 import http.client
 import io
+import json
 import logging
 import time
 from typing import BinaryIO, Iterator
@@ -40,6 +41,16 @@ from app.services.upload_logging import log_event
 logger = logging.getLogger("gallery.storage.google_drive")
 
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+
+# Same upload endpoint upload()'s MediaIoBaseUpload talks to under the
+# hood - called directly here (raw HTTP, not through the discovery client)
+# because we only want Drive to hand back a resumable SESSION URL, not to
+# exchange any file bytes with US at all. supportsAllDrives=true so this
+# keeps working if the target folder is ever a Shared Drive rather than a
+# My Drive folder.
+DRIVE_RESUMABLE_UPLOAD_ENDPOINT = (
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true"
+)
 
 # Fallback download chunk size when nothing more specific is configured.
 DOWNLOAD_CHUNK_SIZE_BYTES = 8 * 1024 * 1024
@@ -467,6 +478,92 @@ class GoogleDriveStorage(StorageService):
             size=int(response.get("size", 0)),
             mime_type=response.get("mimeType", mime_type),
         )
+
+    def create_resumable_session(
+        self,
+        filename: str,
+        mime_type: str,
+        file_size: int,
+        parent_folder_id: str,
+        *,
+        upload_id: str | None = None,
+        origin: str | None = None,
+    ) -> str:
+        # A raw, one-shot POST to Drive's resumable-upload initiation
+        # endpoint - deliberately NOT going through self._service.files()
+        # .create(media_body=...), because that path always wants an
+        # actual file-like object to read bytes from. Here we only want
+        # the resumable SESSION URL back (the `Location` response header);
+        # the browser sends every content byte directly to Drive from this
+        # point on, this server never touches them (Section: direct
+        # browser -> provider upload).
+        metadata = {"name": filename, "parents": [parent_folder_id]}
+        if upload_id:
+            # Same tagging upload() applies, so a file created this way is
+            # still identifiable as application-managed for orphan
+            # reconciliation, even though this server never transferred
+            # its bytes directly.
+            metadata["appProperties"] = {"gallery_managed": "true", "gallery_upload_id": upload_id}
+        body = json.dumps(metadata).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json; charset=UTF-8",
+            "Content-Length": str(len(body)),
+            # Tells Drive up front what's coming, so it can validate
+            # against these once the browser actually PUTs the bytes,
+            # without this server ever holding them itself.
+            "X-Upload-Content-Type": mime_type,
+            "X-Upload-Content-Length": str(file_size),
+        }
+        if origin:
+            # THE fix for the browser's subsequent direct PUT being
+            # blocked by CORS: Google bakes CORS support for a resumable
+            # session into whichever Origin header was present on THIS
+            # initiating request - a server-to-server call like this one
+            # has no browser Origin of its own, so without forwarding the
+            # real one, Google issues a session with no CORS allowance,
+            # and the browser's later PUT gets rejected client-side before
+            # it ever reaches Google. Already validated against our own
+            # CORS allowlist by the caller (admin_media.py) - never call
+            # this with an unvalidated, request-supplied value.
+            headers["Origin"] = origin
+
+        # One dedicated, authorized HTTP client for this call, same
+        # per-call-isolation reasoning as upload()/download() above.
+        raw_http = httplib2.Http(timeout=self._chunk_timeout)
+        session_http = AuthorizedHttp(self._credentials, http=raw_http)
+
+        def _do():
+            resp, content = session_http.request(
+                DRIVE_RESUMABLE_UPLOAD_ENDPOINT, method="POST", body=body, headers=headers
+            )
+            if int(resp.status) not in (200, 201):
+                # httplib2's raw .request() doesn't raise on a non-2xx
+                # status the way the discovery client's execute() does -
+                # raise the same HttpError type ourselves so this
+                # participates in the exact same retry/translate pipeline
+                # (_is_retryable_google_error / _translate_http_error)
+                # every other method here already uses.
+                raise HttpError(resp, content, uri=DRIVE_RESUMABLE_UPLOAD_ENDPOINT)
+            return resp
+
+        try:
+            resp = self._retry(_do)
+        except HttpError as exc:
+            raise _translate_http_error(exc) from exc
+        except RefreshError as exc:
+            raise StorageError(f"Google Drive authentication failed: {exc}") from exc
+        finally:
+            raw_http.close()
+
+        location = resp.get("location")
+        if not location:
+            raise StorageError(
+                "Google Drive accepted the resumable upload request but returned no session URL."
+            )
+        log_event(
+            logger, "resumable_session_created", upload_id=upload_id, filename=filename, file_size=file_size
+        )
+        return location
 
     def download(
         self,

@@ -75,6 +75,7 @@ def _log_bulk(db: DbSession, admin_id: int, action: str, request: Request, count
 @router.post("/upload-session")
 def start_direct_upload_route(
     payload: CreateUploadSessionRequest,
+    request: Request,
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
@@ -86,6 +87,19 @@ def start_direct_upload_route(
     # resumable upload session - the browser PUTs its bytes straight to
     # the returned upload_url from here on, then calls POST
     # /upload-complete when done.
+    #
+    # The browser's own Origin header is forwarded to Drive so it can bake
+    # CORS support for that origin into the session (see
+    # create_resumable_session's docstring - without this, Drive issues a
+    # session with no CORS allowance and the browser's subsequent PUT is
+    # blocked client-side before it ever reaches Drive). Only forwarded if
+    # it's one of THIS application's own configured CORS origins - never
+    # trust an arbitrary Origin header for something that becomes a real
+    # CORS grant on Drive's side.
+    origin = request.headers.get("origin")
+    if origin not in settings.effective_cors_origins:
+        origin = None
+
     album = get_album_or_404(db, payload.album_id)
     session, upload_url, existing_media = start_direct_upload(
         db,
@@ -96,6 +110,7 @@ def start_direct_upload_route(
         album,
         payload.filename,
         payload.file_size,
+        origin,
     )
     if existing_media is not None:
         # Idempotent replay of an already-completed upload - nothing left

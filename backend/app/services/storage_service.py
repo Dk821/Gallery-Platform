@@ -105,6 +105,7 @@ class StorageService(ABC):
         parent_folder_id: str,
         *,
         upload_id: str | None = None,
+        origin: str | None = None,
     ) -> str:
         """
         Initiates a provider-side resumable upload session for a file this
@@ -112,6 +113,19 @@ class StorageService(ABC):
         the BROWSER should PUT/POST its bytes to directly. This call only
         exchanges metadata (filename/mime/size/parent) with the provider -
         implementations must not read or expect any file content.
+
+        origin, if given, is the BROWSER's origin (e.g.
+        "https://lovestory.example.com") that will actually perform the
+        subsequent direct PUT. Google's resumable-upload protocol bakes
+        CORS support for a session into whichever Origin header was present
+        on the INITIATING request - a server-to-server call like this one
+        naturally has no browser Origin at all, so without forwarding one
+        explicitly, Google issues a session with no CORS allowance and the
+        browser's later PUT is blocked by the browser itself. Callers MUST
+        validate this value against the application's own CORS allowlist
+        before passing it here (see admin_media.py) - it must never be
+        forwarded unvalidated, since it becomes a real, trusted CORS grant
+        on Google's side for whoever holds the returned session URL.
 
         upload_id, if given, is used the same way upload() uses it: tagging
         the eventual file as application-managed so it can be found by

@@ -274,6 +274,7 @@ def _open_drive_session(
     album: Album,
     filename: str,
     file_size: int,
+    origin: str | None,
 ) -> str:
     """
     Asks Drive to open a resumable upload session and returns its URL.
@@ -284,7 +285,7 @@ def _open_drive_session(
     mime_type = guess_mime_type(filename)
     try:
         return storage.create_resumable_session(
-            filename, mime_type, file_size, album.drive_folder_id, upload_id=upload_id
+            filename, mime_type, file_size, album.drive_folder_id, upload_id=upload_id, origin=origin
         )
     except StorageError as exc:
         logger.error("Failed to open Drive resumable session for upload_id=%s: %s", upload_id, exc)
@@ -301,9 +302,17 @@ def start_direct_upload(
     album: Album,
     filename: str,
     file_size: int,
+    origin: str | None = None,
 ) -> tuple[UploadSession, str | None, Media | None]:
     """
     Browser -> Drive direct upload, step 1 of 2 (POST /upload-session).
+
+    origin is the browser's Origin header, ALREADY validated by the caller
+    against the application's own CORS allowlist (see admin_media.py) -
+    forwarded to Drive so the resumable session it opens actually allows
+    that origin's direct PUT (see create_resumable_session's docstring;
+    without this, Drive issues a session with no CORS allowance and the
+    browser's own subsequent PUT is blocked client-side).
 
     This server never receives the file's bytes at all: it validates the
     request's shape (extension/declared size only - nothing deeper is
@@ -348,7 +357,9 @@ def start_direct_upload(
                 409, "UPLOAD_ALREADY_IN_PROGRESS", "This upload is already being processed. Please wait."
             )
 
-        upload_url = _open_drive_session(db, storage, session, admin_id, upload_id, album, filename, file_size)
+        upload_url = _open_drive_session(
+            db, storage, session, admin_id, upload_id, album, filename, file_size, origin
+        )
         session.album_id = album.id
         session.filename = filename
         session.total_bytes = file_size
@@ -390,7 +401,9 @@ def start_direct_upload(
         )
     db.refresh(session)
 
-    upload_url = _open_drive_session(db, storage, session, admin_id, upload_id, album, filename, file_size)
+    upload_url = _open_drive_session(
+        db, storage, session, admin_id, upload_id, album, filename, file_size, origin
+    )
     session.status = "uploading"
     session.drive_resumable_upload_url = upload_url
     db.commit()
