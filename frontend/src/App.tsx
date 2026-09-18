@@ -12,8 +12,8 @@ import ClientLogin from "./pages/ClientLogin";
 import Gallery from "./pages/Gallery";
 import AlbumView from "./pages/AlbumView";
 import Settings from "./pages/Settings";
-import { UploadProvider } from "./contexts/UploadContext";
-import GlobalUploadBadge from "./components/GlobalUploadBadge";
+import { UploadProvider } from "./contexts/Uploadcontext";
+import GlobalUploadBadge from "./components/Globaluploadbadge";
 
 export default function App() {
   return (

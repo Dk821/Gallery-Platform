@@ -1,11 +1,12 @@
+import { memo } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { useUploads } from "../contexts/UploadContext";
+import { useUploads } from "../contexts/Uploadcontext";
 
 // Floating pill visible on every admin page EXCEPT Uploads itself (which
 // already shows the full panel) whenever there's an active batch - this is
 // the actual visible proof that navigating away from Uploads didn't lose
 // the transfer. Clicking it goes back to the Uploads page to see details.
-export default function GlobalUploadBadge() {
+export default memo(function GlobalUploadBadge() {
   const { summary } = useUploads();
   const location = useLocation();
 
@@ -25,4 +26,4 @@ export default function GlobalUploadBadge() {
       </span>
     </Link>
   );
-}
+});

@@ -206,13 +206,38 @@ def _():
 @check("CORS_ORIGINS")
 def _():
     origins = settings.cors_origin_list
+
     if not origins:
-        return warn("Not set - falling back to http://localhost:5173 only. Fine for local dev, wrong for prod.")
-    bad = [o for o in origins if not (o.startswith("http://") or o.startswith("https://"))]
+        dev_origin = settings.dev_frontend_origin
+
+        if not dev_origin:
+            return fail(
+                "CORS_ORIGINS and DEV_FRONTEND_ORIGIN are both not set."
+            )
+
+        if not (
+            dev_origin.startswith("http://")
+            or dev_origin.startswith("https://")
+        ):
+            return fail(
+                f"DEV_FRONTEND_ORIGIN is not valid (missing scheme): {dev_origin}"
+            )
+
+        return warn(
+            f"CORS_ORIGINS not set - falling back to {dev_origin} only. "
+            "Fine for local dev, wrong for prod."
+        )
+
+    bad = [
+        o
+        for o in origins
+        if not (o.startswith("http://") or o.startswith("https://"))
+    ]
+
     if bad:
         return fail(f"Not valid origins (missing scheme): {bad}")
-    return ok(f"{len(origins)} origin(s): {', '.join(origins)}")
 
+    return ok(f"{len(origins)} origin(s): {', '.join(origins)}")
 
 # ---------------------------------------------------------------------------
 # Uploads / ZIP jobs

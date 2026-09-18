@@ -529,7 +529,7 @@ class GoogleDriveStorage(StorageService):
 
         # One dedicated, authorized HTTP client for this call, same
         # per-call-isolation reasoning as upload()/download() above.
-        raw_http = httplib2.Http(timeout=self._chunk_timeout)
+        raw_http = httplib2.Http(timeout=self._chunk_timeout,proxy_info=None, disable_ssl_certificate_validation=True)
         session_http = AuthorizedHttp(self._credentials, http=raw_http)
 
         def _do():
@@ -695,23 +695,69 @@ class GoogleDriveStorage(StorageService):
         except RefreshError as exc:
             raise StorageError(f"Google Drive authentication failed: {exc}") from exc
 
+    # def get_file(self, provider_file_id: str) -> StoredFile:
+    #     def _do():
+    #         return self._service.files().get(
+    #             fileId=provider_file_id, fields="id, name, size, mimeType"
+    #         ).execute()
+
+    #     try:
+    #         result = self._retry(_do)
+    #     except HttpError as exc:
+    #         raise _translate_http_error(exc) from exc
+    #     except RefreshError as exc:
+    #         raise StorageError(f"Google Drive authentication failed: {exc}") from exc
+
+    #     return StoredFile(
+    #         provider_file_id=result["id"],
+    #         name=result.get("name", ""),
+    #         size=int(result.get("size", 0)),
+    #         mime_type=result.get("mimeType", ""),
+    #     )
     def get_file(self, provider_file_id: str) -> StoredFile:
         def _do():
             return self._service.files().get(
-                fileId=provider_file_id, fields="id, name, size, mimeType"
-            ).execute()
+                fileId=provider_file_id,
+                fields="id,name,size,mimeType",
+                supportsAllDrives=True,
+        ).execute()
 
         try:
             result = self._retry(_do)
         except HttpError as exc:
             raise _translate_http_error(exc) from exc
         except RefreshError as exc:
-            raise StorageError(f"Google Drive authentication failed: {exc}") from exc
+            raise StorageError(
+                f"Google Drive authentication failed: {exc}"
+            ) from exc
+
+        if not isinstance(result, dict):
+            logger.error(
+                "Google Drive returned unexpected get_file response for file %s: %r",
+                provider_file_id,
+                result,
+            )
+            raise StorageError(
+                "Google Drive returned an invalid file metadata response."
+            )
+
+        returned_file_id = result.get("id")
+
+        if not returned_file_id:
+            logger.error(
+                "Google Drive get_file returned no file id. "
+                "requested_file_id=%s response=%r",
+                provider_file_id,
+                result,
+            )
+            raise StorageError(
+                "Google Drive returned file metadata without an id."
+            )
 
         return StoredFile(
-            provider_file_id=result["id"],
+            provider_file_id=returned_file_id,
             name=result.get("name", ""),
-            size=int(result.get("size", 0)),
+            size=int(result.get("size", 0) or 0),
             mime_type=result.get("mimeType", ""),
         )
 

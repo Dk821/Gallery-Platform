@@ -95,6 +95,7 @@ def main() -> None:
     env_text = ENV_PATH.read_text(encoding="utf-8")
     client_id = _read_env_value(env_text, "GOOGLE_DRIVE_CLIENT_ID")
     client_secret = _read_env_value(env_text, "GOOGLE_DRIVE_CLIENT_SECRET")
+    redirect_uri = _read_env_value(env_text, "GOOGLE_DRIVE_REDIRECT_URI")
 
     if not client_id or not client_secret:
         print("GOOGLE_DRIVE_CLIENT_ID / GOOGLE_DRIVE_CLIENT_SECRET are missing from .env.")
@@ -106,7 +107,7 @@ def main() -> None:
             "client_secret": client_secret,
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": ["http://localhost"],
+            "redirect_uris": [redirect_uri],
         }
     }
 

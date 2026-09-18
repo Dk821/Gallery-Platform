@@ -1,7 +1,7 @@
 import { ChangeEvent, DragEvent, useEffect, useState } from "react";
 import AdminLayout from "../components/AdminLayout";
 import { adminService, AlbumItem, ClientListItem } from "../services/admin";
-import { STATUS_LABEL, UploadItem, formatBytes, useUploads } from "../contexts/UploadContext";
+import { STATUS_LABEL, UploadItem, formatBytes, useUploads } from "../contexts/Uploadcontext";
 
 const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "webm"]);
 
@@ -28,15 +28,26 @@ export default function Uploads() {
   const [albumId, setAlbumId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
     Promise.all([adminService.listClients(1, 200), adminService.listAlbums(1, 200)])
       .then(([clientPage, albumPage]) => {
+        if (cancelled) return;
         setClients(clientPage.items);
         setAlbums(albumPage.items);
         if (clientPage.items.length > 0) setClientId(clientPage.items[0].id);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load clients."));
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load clients.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const albumsForClient = albums.filter((a) => a.client_id === clientId);
@@ -73,78 +84,80 @@ export default function Uploads() {
 
       {error && <p className="auth-error">{error}</p>}
 
-      {clients.length === 0 ? (
+      {loading ? (
+        <div className="empty-state">Loading clients and albums…</div>
+      ) : clients.length === 0 ? (
         <div className="empty-state">Create a client and an album before uploading files.</div>
       ) : (
-        <>
-          <div className="admin-panel-card upload-panel-card">
-            <div className="upload-field-row">
-              <label className="upload-field">
-                Client
-                <select
-                  value={clientId ?? ""}
-                  onChange={(e) => setClientId(Number(e.target.value))}
-                  className="upload-select"
-                >
-                  {clients.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.client_name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+        <div className="admin-panel-card upload-panel-card">
+          <div className="upload-field-row">
+            <label className="upload-field">
+              Client
+              <select
+                value={clientId ?? ""}
+                onChange={(e) => setClientId(Number(e.target.value))}
+                className="upload-select"
+              >
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.client_name}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-              <label className="upload-field">
-                Album
-                <select
-                  value={albumId ?? ""}
-                  onChange={(e) => setAlbumId(Number(e.target.value))}
-                  className="upload-select"
-                  disabled={albumsForClient.length === 0}
-                >
-                  {albumsForClient.length === 0 && <option value="">No albums for this client</option>}
-                  {albumsForClient.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.album_name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <label
-              className={"upload-dropzone" + (dragActive ? " upload-dropzone--active" : "")}
-              style={{ opacity: albumId ? 1 : 0.5, cursor: albumId ? "pointer" : "not-allowed" }}
-              onDragOver={(e) => {
-                e.preventDefault();
-                if (albumId) setDragActive(true);
-              }}
-              onDragLeave={() => setDragActive(false)}
-              onDrop={handleDrop}
-            >
-              <span className="upload-dropzone__icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                  <path
-                    d="M7 18a4.5 4.5 0 01-.4-8.98 5.5 5.5 0 0110.7-1.9A4.5 4.5 0 0117 18H7z"
-                    strokeWidth="1.6"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                  <path d="M12 12v6m-2.5-3.5L12 18l2.5-2.5" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </span>
-              <span className="upload-dropzone__title">Drag photos and videos here, or click to browse</span>
-              <span className="upload-dropzone__hint">JPG, PNG, WEBP, GIF, MP4, MOV, WEBM</span>
-              <input
-                type="file"
-                multiple
-                accept=".jpg,.jpeg,.png,.webp,.gif,.mp4,.mov,.webm"
-                onChange={handleFilesSelected}
-                disabled={!albumId}
-                style={{ display: "none" }}
-              />
+            <label className="upload-field">
+              Album
+              <select
+                value={albumId ?? ""}
+                onChange={(e) => setAlbumId(Number(e.target.value))}
+                className="upload-select"
+                disabled={albumsForClient.length === 0}
+              >
+                {albumsForClient.length === 0 && <option value="">No albums for this client</option>}
+                {albumsForClient.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.album_name}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
+
+          <label
+            className={"upload-dropzone" + (dragActive ? " upload-dropzone--active" : "")}
+            style={{ opacity: albumId ? 1 : 0.5, cursor: albumId ? "pointer" : "not-allowed" }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              if (albumId) setDragActive(true);
+            }}
+            onDragLeave={() => setDragActive(false)}
+            onDrop={handleDrop}
+          >
+            <span className="upload-dropzone__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path
+                  d="M7 18a4.5 4.5 0 01-.4-8.98 5.5 5.5 0 0110.7-1.9A4.5 4.5 0 0117 18H7z"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path d="M12 12v6m-2.5-3.5L12 18l2.5-2.5" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </span>
+            <span className="upload-dropzone__title">Drag photos and videos here, or click to browse</span>
+            <span className="upload-dropzone__hint">JPG, PNG, WEBP, GIF, MP4, MOV, WEBM</span>
+            <input
+              type="file"
+              multiple
+              accept=".jpg,.jpeg,.png,.webp,.gif,.mp4,.mov,.webm"
+              onChange={handleFilesSelected}
+              disabled={!albumId}
+              style={{ display: "none" }}
+            />
+          </label>
+        </div>
+      )}
 
           {summary.total > 0 && (
             <div className="admin-panel-card upload-panel-card" style={{ marginTop: "1.5rem" }}>
@@ -270,8 +283,6 @@ export default function Uploads() {
               </div>
             </div>
           )}
-        </>
-      )}
 
       {toast && (
         <div className={"upload-toast" + (toast.kind === "success" ? " upload-toast--success" : " upload-toast--warn")}>

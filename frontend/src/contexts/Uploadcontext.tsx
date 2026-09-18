@@ -1,4 +1,4 @@
-import { ReactNode, createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode, createContext, startTransition, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { adminService, UploadSessionListItem } from "../services/admin";
 
 // Generates a short, DB-safe unique id for an upload attempt. Deliberately
@@ -14,6 +14,18 @@ function generateUploadId(): string {
     return crypto.randomUUID();
   }
   return `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+// Browser-memory management: once an upload reaches a terminal state that
+// no longer needs the File's bytes (done / cancelled), drop the File
+// reference from the item. Keeping it around until the list auto-clears
+// would pin potentially hundreds of File handles (each a reference to a
+// real file on disk) in React state for no benefit. Files whose OTHER
+// reference state is fatal (error - may be retried; or errored while
+// finalizing with a driveFileId - retried via the backend confirm only)
+// deliberately keep their File/fields so a retry still works.
+function withReleasedFile<T extends UploadItem>(item: T): T {
+  return { ...item, file: null };
 }
 
 export interface UploadItem {
@@ -70,6 +82,15 @@ export function formatBytes(bytes: number): string {
 // but a large burst is still harder to reason about and retry than a
 // batch that quietly works its way through a small number of slots.
 const MAX_CONCURRENT_UPLOADS = 4;
+
+// Caps how many File objects can enter the queue in a SINGLE selection.
+// This is a browser-memory guard, not a download policy: every picked file
+// is kept as a File reference inside UploadItem (so it can be PUT to Drive
+// and retried), and thousands of them held in React state (past thumbnail
+// previews, revoke-on-close of blob URLs, etc.) is real pressure. Retry/
+// add-files still lets a huge shoot through in chunks - a single mount of
+// more than this is almost always an accidental select-all.
+const MAX_FILES_PER_SELECTION = 200;
 
 export interface UploadSummary {
   total: number;
@@ -209,8 +230,25 @@ export function UploadProvider({ children }: { children: ReactNode }) {
 
     const reportProgress = makeThrottledProgressReporter(uploadId);
 
+    let lastReportedPercent = -1;
     const { promise, cancel } = adminService.uploadToDrive(uploadUrl, item.file, (percent) => {
-      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, progress: percent } : i)));
+      if (percent !== lastReportedPercent) {
+        lastReportedPercent = percent;
+        // startTransition: the XHR progress event can fire dozens of times
+        // per second, and each setItems() here is an URGENT (non-transition)
+        // update by default. App.tsx uses BrowserRouter with
+        // v7_startTransition, so navigating to Clients/Dashboard/back to
+        // Uploads is a LOW-priority render that these rapid progress updates
+        // would otherwise keep starving - React keeps re-rendering upload
+        // progress and never gets around to mounting the newly-navigated
+        // page, which is why its useEffect data fetches never ran (and the
+        // Uploads page looked empty on the way back). Marking the progress
+        // update as a transition lets React drop/interrupt it in favour of
+        // completing the route change.
+        startTransition(() => {
+          setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, progress: percent } : i)));
+        });
+      }
       if (item.file) reportProgress(Math.round((percent / 100) * item.file.size));
     });
     setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, cancel } : i)));
@@ -233,7 +271,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         prev.map((i) =>
           i.id === item.id
             ? wasCancelled
-              ? { ...i, status: "cancelled" }
+              ? withReleasedFile({ ...i, status: "cancelled" })
               : { ...i, status: "error", error: message }
             : i
         )
@@ -261,7 +299,9 @@ export function UploadProvider({ children }: { children: ReactNode }) {
 
     try {
       await adminService.completeUpload(uploadId, driveResult.driveFileId, driveResult.size, driveResult.mimeType);
-      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "done", progress: 100 } : i)));
+      setItems((prev) =>
+        prev.map((i) => (i.id === item.id ? withReleasedFile({ ...i, status: "done", progress: 100 }) : i))
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not confirm the upload.";
       // driveFileId (set above) stays on the item - the file is already
@@ -288,7 +328,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     const preflightCancel = () => {
       cancelledEarly = true;
       setItems((prev) =>
-        prev.map((i) => (i.id === item.id ? { ...i, status: "cancelled", cancel: undefined } : i))
+        prev.map((i) => (i.id === item.id ? withReleasedFile({ ...i, status: "cancelled", cancel: undefined }) : i))
       );
     };
     setItems((prev) =>
@@ -306,7 +346,9 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       if (!session.upload_url) {
         // Idempotent replay: this upload_id already finished earlier -
         // nothing to send.
-        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "done", progress: 100 } : i)));
+        setItems((prev) =>
+          prev.map((i) => (i.id === item.id ? withReleasedFile({ ...i, status: "done", progress: 100 }) : i))
+        );
         return;
       }
 
@@ -320,7 +362,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         prev.map((i) =>
           i.id === item.id
             ? wasCancelled
-              ? { ...i, status: "cancelled" }
+              ? withReleasedFile({ ...i, status: "cancelled" })
               : { ...i, status: "error", error: message }
             : i
         )
@@ -394,7 +436,19 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   function addFiles(files: File[], albumId: number) {
     if (files.length === 0 || !albumId) return;
     toastShownRef.current = false; // a fresh batch gets its own completion toast
-    const newItems: UploadItem[] = files.map((file) => ({
+
+    // Browser-memory guard: cap a single selection. A huge accidental
+    // select-all shouldn't pin thousands of File handles in React state.
+    let picked = files;
+    if (picked.length > MAX_FILES_PER_SELECTION) {
+      picked = picked.slice(0, MAX_FILES_PER_SELECTION);
+      setToast({
+        text: `Batch capped at ${MAX_FILES_PER_SELECTION} files - add the rest in another batch.`,
+        kind: "warn",
+      });
+    }
+
+    const newItems: UploadItem[] = picked.map((file) => ({
       id: generateUploadId(),
       file,
       filename: file.name,
@@ -416,7 +470,9 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     if (item.cancel) {
       item.cancel();
     } else {
-      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "cancelled" } : i)));
+      setItems((prev) =>
+        prev.map((i) => (i.id === item.id ? withReleasedFile({ ...i, status: "cancelled" }) : i))
+      );
     }
     if (item.status === "uploading" || item.status === "finalizing") {
       // Tell the backend too (best-effort): without this the session
@@ -443,7 +499,9 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         item.reportedMimeType ?? item.file?.type ?? "application/octet-stream"
       )
       .then(() => {
-        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "done", progress: 100 } : i)));
+        setItems((prev) =>
+          prev.map((i) => (i.id === item.id ? withReleasedFile({ ...i, status: "done", progress: 100 }) : i))
+        );
       })
       .catch((err) => {
         const message = err instanceof Error ? err.message : "Could not confirm the upload.";

@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     cross_site_frontend: bool = False
 
     # CORS
-    cors_origins: str = ""
-
+    cors_origins: str
+    dev_frontend_origin: str
     # Uploads
     max_upload_size_bytes: int = 10 * 1024 * 1024 * 1024
     allowed_image_types: str = "jpg,jpeg,png,webp,gif"
@@ -121,7 +121,7 @@ class Settings(BaseSettings):
         # admin_media.py) must use THIS, not cors_origin_list directly, or
         # it silently disagrees with what the CORS middleware itself
         # allows in local dev.
-        return self.cors_origin_list or ["http://localhost:5173"]
+        return self.cors_origin_list or [self.dev_frontend_origin]
 
     @property
     def allowed_image_extensions(self) -> set[str]:
