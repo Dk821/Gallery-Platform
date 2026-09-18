@@ -6,7 +6,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-    target: "https://lovestory.madgen.space",
+    target: "https://api.madgen.space",
         changeOrigin: true,
       },
     },
