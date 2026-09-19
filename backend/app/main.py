@@ -69,19 +69,20 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # System-dependency check (see SYSTEM_REQUIREMENTS.md): ffmpeg can't be
-    # pinned in requirements.txt since it's a system binary, not a pip
-    # package - so we verify it's actually present right at boot, once,
-    # where it'll be seen in startup logs/monitoring rather than only
-    # discovered later as scattered per-upload warnings or a confused
-    # "why don't my videos have thumbnails?" support ticket.
+    # System-dependency check (see SYSTEM_REQUIREMENTS.md). ffmpeg is NO
+    # LONGER needed for video thumbnails: the browser extracts each video's
+    # poster frame itself and uploads it (POST /upload-session/{id}/thumbnail),
+    # so the upload path never invokes ffmpeg. The check is kept - and still
+    # reported on /api/health and the admin dashboard - because the helper
+    # in thumbnail_worker.py remains available (e.g. for backfilling videos
+    # uploaded without a poster), but a missing ffmpeg is informational now,
+    # not a warning about broken thumbnails.
     if is_ffmpeg_available():
-        logger.info("ffmpeg found on PATH - video poster/thumbnail generation is enabled.")
+        logger.info("ffmpeg found on PATH (optional - video posters are generated in the browser).")
     else:
-        logger.warning(
-            "STARTUP WARNING: ffmpeg was not found on PATH. Video uploads will still work, "
-            "but NO poster/thumbnail images will be generated for any video until ffmpeg is "
-            "installed on this server. See SYSTEM_REQUIREMENTS.md for install instructions."
+        logger.info(
+            "ffmpeg not found on PATH. This is fine: video poster frames are generated in the "
+            "browser during upload, not on this server. See SYSTEM_REQUIREMENTS.md."
         )
 
     # Cookie config sanity check: cross_site_frontend=True forces

@@ -123,11 +123,16 @@ function redirectToLogin() {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  // A FormData body must NOT be sent with a JSON Content-Type: the browser
+  // has to set multipart/form-data itself, because the header carries the
+  // boundary string the server needs to parse the body. Everything else in
+  // this app is JSON, so that stays the default.
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   const res = await fetch(`${API_BASE_URL}/api${path}`, {
     ...options,
     credentials: "include", // send/receive the HttpOnly session cookie
     headers: {
-      "Content-Type": "application/json",
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       ...(options.headers || {}),
     },
   });
@@ -136,7 +141,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   // and dropped in-memory state, etc.) means every subsequent render is
   // working with stale/undefined data anyway - redirecting immediately is
   // safer than letting the calling component try to handle it locally.
-  if (res.status === 401 && isAdminContext()) {
+  // The admin LOGIN request itself is exempt: its own 401 means "wrong
+  // email/password", which must surface as a normal ApiRequestError so the
+  // login page can render "Invalid email or password." instead of bouncing
+  // through the session-expired path.
+  if (res.status === 401 && isAdminContext() && path !== "/auth/admin/login") {
     redirectToLogin();
     throw new SessionExpiredError();
   }
@@ -181,6 +190,10 @@ export const api = {
   get: <T>(path: string) => request<T>(path, { method: "GET" }),
   post: <T>(path: string, payload?: unknown) =>
     request<T>(path, { method: "POST", body: payload ? JSON.stringify(payload) : undefined }),
+  // multipart/form-data upload (currently: the browser-generated video
+  // poster). Goes through the same request() as everything else, so it gets
+  // the same credentials, 401 handling and error shape.
+  postForm: <T>(path: string, form: FormData) => request<T>(path, { method: "POST", body: form }),
   put: <T>(path: string, payload?: unknown) =>
     request<T>(path, { method: "PUT", body: payload ? JSON.stringify(payload) : undefined }),
   patch: <T>(path: string, payload?: unknown) =>

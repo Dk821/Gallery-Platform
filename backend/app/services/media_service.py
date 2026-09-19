@@ -1,8 +1,6 @@
 import datetime
 import io
 import logging
-import os
-import tempfile
 import uuid
 
 from sqlalchemy import func, or_, select
@@ -18,11 +16,14 @@ from app.schemas.errors import ApiError, bad_request, forbidden, not_found
 from app.schemas.media import MediaUpdateRequest
 from app.schemas.pagination import paginate_params
 from app.services.album_service import check_album_not_expired
-from app.services.disk_service import InsufficientDiskSpaceError, get_disk_tracker
-from app.services.media_validation import guess_mime_type, validate_upload, validate_upload_intent
+from app.services.media_validation import (
+    guess_mime_type,
+    validate_upload,
+    validate_upload_intent,
+)
 from app.services.storage_service import StorageError, StorageNotFoundError, StorageService
 from app.services.upload_logging import log_event
-from app.workers.thumbnail_worker import generate_image_thumbnail, generate_video_poster
+from app.workers.thumbnail_worker import generate_image_thumbnail, normalize_browser_thumbnail
 
 logger = logging.getLogger("gallery.media")
 
@@ -368,6 +369,12 @@ def start_direct_upload(
         session.error_code = None
         session.error_message = None
         session.drive_file_id = None
+        if session.thumbnail_drive_file_id:
+            # A browser-generated poster the PREVIOUS (failed/abandoned)
+            # attempt already uploaded. This attempt regenerates its own, so
+            # forgetting the id here without deleting the file would strand
+            # it in Drive with nothing left pointing at it.
+            _delete_from_storage_best_effort(storage, session.thumbnail_drive_file_id)
         session.thumbnail_drive_file_id = None
         session.drive_resumable_upload_url = upload_url
         db.commit()
@@ -605,62 +612,142 @@ def _generate_thumbnail_from_storage(
     filename: str,
 ) -> bytes | None:
     """
-    Reads back a bounded copy of the just-uploaded file from Drive purely
-    to generate a thumbnail/poster (Section 15/22). This is now the ONLY
-    place (besides the small header check in complete_direct_upload) this
-    server touches the uploaded file's actual content - it's a deliberate,
-    separate, capped read-back AFTER the original already landed safely
-    in Drive, not a re-transfer of the upload path itself. Returns None
-    (no thumbnail - already a non-fatal, best-effort feature) for
-    anything over the configured caps, exactly like a generation failure
-    would.
+    PHOTOS ONLY. FALLBACK path: reads back a bounded copy of the
+    just-uploaded image from Drive to generate its grid thumbnail
+    (Section 15/22), used only when the browser produced no thumbnail
+    itself during the upload. Photos are small (capped by
+    thumbnail_image_source_max_mb), so the read-back is cheap.
+
+    Videos deliberately never come through here: reading a multi-GB video
+    back from Drive to grab one frame is exactly the slow "finalizing" step
+    this replaced. A video's poster is extracted by the BROWSER and uploaded
+    separately (see attach_direct_upload_thumbnail); complete_direct_upload
+    just picks it up from the session. Returns None (no thumbnail - already
+    a non-fatal, best-effort feature) for anything that isn't an in-cap
+    photo.
     """
-    if file_type == "photo":
-        if file_size > settings.thumbnail_image_source_max_bytes:
-            logger.info("Skipping thumbnail for %s - image exceeds thumbnail_image_source_max_mb.", filename)
-            return None
-        # Images are small enough (Section 16's allowed types) to hold
-        # entirely in memory - no VPS disk touched for this path at all.
-        buffer = io.BytesIO()
-        for chunk in storage.download(drive_file_id):
-            buffer.write(chunk)
-        buffer.seek(0)
-        return generate_image_thumbnail(buffer)
+    if file_type != "photo":
+        return None
+    if file_size > settings.thumbnail_image_source_max_bytes:
+        logger.info("Skipping thumbnail for %s - image exceeds thumbnail_image_source_max_mb.", filename)
+        return None
+    # Images are small enough (Section 16's allowed types) to hold entirely
+    # in memory - no VPS disk touched for this path at all.
+    buffer = io.BytesIO()
+    for chunk in storage.download(drive_file_id):
+        buffer.write(chunk)
+    buffer.seek(0)
+    return generate_image_thumbnail(buffer)
 
-    if file_type == "video":
-        if file_size > settings.thumbnail_video_source_max_bytes:
-            logger.info("Skipping poster for %s - video exceeds thumbnail_video_source_max_mb.", filename)
-            return None
-        # ffmpeg needs a real, seekable file on disk - reuse the same disk
-        # reservation tracker the old upload-spooling path used, so this
-        # optional, post-upload read-back still can't run the VPS out of
-        # disk even for a large video.
-        tracker = get_disk_tracker()
-        reservation_key = f"thumbnail:{uuid.uuid4()}"
-        try:
-            tracker.try_reserve(reservation_key, file_size, min_free_bytes=settings.upload_min_free_disk_bytes)
-        except InsufficientDiskSpaceError:
-            logger.info("Skipping poster for %s - insufficient disk headroom for the read-back.", filename)
-            return None
 
-        suffix = os.path.splitext(filename)[1] or ".mp4"
-        tmp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                for chunk in storage.download(drive_file_id):
-                    tmp.write(chunk)
-                tmp_path = tmp.name
-            with open(tmp_path, "rb") as f:
-                return generate_video_poster(f, filename)
-        finally:
-            tracker.release(reservation_key)
-            if tmp_path:
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
+def attach_direct_upload_thumbnail(
+    db: DbSession,
+    storage: StorageService,
+    settings: Settings,
+    admin_id: int | None,
+    upload_id: str,
+    image_bytes: bytes,
+) -> UploadSession:
+    """
+    Browser-generated thumbnail (VIDEO poster or PHOTO thumb), called by POST
+    /upload-session/{upload_id}/thumbnail after the browser's direct PUT of
+    the file to Drive has finished and BEFORE POST /upload-complete.
 
-    return None
+    The thumbnail is a small image the browser produced locally from the
+    file (a <video>+<canvas> poster frame, or a <img>+<canvas> downscale) -
+    this server never sees, and never needs to download from Drive, the
+    original file to make it. It is validated, normalized to WebP, stored
+    through the same StorageService.upload() the server-side thumbnails
+    use, and its Drive id is recorded on UploadSession.thumbnail_drive_file_id
+    - a server-side ledger, so the id is never taken from the browser and
+    complete_direct_upload needs no new request fields to find it.
+
+    Deliberately idempotent and non-fatal in spirit: a repeated call for a
+    session that already has a thumbnail is a no-op (a client retrying after
+    a lost response never creates a second Drive file), and if the session
+    reaches a terminal state while the Drive upload is in flight the newly
+    stored file is deleted again rather than orphaned.
+    """
+    session = (
+        db.query(UploadSession)
+        .filter(UploadSession.admin_id == admin_id, UploadSession.upload_id == upload_id)
+        .first()
+    )
+    if session is None:
+        raise not_found("Upload not found.", code="UPLOAD_NOT_FOUND")
+    if session.status != "uploading":
+        raise ApiError(
+            409,
+            "UPLOAD_NOT_IN_PROGRESS",
+            f"This upload session is '{session.status}', not accepting a thumbnail.",
+        )
+    if session.thumbnail_drive_file_id:
+        return session  # idempotent: already has one
+
+    if not image_bytes or len(image_bytes) > settings.video_thumbnail_upload_max_bytes:
+        raise bad_request("Thumbnail is empty or too large.", code="THUMBNAIL_INVALID")
+    thumb_bytes = normalize_browser_thumbnail(image_bytes)
+    if thumb_bytes is None:
+        raise bad_request("Thumbnail is not a valid image.", code="THUMBNAIL_INVALID")
+
+    album = db.query(Album).filter(Album.id == session.album_id).first()
+    if album is None or not album.drive_folder_id:
+        raise not_found("Album not found.", code="ALBUM_NOT_FOUND")
+
+    try:
+        stored = storage.upload(
+            io.BytesIO(thumb_bytes),
+            f"thumb_{uuid.uuid4()}.webp",
+            "image/webp",
+            album.drive_folder_id,
+            upload_id=upload_id,
+        )
+    except StorageError as exc:
+        logger.warning("Browser thumbnail upload to storage failed for upload_id=%s: %s", upload_id, exc)
+        raise ApiError(502, "THUMBNAIL_STORAGE_FAILED", "Could not store the thumbnail.")
+
+    # Re-read UNDER A ROW LOCK before recording it. The Drive upload above
+    # took a moment, during which /upload-complete may have started or
+    # finished, or a duplicate request may have won. FOR UPDATE makes
+    # complete_direct_upload's own status write wait for this short
+    # transaction (see the matching re-check at the end of that function),
+    # so the thumbnail is either recorded before completion reads it or
+    # rejected here - never silently lost in between.
+    locked = (
+        db.query(UploadSession)
+        .filter(UploadSession.id == session.id)
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    if locked is None or locked.status != "uploading" or locked.thumbnail_drive_file_id:
+        db.rollback()  # release the row lock before the (slow) cleanup call
+        _delete_from_storage_best_effort(storage, stored.provider_file_id)
+        return locked if locked is not None else session
+
+    locked.thumbnail_drive_file_id = stored.provider_file_id
+    db.commit()
+    log_event(logger, "thumbnail_attached", upload_id=upload_id, thumbnail_bytes=len(thumb_bytes))
+    return locked
+
+
+def _adopt_late_thumbnail(db: DbSession, session: UploadSession, media: Media) -> None:
+    """
+    Attaches a thumbnail that raced /upload-complete: the browser gave up
+    waiting for the browser-generated thumb to be stored and completed the
+    upload while its request was still in flight. attach_direct_upload_thumbnail
+    records the id under a row lock on the session, so complete_direct_upload's
+    status write waits for it - meaning that if a thumbnail landed, it is
+    visible on a fresh read of the session here. Adopt it rather than leaving
+    a stored thumbnail that nothing points at (a completed session is never
+    picked up by orphan reconciliation).
+    """
+    db.refresh(session)
+    if session.thumbnail_drive_file_id:
+        media.thumbnail_reference = session.thumbnail_drive_file_id
+        media.thumbnail_mime_type = "image/webp"  # browser thumbnails are always normalized to WebP
+        db.commit()
+        db.refresh(media)
 
 
 def complete_direct_upload(
@@ -684,9 +771,16 @@ def complete_direct_upload(
       2. reads back a small header slice (a ranged download, never the
          whole file) to run the same magic-byte signature check the old
          byte-relaying flow ran against locally-spooled bytes (Section 16),
-      3. generates a thumbnail/poster the same best-effort, non-fatal way
-         as before (Section 15/22), sourced from a bounded read-back
-         rather than local upload bytes this server no longer has,
+      3. picks the thumbnail:
+           - VIDEO: the poster the browser already extracted and uploaded
+             (attach_direct_upload_thumbnail) - NOTHING is downloaded from
+             Drive for it, however large the video is.
+           - PHOTO: the downscaled thumb the BROWSER uploaded the same way,
+             so the bounded read-back (Section 15/22) only runs as a
+             fallback when the browser produced none (undecodable file,
+             million-pixel image, or its upload failed).
+           Either way a missing thumbnail means no thumbnail: the gallery
+           shows its placeholder tile and the upload still succeeds.
       4. creates the Media row, with the same orphan-safe durable
          checkpoint and cleanup-on-DB-failure behavior as before
          (Section 7/9).
@@ -788,27 +882,37 @@ def complete_direct_upload(
     session.total_bytes = file_size
     db.commit()
 
-    # Thumbnail/poster generation is best-effort and non-fatal: a failure
-    # here means the gallery grid falls back to a placeholder icon for this
-    # item, not a failed upload (Section 15 wants thumbnails, but the
-    # original file existing safely in storage matters more).
+    # Thumbnail selection is best-effort and non-fatal: a missing thumbnail
+    # means the gallery grid falls back to a placeholder tile for this item,
+    # not a failed upload (Section 15 wants thumbnails, but the original
+    # file existing safely in storage matters more).
     thumbnail_file_id = None
     file_uuid = str(uuid.uuid4())
-    try:
-        thumb_bytes = _generate_thumbnail_from_storage(
-            storage, settings, drive_file_id, file_type, file_size, session.filename
-        )
-        if thumb_bytes:
-            thumb_stream = io.BytesIO(thumb_bytes)
-            thumb_stored = storage.upload(
-                thumb_stream, f"thumb_{file_uuid}.jpg", "image/jpeg", album.drive_folder_id, upload_id=upload_id
+    if file_type in ("video", "photo"):
+        # Already stored by attach_direct_upload_thumbnail (server-side
+        # ledger, not a browser-supplied id). For a photo the browser sent
+        # its downscaled thumb during upload, so the whole read-back serves
+        # nothing; without one we fall back to generating it server-side.
+        session_thumbnail = session.thumbnail_drive_file_id
+        thumbnail_file_id = session_thumbnail or None
+        if not thumbnail_file_id:
+            log_event(logger, "thumbnail_missing", upload_id=upload_id, note="placeholder_will_be_used")
+    else:
+        try:
+            thumb_bytes = _generate_thumbnail_from_storage(
+                storage, settings, drive_file_id, file_type, file_size, session.filename
             )
-            thumbnail_file_id = thumb_stored.provider_file_id
-            session.thumbnail_drive_file_id = thumbnail_file_id
-            db.commit()
-    except Exception as exc:  # noqa: BLE001 - thumbnail failures must never fail the upload
-        logger.warning("Thumbnail generation/upload failed for album %s: %s", album.id, exc)
-        thumbnail_file_id = None
+            if thumb_bytes:
+                thumb_stream = io.BytesIO(thumb_bytes)
+                thumb_stored = storage.upload(
+                    thumb_stream, f"thumb_{file_uuid}.webp", "image/webp", album.drive_folder_id, upload_id=upload_id
+                )
+                thumbnail_file_id = thumb_stored.provider_file_id
+                session.thumbnail_drive_file_id = thumbnail_file_id
+                db.commit()
+        except Exception as exc:  # noqa: BLE001 - thumbnail failures must never fail the upload
+            logger.warning("Thumbnail generation/upload failed for album %s: %s", album.id, exc)
+            thumbnail_file_id = None
 
     try:
         media = Media(
@@ -821,6 +925,7 @@ def complete_direct_upload(
             file_size=file_size,
             google_drive_file_id=drive_file_id,
             thumbnail_reference=thumbnail_file_id,
+            thumbnail_mime_type="image/webp" if thumbnail_file_id else None,
             status="ready",
         )
         db.add(media)
@@ -843,6 +948,10 @@ def complete_direct_upload(
     session.media_id = media.id
     session.drive_resumable_upload_url = None
     db.commit()
+
+    if not media.thumbnail_reference:
+        _adopt_late_thumbnail(db, session, media)
+
     log_event(logger, "upload_completed", upload_id=upload_id, media_id=media.id, file_size=file_size)
 
     return media

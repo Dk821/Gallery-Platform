@@ -36,6 +36,12 @@ class Media(Base, IdMixin, TimestampMixin):
     # id field, not touching the rest of the schema.
     google_drive_file_id: Mapped[str] = mapped_column(String(255), nullable=False)
     thumbnail_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Content-Type of the stored thumbnail (thumbnail_reference). Existing
+    # rows predating this column are JPEG; everything stored going forward is
+    # WebP. The media model remembers this because the thumbnail streaming
+    # route must label the bytes it serves correctly (it always did before,
+    # hard-coded as image/jpeg).
+    thumbnail_mime_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     status: Mapped[str] = mapped_column(
         Enum("processing", "ready", "failed", name="media_status"),

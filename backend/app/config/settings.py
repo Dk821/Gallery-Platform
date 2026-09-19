@@ -89,20 +89,20 @@ class Settings(BaseSettings):
 
     # --- Post-direct-upload thumbnail generation ----------------------------
     # Now that the original file goes Browser -> Drive directly, this
-    # server never holds its bytes during upload. Thumbnail/poster
-    # generation still needs actual pixel data, so it's done as a
-    # deliberate, separate, best-effort step AFTER the file is already
-    # safely in Drive: a small/bounded read-back of the just-uploaded
-    # file, not a re-transfer of the original upload path. These caps keep
-    # that read-back small and bound its impact on VPS bandwidth/disk.
-    # A file over the relevant cap simply gets no thumbnail (Section 15/22:
-    # already a non-fatal, best-effort feature).
+    # server never holds its bytes during upload.
+    #
+    # PHOTOS: thumbnails are still generated server-side, from a bounded
+    # read-back of the just-uploaded image (photos are small). A photo over
+    # the cap simply gets no thumbnail (Section 15/22: already a non-fatal,
+    # best-effort feature).
     thumbnail_image_source_max_mb: float = 25
-    # Videos are read back to a temp file (ffmpeg needs to seek a real
-    # file) reusing disk_service's same reservation tracker used for the
-    # old upload-spooling path, so this still can't run the VPS out of
-    # disk even for a large video.
-    thumbnail_video_source_max_mb: float = 1024
+    # VIDEOS: the server NEVER reads a video back from Drive for a
+    # thumbnail. The browser extracts one poster frame locally and uploads
+    # that small image (POST /upload-session/{id}/thumbnail). This is the
+    # cap on that poster upload - a 720px JPEG is ~50-150 KB, so 2 MB is
+    # generous while still bounding what a single request can make this
+    # server buffer and forward to Drive.
+    video_thumbnail_upload_max_kb: int = 2048
 
     environment: str = "development"
 
@@ -147,8 +147,8 @@ class Settings(BaseSettings):
         return int(self.thumbnail_image_source_max_mb * 1024 * 1024)
 
     @property
-    def thumbnail_video_source_max_bytes(self) -> int:
-        return int(self.thumbnail_video_source_max_mb * 1024 * 1024)
+    def video_thumbnail_upload_max_bytes(self) -> int:
+        return self.video_thumbnail_upload_max_kb * 1024
 
     @property
     def effective_max_upload_bytes(self) -> int:

@@ -158,3 +158,19 @@ class FakeStorageService(StorageService):
     def get_metadata(self) -> dict:
         total = sum(len(f["content"]) for f in self.files.values())
         return {"available": True, "usage_bytes": total, "limit_bytes": None}
+
+    def create_resumable_session(
+        self,
+        filename: str,
+        mime_type: str,
+        file_size: int,
+        parent_folder_id: str,
+        *,
+        upload_id: str | None = None,
+        origin: str | None = None,
+    ) -> str:
+        # The bytes never pass through this server in the direct-upload
+        # architecture - the fake only has to mint a session URL, mirroring
+        # what real Drive returns. start_direct_upload stores it on the
+        # UploadSession row, so tests can assert it flowed through.
+        return f"https://fake.drive/resumable/{uuid.uuid4().hex}"

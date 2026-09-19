@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from sqlalchemy.orm import Session as DbSession
 
 from app.api.deps import get_current_admin
@@ -13,6 +13,7 @@ from app.config.settings import Settings, get_settings
 from app.database.connection import get_db
 from app.models.admin import Admin
 from app.models.audit_log import AuditLog
+from app.schemas.errors import bad_request
 from app.schemas.media import (
     BulkDeleteRequest,
     BulkMoveRequest,
@@ -25,6 +26,7 @@ from app.schemas.media import (
 from app.services.album_service import get_album_or_404
 from app.services.media_service import (
     abandon_direct_upload,
+    attach_direct_upload_thumbnail,
     bulk_delete_media,
     bulk_move_media,
     complete_direct_upload,
@@ -145,6 +147,43 @@ def complete_direct_upload_route(
     )
     _log(db, admin.id, "media_uploaded", media.id, request)
     return {"success": True, "data": media_to_response(media)}
+
+
+@router.post("/upload-session/{upload_id}/thumbnail")
+def attach_direct_upload_thumbnail_route(
+    upload_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    db: DbSession = Depends(get_db),
+    admin: Admin = Depends(get_current_admin),
+    storage: StorageService = Depends(get_storage_service),
+    settings: Settings = Depends(get_settings),
+):
+    # Browser-generated thumbnail (between step 1 and step 2 of the direct
+    # upload): the browser makes a small image locally from the file - a
+    # poster frame from a video (<video> + <canvas>), or a downscaled photo
+    # thumb (<img> + <canvas>) - and sends that ~100 KB image here after its
+    # direct PUT to Drive has finished and before POST /upload-complete. The
+    # original file never touches this server, and /upload-complete never
+    # has to download it back from Drive to make a thumbnail. Scoped to the
+    # calling admin's own upload session (same admin_id + upload_id lookup
+    # as every other upload-session route), so the thumbnail can only land
+    # in the album that session was opened for.
+    #
+    # The size cap is enforced twice: cheaply up front from Content-Length
+    # (the multipart body is already spooled by the time this handler runs,
+    # so this stops an honest-but-wrong oversized request early), then
+    # authoritatively on the bytes actually read.
+    max_bytes = settings.video_thumbnail_upload_max_bytes
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > max_bytes + 64 * 1024:  # + multipart framing
+        raise bad_request("Thumbnail is too large.", code="THUMBNAIL_INVALID")
+    image_bytes = file.file.read(max_bytes + 1)
+    session = attach_direct_upload_thumbnail(db, storage, settings, admin.id, upload_id, image_bytes)
+    return {
+        "success": True,
+        "data": {"upload_id": session.upload_id, "has_thumbnail": bool(session.thumbnail_drive_file_id)},
+    }
 
 
 @router.post("/upload-session/{upload_id}/abandon")

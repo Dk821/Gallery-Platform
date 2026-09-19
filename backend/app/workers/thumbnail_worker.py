@@ -7,6 +7,22 @@ takes well under a second.
 
 Failures here are non-fatal to the upload: a missing thumbnail means the
 gallery grid falls back to a placeholder icon, not a failed upload.
+
+VIDEO posters (and now PHOTO thumbs) are no longer generated on the server
+during upload: the browser extracts the frame locally (frontend/src/utils/
+videoPoster.ts and photoThumbnail.ts) and uploads that small image to
+POST /upload-session/{id}/thumbnail instead, so this server never has to
+read a multi-GB video (or a whole photo) back from Drive to make a
+thumbnail. generate_video_poster() / the ffmpeg check below are
+intentionally left in place (they're still covered by
+tests/test_ffmpeg_availability.py and are the natural tool for a future
+backfill of videos uploaded without a poster), but nothing in the upload
+path calls them anymore.
+
+Every thumbnail the upload path stores is WEBP (image/webp) - photo
+thumbnails and video posters both. Media.thumbnail_mime_type records what
+each row's thumbnail actually is, and the streaming route serves it under
+that content type, so older JPEG thumbnails keep working.
 """
 
 import functools
@@ -23,7 +39,20 @@ from PIL import Image, ImageOps
 logger = logging.getLogger("gallery.thumbnails")
 
 THUMBNAIL_MAX_DIMENSION = 400
-THUMBNAIL_JPEG_QUALITY = 82
+# WebP everywhere going forward: photo thumbnails and video posters alike.
+# smaller than the JPEG it replaces at the same quality, and the browser
+# already produces it natively for uploads (see photoThumbnail.ts).
+THUMBNAIL_WEBP_QUALITY = 82
+# Browser-generated thumbnails (photo thumbs + video posters) are kept a
+# little larger than server-side photo thumbnails for video posters: a
+# single poster frame per video, not a grid of hundreds of tiles.
+VIDEO_POSTER_MAX_DIMENSION = 720
+# Decode guard for browser-supplied thumbnails: a legitimate photo thumb is
+# <= 400px and a poster <= ~720px on its long side, so anything decoding to
+# more than this many pixels is not a thumbnail (and would cost real memory
+# to decode just to be shrunk).
+BROWSER_THUMBNAIL_MAX_SOURCE_PIXELS = 16_000_000
+BROWSER_THUMBNAIL_ALLOWED_FORMATS = {"JPEG", "WEBP", "PNG"}
 FFMPEG_TIMEOUT_SECONDS = 30
 FFMPEG_POSTER_TIMESTAMP_SECONDS = 1.0
 
@@ -34,22 +63,19 @@ def is_ffmpeg_available() -> bool:
     Checks once per process whether the `ffmpeg` binary is on PATH.
 
     ffmpeg is a SYSTEM package, not something requirements.txt can pin or
-    install - see SYSTEM_REQUIREMENTS.md. Without it, video uploads still
-    succeed (Section 15/22: thumbnail failures are non-fatal), but every
-    video in the gallery silently falls back to a placeholder icon with
-    no poster frame, which is easy to miss until a client notices.
+    install - see SYSTEM_REQUIREMENTS.md. It is OPTIONAL now: video poster
+    frames are extracted by the browser during upload, so nothing in the
+    upload path needs it. This check (and generate_video_poster below) is
+    kept for tooling such as backfilling a poster for a video that was
+    uploaded without one.
 
-    Cached so this only actually shells out once; app startup (see
-    app/main.py's lifespan) calls this eagerly and logs loudly if it's
-    False, so the gap shows up in server logs/monitoring immediately
-    instead of only as scattered per-upload warnings.
+    Cached so this only actually shells out once.
     """
     available = shutil.which("ffmpeg") is not None
     if not available:
-        logger.warning(
-            "ffmpeg was not found on PATH. Video uploads will still succeed, but NO video "
-            "poster/thumbnail images will be generated until ffmpeg is installed on this "
-            "server. See SYSTEM_REQUIREMENTS.md for install instructions."
+        logger.info(
+            "ffmpeg was not found on PATH. This does not affect uploads: video poster frames are "
+            "generated in the browser. Only server-side poster backfill tooling needs ffmpeg."
         )
     return available
 
@@ -71,7 +97,7 @@ def generate_image_thumbnail(file_obj: BinaryIO, max_dimension: int = THUMBNAIL_
         image.thumbnail((max_dimension, max_dimension))
 
         buffer = BytesIO()
-        image.save(buffer, format="JPEG", quality=THUMBNAIL_JPEG_QUALITY)
+        image.save(buffer, format="WEBP", quality=THUMBNAIL_WEBP_QUALITY)
         return buffer.getvalue()
     except Exception as exc:  # noqa: BLE001 - any decode failure just means "no thumbnail"
         logger.warning("Image thumbnail generation failed: %s", exc)
@@ -81,6 +107,40 @@ def generate_image_thumbnail(file_obj: BinaryIO, max_dimension: int = THUMBNAIL_
             file_obj.seek(0)
         except Exception:
             pass
+
+
+def normalize_browser_thumbnail(data: bytes) -> bytes | None:
+    """
+    Validates and normalizes a thumbnail the BROWSER generated from a local
+    file - a video poster (<video> + <canvas>) or a downscaled photo thumb
+    (<img> + <canvas>) - before it is stored. Returns WebP bytes
+    (<= VIDEO_POSTER_MAX_DIMENSION px for posters, <= THUMBNAIL_MAX_DIMENSION
+    for photo thumbs - the browser already downscaled to the right size), or
+    None if `data` isn't a usable image.
+
+    Normalizing to WebP matters because the thumbnail streaming route
+    (media_streaming.stream_media_thumbnail) serves every thumbnail under
+    Media.thumbnail_mime_type - a browser that can't encode WebP from a
+    canvas (older Safari falls back to JPEG/PNG) must not be able to store
+    a thumbnail that is then served under the wrong content type. It also
+    strips metadata and caps dimensions regardless of what the client sent.
+
+    Reuses generate_image_thumbnail() - the same Pillow path used elsewhere -
+    so there is one image-normalization implementation, not two. The header
+    is probed BEFORE the full decode so an oversized/decompression-bomb
+    image is rejected without ever being loaded into memory.
+    """
+    try:
+        with Image.open(BytesIO(data)) as probe:
+            if probe.format not in BROWSER_THUMBNAIL_ALLOWED_FORMATS:
+                return None
+            width, height = probe.size
+        if width < 1 or height < 1 or width * height > BROWSER_THUMBNAIL_MAX_SOURCE_PIXELS:
+            return None
+    except Exception as exc:  # noqa: BLE001 - unreadable/hostile bytes just mean "no thumbnail"
+        logger.warning("Browser thumbnail rejected (unreadable image): %s", exc)
+        return None
+    return generate_image_thumbnail(BytesIO(data), max_dimension=VIDEO_POSTER_MAX_DIMENSION)
 
 
 def generate_video_poster(file_obj: BinaryIO, filename_hint: str) -> bytes | None:

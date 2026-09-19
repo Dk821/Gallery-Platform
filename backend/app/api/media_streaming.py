@@ -175,6 +175,9 @@ def stream_media_thumbnail(media: Media, storage: StorageService) -> StreamingRe
             return
 
     # Thumbnails never change once generated, so browsers/CDNs are free to
-    # cache them aggressively.
+    # cache them aggressively. Content-type comes from the Media row, not a
+    # hard-coded value: older thumbnails are image/jpeg, everything stored
+    # since the WebP switch is image/webp (see Media.thumbnail_mime_type).
+    thumbnail_mime_type = media.thumbnail_mime_type or "image/jpeg"
     headers = {"Cache-Control": "private, max-age=86400"}
-    return StreamingResponse(iter_bytes(), media_type="image/jpeg", headers=headers)
+    return StreamingResponse(iter_bytes(), media_type=thumbnail_mime_type, headers=headers)

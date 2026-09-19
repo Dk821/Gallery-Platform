@@ -325,6 +325,24 @@ export const adminService = {
     return { promise, cancel: () => xhr.abort() };
   },
 
+  // Step 2b (best-effort): send the small thumbnail the browser produced
+  // locally - a video poster frame (utils/videoPoster.ts) or a downscaled
+  // photo thumb (utils/photoThumbnail.ts) - AFTER the direct PUT to Drive
+  // has finished and BEFORE completeUpload(). The original file is never
+  // sent to our server, and completeUpload() no longer has to download it
+  // back from Drive to make a thumbnail - it just links the thumbnail
+  // recorded here (normalized to WebP server-side). Callers must treat any
+  // failure as non-fatal: without a thumbnail the item simply shows a
+  // placeholder tile in the gallery.
+  uploadThumbnail: (uploadId: string, thumbnail: Blob) => {
+    const form = new FormData();
+    form.append("file", thumbnail, "thumb.webp");
+    return api.postForm<{ upload_id: string; has_thumbnail: boolean }>(
+      `/admin/media/upload-session/${uploadId}/thumbnail`,
+      form
+    );
+  },
+
   // Step 3: tell the backend the direct-to-Drive transfer finished, so it
   // can re-confirm the file WITH DRIVE ITSELF (never trusting these
   // reported values for the actual Media record - see

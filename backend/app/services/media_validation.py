@@ -105,6 +105,11 @@ def guess_mime_type(filename: str) -> str:
     return _MIME_BY_EXTENSION.get(ext, "application/octet-stream")
 
 
+def is_video_filename(settings: Settings, filename: str) -> bool:
+    """True if the filename's extension is one of the configured video types."""
+    return _get_extension(filename) in settings.allowed_video_extensions
+
+
 def validate_upload_intent(settings: Settings, filename: str, file_size: int) -> str:
     """
     Cheap pre-flight check run BEFORE a Google Drive resumable session is

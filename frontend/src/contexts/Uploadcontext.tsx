@@ -1,5 +1,8 @@
 import { ReactNode, createContext, startTransition, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { adminService, UploadSessionListItem } from "../services/admin";
+import { ApiRequestError } from "../services/api";
+import { extractPhotoThumbnail } from "../utils/photoThumbnail";
+import { extractVideoPoster, isVideoFile } from "../utils/videoPoster";
 
 // Generates a short, DB-safe unique id for an upload attempt. Deliberately
 // does NOT embed the filename (unlike the old `${file.name}-${file.size}-...`
@@ -28,6 +31,47 @@ function withReleasedFile<T extends UploadItem>(item: T): T {
   return { ...item, file: null };
 }
 
+// How long the finalizing step will wait for a browser-generated thumbnail
+// (video poster / photo thumb) upload before completing the upload without
+// it. The thumbnail is a tiny (~10-150 KB, longest in the 20s worst case a
+// stalled connection) request, so this only ever trips on something
+// genuinely stuck - and a thumbnail must never be the reason a file that
+// already landed safely in Drive stays stuck in "finalizing".
+const THUMBNAIL_UPLOAD_TIMEOUT_MS = 20_000;
+
+// Uploads a browser-generated thumbnail blob (see utils/videoPoster.ts and
+// utils/photoThumbnail.ts) and reports whether it landed. BEST-EFFORT by
+// design: this never throws and never fails the upload - a file without a
+// thumbnail just shows a placeholder tile in the gallery. Only retried once,
+// and only for failures that could plausibly be transient (a 4xx such as an
+// invalid image or a session that is no longer accepting one won't improve
+// on a second try).
+async function uploadThumbnailBestEffort(uploadId: string, thumbnail: Promise<Blob | null>): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), THUMBNAIL_UPLOAD_TIMEOUT_MS);
+  });
+  const work = (async () => {
+    const blob = await thumbnail;
+    if (!blob) return false; // the browser couldn't produce a frame
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await adminService.uploadThumbnail(uploadId, blob);
+        return true;
+      } catch (err) {
+        const permanent = err instanceof ApiRequestError && err.status >= 400 && err.status < 500;
+        if (permanent) return false;
+      }
+    }
+    return false;
+  })().catch(() => false);
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export interface UploadItem {
   id: string;
   file: File | null;
@@ -51,6 +95,10 @@ export interface UploadItem {
   driveFileId?: string;
   reportedSize?: number;
   reportedMimeType?: string;
+  // True once a browser-generated thumbnail for this file (a video poster
+  // or a photo thumb) is stored on the backend, so a confirmation-only
+  // retry knows it doesn't need to send it again.
+  thumbnailUploaded?: boolean;
 }
 
 export const STATUS_LABEL: Record<UploadItem["status"], string> = {
@@ -230,6 +278,17 @@ export function UploadProvider({ children }: { children: ReactNode }) {
 
     const reportProgress = makeThrottledProgressReporter(uploadId);
 
+    // Grab a thumbnail locally, IN PARALLEL with the upload to Drive: a
+    // poster frame for videos (<video> + <canvas>) or a downscaled photo
+    // thumb (<img> + <canvas>). It's read from the user's own disk, so it
+    // costs the server (and the network) nothing, and it's normally long
+    // finished by the time the upload is - see uploadThumbnailBestEffort
+    // below for where it's sent. Neither extractor ever rejects; a failure
+    // just resolves to null.
+    const thumbnailPromise = isVideoFile(item.file)
+      ? extractVideoPoster(item.file)
+      : extractPhotoThumbnail(item.file);
+
     let lastReportedPercent = -1;
     const { promise, cancel } = adminService.uploadToDrive(uploadUrl, item.file, (percent) => {
       if (percent !== lastReportedPercent) {
@@ -296,6 +355,19 @@ export function UploadProvider({ children }: { children: ReactNode }) {
           : i
       )
     );
+
+    // The file is now safely in Drive. Send its browser-generated thumbnail
+    // (video poster or photo thumb, both tiny) BEFORE confirming, so
+    // /upload-complete can link it in one step and never has to download the
+    // original back from Drive to make one. Best-effort: a missing/failed
+    // thumbnail never blocks the confirmation (it just costs a server-side
+    // read-back for photos, or a placeholder tile for videos).
+    if (thumbnailPromise) {
+      const thumbnailUploaded = await uploadThumbnailBestEffort(uploadId, thumbnailPromise);
+      if (thumbnailUploaded) {
+        setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, thumbnailUploaded: true } : i)));
+      }
+    }
 
     try {
       await adminService.completeUpload(uploadId, driveResult.driveFileId, driveResult.size, driveResult.mimeType);
@@ -491,12 +563,25 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     setItems((prev) =>
       prev.map((i) => (i.id === item.id ? { ...i, status: "finalizing", cancel: undefined, error: undefined } : i))
     );
-    adminService
-      .completeUpload(
-        item.id,
-        item.driveFileId as string,
-        item.reportedSize ?? item.file?.size ?? 0,
-        item.reportedMimeType ?? item.file?.type ?? "application/octet-stream"
+    // If the thumbnail never made it last time (video poster or photo thumb),
+    // give it one more try before confirming - the session is still open
+    // server-side, since only the confirmation step failed. Never rejects,
+    // never blocks the retry.
+    const thumbnailStep: Promise<boolean> =
+      item.file && !item.thumbnailUploaded
+        ? uploadThumbnailBestEffort(
+            item.id,
+            isVideoFile(item.file) ? extractVideoPoster(item.file) : extractPhotoThumbnail(item.file)
+          )
+        : Promise.resolve(true);
+    thumbnailStep
+      .then(() =>
+        adminService.completeUpload(
+          item.id,
+          item.driveFileId as string,
+          item.reportedSize ?? item.file?.size ?? 0,
+          item.reportedMimeType ?? item.file?.type ?? "application/octet-stream"
+        )
       )
       .then(() => {
         setItems((prev) =>

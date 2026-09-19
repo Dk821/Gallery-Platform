@@ -2533,6 +2533,23 @@
   color: #5a3f2e;
 }
 
+@media (max-width: 480px) {
+  .admin-panel-card__header {
+    flex-wrap: wrap;
+    gap: 0.4rem 0.75rem;
+  }
+
+  .admin-panel-card__title {
+    font-size: 1.1rem;
+    min-width: 0;
+  }
+
+  .admin-card-link {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+}
+
 /* Modern Tables */
 .admin-table-responsive {
   width: 100%;
@@ -3461,13 +3478,18 @@
   }
 }
 
-/* Responsive adjustments for modern dashboard */
+/* ============================================================
+   Responsive adjustments for modern dashboard
+   ============================================================ */
+
+/* --- 1280px: 6-col KPI → 3-col -------------------------------- */
 @media (max-width: 1280px) {
   .admin-kpi-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
+/* --- 992px: two-col panels → single col, welcome stacks ------- */
 @media (max-width: 992px) {
   .admin-two-col-grid {
     grid-template-columns: 1fr;
@@ -3476,32 +3498,424 @@
   .admin-welcome-section {
     flex-direction: column;
     align-items: flex-start;
-  }
-}
-
-@media (max-width: 768px) {
-  .admin-header-topbar {
-    flex-direction: column;
-    align-items: stretch;
     gap: 1rem;
   }
 
-  .admin-search-box {
+  /* Date widget: full width on tablet */
+  .admin-date-widget {
     width: 100%;
+    box-sizing: border-box;
+  }
+}
+
+/* --- 860px: mobile topbar already shown (see admin-shell block) */
+/* Topbar is shown at ≤860px by the earlier @media rule.          */
+/* At this point we tighten the main content padding.             */
+@media (max-width: 860px) {
+  /* Header utility bar: keep on one row with wrapping */
+  .admin-header-topbar {
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .admin-search-box {
+    flex: 1 1 180px;
+    min-width: 0;
+    width: auto;
+  }
+
+  /* Profile chip: hide name text on small screens to save space */
+  .admin-profile-name {
+    display: none;
+  }
+
+  .admin-profile-chip {
+    padding: 0.35rem 0.5rem;
+    border-radius: 50%;
+  }
+
+  /* KPI grid → 3 cards per row */
+  .admin-kpi-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  /* Chart: reduce height and font sizes */
+  .admin-chart-plot {
+    height: 160px;
+  }
+
+  .admin-chart-summary-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  /* Section header: stack title + filter buttons */
+  .admin-section-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+
+  .admin-section-title {
+    font-size: 1.15rem;
+  }
+
+  /* Storage widget: stack donut above info */
+  .admin-storage-widget {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1.25rem;
+  }
+
+  .admin-storage-donut-wrap {
+    align-self: center;
+  }
+
+  /* Active jobs: hide progress bar on narrow cards */
+  .admin-job-progress-wrap {
+    display: none;
+  }
+
+  /* Panel cards: tighten padding */
+  .admin-panel-card {
+    padding: 1.1rem 1.1rem;
+  }
+
+  .admin-card-section {
+    padding: 1.1rem 1.1rem;
+  }
+}
+
+/* --- 768px: topbar search full-width, 2-col KPI --------------- */
+@media (max-width: 768px) {
+  /* Header: search takes full row, icons stay on same line */
+  .admin-header-topbar {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.65rem;
+  }
+
+  .admin-search-box {
+    flex: 1 1 100%;
+    width: 100%;
+    order: -1; /* search first */
+  }
+
+  .admin-header-right {
+    flex: 0 0 auto;
+    gap: 0.6rem;
+  }
+
+  /* KPI grid: 2 columns */
+  .admin-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  /* Welcome section */
+  .admin-welcome-section {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .admin-welcome-title {
+    font-size: 1.8rem;
+  }
+
+  .admin-date-widget {
+    width: 100%;
+  }
+
+  /* Chart x-labels: hide alternating to prevent overlap */
+  .admin-chart-xlabel--empty {
+    visibility: hidden;
+  }
+
+  /* Activity table: hide less critical columns */
+  .admin-modern-table th:nth-child(3),
+  .admin-modern-table td:nth-child(3) {
+    display: none; /* hide ADMIN column on mobile */
+  }
+}
+
+/* --- 580px: single-col KPI, tighter padding ------------------- */
+@media (max-width: 580px) {
+  .admin-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+  }
+
+  .admin-kpi-card {
+    padding: 0.9rem 0.85rem;
+  }
+
+  .admin-kpi-value {
+    font-size: 1.2rem;
+  }
+
+  .admin-kpi-icon-box {
+    width: 34px;
+    height: 34px;
+  }
+
+  .admin-kpi-icon-box svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  /* Chart */
+  .admin-chart-plot {
+    height: 130px;
+  }
+
+  /* Download events table: hide SIZE column */
+  .admin-panel-card .admin-modern-table th:nth-child(4),
+  .admin-panel-card .admin-modern-table td:nth-child(4) {
+    display: none;
+  }
+
+  /* Jobs list: stack job items vertically */
+  .admin-job-item {
+    flex-wrap: wrap;
+    gap: 0.6rem;
+  }
+
+  .admin-job-badge {
+    margin-left: auto;
+  }
+
+  /* Storage widget: center donut */
+  .admin-storage-donut-wrap {
+    width: 90px;
+    height: 90px;
+  }
+
+  .admin-donut-percent {
+    font-size: 1.1rem;
+  }
+
+  /* Two-col grid already 1-col at 992px */
+  .admin-two-col-grid {
+    gap: 1rem;
+  }
+}
+
+/* --- 480px: fully single-col, smallest phones ----------------- */
+@media (max-width: 480px) {
+  /* Layout tightening */
+  .admin-main {
+    padding: 1rem 0.85rem 2.5rem;
   }
 
   .admin-kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 480px) {
-  .admin-kpi-grid {
-    grid-template-columns: 1fr;
+    gap: 0.55rem;
   }
 
   .admin-welcome-title {
-    font-size: 1.75rem;
+    font-size: 1.5rem;
+  }
+
+  .admin-welcome-subtitle {
+    font-size: 0.85rem;
+  }
+
+  /* Topbar: stack search + icons */
+  .admin-header-topbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.65rem;
+    margin-bottom: 1rem;
+  }
+
+  .admin-search-box {
+    order: 0;
+    width: 100%;
+  }
+
+  .admin-header-right {
+    justify-content: flex-end;
+  }
+
+  /* Restore profile name on very narrow if needed (already hidden at 860) */
+  .admin-profile-name {
+    display: none;
+  }
+
+  /* Section cards: full-bleed padding */
+  .admin-panel-card,
+  .admin-card-section {
+    padding: 0.95rem 0.85rem;
+    border-radius: 10px;
+  }
+
+  /* Section header */
+  .admin-section-title {
+    font-size: 1.05rem;
+  }
+
+  .admin-panel-card__title {
+    font-size: 1rem;
+  }
+
+  /* Charts */
+  .admin-chart-plot {
+    height: 110px;
+  }
+
+  .admin-chart-summary-bar {
+    gap: 0.35rem;
+  }
+
+  .admin-chart-metric {
+    font-size: 0.76rem;
+  }
+
+  /* KPI card internals */
+  .admin-kpi-card {
+    padding: 0.75rem 0.7rem;
+  }
+
+  .admin-kpi-value {
+    font-size: 1.1rem;
+  }
+
+  .admin-kpi-label {
+    font-size: 0.7rem;
+  }
+
+  .admin-kpi-subtext {
+    font-size: 0.66rem;
+  }
+
+  .admin-kpi-icon-box {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+  }
+
+  .admin-kpi-icon-box svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  /* Tables: hide extra columns to prevent horizontal overflow */
+  /* Clients table: hide ALBUMS + arrow column */
+  .admin-panel-card .admin-modern-table th:nth-child(3),
+  .admin-panel-card .admin-modern-table td:nth-child(3),
+  .admin-panel-card .admin-modern-table th:nth-child(5),
+  .admin-panel-card .admin-modern-table td:nth-child(5) {
+    display: none;
+  }
+
+  /* Activity table: also hide DETAILS column */
+  #activity .admin-modern-table th:nth-child(5),
+  #activity .admin-modern-table td:nth-child(5) {
+    display: none;
+  }
+
+  /* User cell: hide avatar on smallest screens */
+  .admin-user-avatar {
+    display: none;
+  }
+
+  /* Jobs list */
+  .admin-job-item {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.6rem 0.7rem;
+  }
+
+  .admin-job-progress-wrap {
+    display: none;
+  }
+
+  .admin-job-info {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .admin-job-sub {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+  }
+
+  /* Quick links: stack */
+  .admin-job-quick-links {
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .admin-job-quick-btn {
+    text-align: center;
+  }
+
+  /* Storage widget: column layout */
+  .admin-storage-widget {
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    text-align: center;
+  }
+
+  .admin-storage-info {
+    width: 100%;
+  }
+
+  .admin-legend-val {
+    margin-left: auto;
+  }
+
+  /* Radial badge in KPI storage card */
+  .admin-radial-badge {
+    width: 34px;
+    height: 34px;
+  }
+
+  /* Date widget */
+  .admin-date-widget {
+    padding: 0.6rem 1rem 0.6rem 0.85rem;
+  }
+
+  .admin-date-widget__weekday {
+    font-size: 0.92rem;
+  }
+
+  .admin-date-widget__date {
+    font-size: 0.7rem;
+  }
+
+  /* Filter pill buttons */
+  .admin-filter-group {
+    align-self: flex-start;
+  }
+
+  .admin-pill-btn {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.74rem;
+  }
+
+  /* Popover menus: full-width on tiny screens */
+  .admin-popover-menu {
+    width: calc(100vw - 2rem);
+    right: -0.5rem;
+    left: auto;
+  }
+
+  /* X-axis labels: show fewer */
+  .admin-chart-xlabels {
+    gap: 0;
+  }
+
+  .admin-chart-xlabel {
+    font-size: 0.62rem;
   }
 }
 

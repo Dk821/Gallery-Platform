@@ -18,6 +18,13 @@ against Media once more (a completion could have landed between the
 candidate query and now), so a slow-but-still-succeeding upload is never
 mistaken for one that's truly abandoned.
 
+A browser-generated VIDEO poster is recorded on the session
+(thumbnail_drive_file_id) the moment it is stored, which can be BEFORE the
+video's own drive_file_id is ever reported (a cancelled/failed/stale upload
+never reaches /upload-complete at all). Those sessions have a Drive file the
+app owns but no drive_file_id, so the candidate query also matches a
+thumbnail-only session, and cleanup then deletes just the poster.
+
 KNOWN GAP (direct browser -> Drive upload architecture): this ledger only
 gains a drive_file_id once the browser calls POST /upload-complete after
 its direct PUT to Drive finishes. If the browser's tab is closed/crashes
@@ -35,6 +42,7 @@ than relying solely on this table. Not implemented yet.
 import datetime
 import logging
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session as DbSession
 
 from app.models.media import Media
@@ -45,12 +53,19 @@ from app.services.upload_logging import log_event
 logger = logging.getLogger("gallery.storage.orphan_reconciliation")
 
 
+def _has_drive_file_clause():
+    # A session that owns at least one Drive file: the video/photo itself,
+    # or - for a video whose upload never reached /upload-complete - just
+    # the poster the browser had already uploaded.
+    return or_(UploadSession.drive_file_id.isnot(None), UploadSession.thumbnail_drive_file_id.isnot(None))
+
+
 def find_orphan_candidates(db: DbSession, grace_period_hours: int) -> list[UploadSession]:
     cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=grace_period_hours)
     return (
         db.query(UploadSession)
         .filter(
-            UploadSession.drive_file_id.isnot(None),
+            _has_drive_file_clause(),
             UploadSession.status != "completed",
             UploadSession.created_at < cutoff,
         )
@@ -69,7 +84,7 @@ def count_orphan_candidates(db: DbSession, grace_period_hours: int) -> int:
     return (
         db.query(UploadSession)
         .filter(
-            UploadSession.drive_file_id.isnot(None),
+            _has_drive_file_clause(),
             UploadSession.status != "completed",
             UploadSession.created_at < cutoff,
         )
@@ -97,20 +112,28 @@ def reconcile_orphans(
         # exact Drive file id may have been created since the candidate
         # query ran (e.g. a slow request that was still legitimately
         # finishing).
-        still_referenced = (
-            db.query(Media.id).filter(Media.google_drive_file_id == session.drive_file_id).first()
-        )
+        # Which Drive file identifies this candidate: the main file if one was
+        # ever reported, otherwise (thumbnail-only session) the poster.
+        primary_id = session.drive_file_id or session.thumbnail_drive_file_id
+        if session.drive_file_id:
+            still_referenced = (
+                db.query(Media.id).filter(Media.google_drive_file_id == session.drive_file_id).first()
+            )
+        else:
+            still_referenced = (
+                db.query(Media.id).filter(Media.thumbnail_reference == session.thumbnail_drive_file_id).first()
+            )
         if still_referenced is not None:
-            still_valid.append(session.drive_file_id)
+            still_valid.append(primary_id)
             continue
 
-        confirmed.append(session.drive_file_id)
+        confirmed.append(primary_id)
         log_event(
             logger,
             "upload_orphan_detected",
             level=logging.WARNING,
             upload_id=session.upload_id,
-            drive_file_id_present=True,
+            drive_file_id_present=bool(session.drive_file_id),
             status=session.status,
             age_hours=round(
                 (datetime.datetime.utcnow() - session.created_at).total_seconds() / 3600, 1
@@ -121,18 +144,19 @@ def reconcile_orphans(
             continue
 
         try:
-            storage.delete(session.drive_file_id)
+            if session.drive_file_id:
+                storage.delete(session.drive_file_id)
             if session.thumbnail_drive_file_id:
                 storage.delete(session.thumbnail_drive_file_id)
             session.status = "cancelled"
             session.error_code = "ORPHAN_CLEANED_UP"
             session.error_message = "Drive file had no matching database record after the grace period."
             db.commit()
-            deleted.append(session.drive_file_id)
+            deleted.append(primary_id)
             log_event(logger, "upload_reconciled", upload_id=session.upload_id, outcome="deleted")
         except StorageError as exc:
             db.rollback()
-            cleanup_failed.append(session.drive_file_id)
+            cleanup_failed.append(primary_id)
             logger.critical(
                 "Failed to clean up confirmed orphan Drive file for upload_id=%s: %s. "
                 "Manual reconciliation required.",
