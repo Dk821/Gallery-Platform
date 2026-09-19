@@ -681,9 +681,18 @@ class GoogleDriveStorage(StorageService):
         # file in the first place). The human owner can empty their own
         # trash, or Drive auto-purges it after 30 days.
         def _do():
-            self._service.files().update(
+            # Per-call client isolation (same reasoning as upload()/download():
+            # self._service is shared and httplib2 is not thread-safe under
+            # concurrent use). delete() runs on the upload cleanup path too.
+            request = self._service.files().update(
                 fileId=provider_file_id, body={"trashed": True}, fields="id"
-            ).execute()
+            )
+            raw_http = httplib2.Http(timeout=self._chunk_timeout)
+            request.http = AuthorizedHttp(self._credentials, http=raw_http)
+            try:
+                return request.execute()
+            finally:
+                raw_http.close()
 
         try:
             self._retry(_do)
@@ -695,32 +704,30 @@ class GoogleDriveStorage(StorageService):
         except RefreshError as exc:
             raise StorageError(f"Google Drive authentication failed: {exc}") from exc
 
-    # def get_file(self, provider_file_id: str) -> StoredFile:
-    #     def _do():
-    #         return self._service.files().get(
-    #             fileId=provider_file_id, fields="id, name, size, mimeType"
-    #         ).execute()
-
-    #     try:
-    #         result = self._retry(_do)
-    #     except HttpError as exc:
-    #         raise _translate_http_error(exc) from exc
-    #     except RefreshError as exc:
-    #         raise StorageError(f"Google Drive authentication failed: {exc}") from exc
-
-    #     return StoredFile(
-    #         provider_file_id=result["id"],
-    #         name=result.get("name", ""),
-    #         size=int(result.get("size", 0)),
-    #         mime_type=result.get("mimeType", ""),
-    #     )
     def get_file(self, provider_file_id: str) -> StoredFile:
         def _do():
-            return self._service.files().get(
+            # Per-call client isolation, same pattern as upload()/download()/
+            # create_resumable_session(). httplib2 keeps ONE connection cache
+            # per Http instance, and that cache is not thread-safe: under
+            # concurrent upload confirmations, threads borrowing the same
+            # socket at once cross their TLS streams - surfacing as random
+            # [SSL: WRONG_VERSION_NUMBER] failures and whole-request hangs
+            # (the classic multi-file upload failure that ended in burned
+            # sessions and 502s). Building the request object off the shared
+            # self._service is fine (pure client-side); only the execute()
+            # below touches the network, and it goes through THIS call's own
+            # authorized client.
+            request = self._service.files().get(
                 fileId=provider_file_id,
                 fields="id,name,size,mimeType",
                 supportsAllDrives=True,
-        ).execute()
+            )
+            raw_http = httplib2.Http(timeout=self._chunk_timeout)
+            request.http = AuthorizedHttp(self._credentials, http=raw_http)
+            try:
+                return request.execute()
+            finally:
+                raw_http.close()
 
         try:
             result = self._retry(_do)

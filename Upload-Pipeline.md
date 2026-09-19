@@ -25,7 +25,7 @@ To prevent bandwidth saturation, server memory exhaustion, and long-running HTTP
 |---|---|---|
 | **Admin Media Routes** | `backend/app/api/admin_media.py` | API endpoints for session creation, progress reporting, thumbnail attachment, completion confirmation, and abandonment. |
 | **Media Service** | `backend/app/services/media_service.py` | Business logic for validating upload intent, initiating Drive resumable sessions, validating file headers via ranged reads, managing session state transitions, and creating `Media` records. |
-| **Google Drive Service** | `backend/app/services/google_drive_service.py` | Encapsulates Google Drive API v3 interactions (resumable session initialization, ranged chunk downloads, folder management, file deletion). Holds OAuth2 credentials server-side; frontend never sees Drive credentials. |
+| **Google Drive Service** | `backend/app/services/google_drive_service.py` | Encapsulates Google Drive API v3 interactions (resumable session initialization, ranged chunk downloads, folder management, file deletion). Holds OAuth2 credentials server-side; frontend never sees Drive credentials. Every network call uses a dedicated per-call httplib2 client (httplib2 is not thread-safe), so concurrent upload confirmations can never share a socket across threads. |
 | **Thumbnail Worker** | `backend/app/workers/thumbnail_worker.py` | Normalizes browser-submitted WebP thumbnails; provides optional fallback image downscaling and server-side FFmpeg poster extraction for backfill scripts. |
 | **Upload Session Model** | `backend/app/models/upload_session.py` | MySQL `upload_sessions` table acting as an idempotency ledger with fields: `admin_id`, `upload_id`, `album_id`, `filename`, `total_bytes`, `bytes_uploaded`, `status`, `drive_file_id`, `thumbnail_drive_file_id`. |
 | **Circuit Breaker & Retry** | `backend/app/services/circuit_breaker.py`<br>`backend/app/services/retry.py` | Fast-failing protection against Google API outages and exponential backoff for transient network issues. |
@@ -147,6 +147,36 @@ Instead, during `complete_direct_upload`:
 - **Global Upload Context**: Managed by `UploadContext.tsx`. State is mounted at the root admin provider level, ensuring route transitions do not interrupt ongoing XHR requests.
 - **Global Status Badge**: `GlobalUploadBadge.tsx` displays active upload counts, progress percentage, and spinning indicators across all admin screens.
 
+### 4.6 Concurrent Confirmation, Drive Client Isolation & Retry Recovery
+
+Multiple files finishing around the same time run up to `MAX_CONCURRENT_UPLOADS`
+confirmation requests (`POST /upload-complete`) concurrently. Each one re-confirms
+the just-uploaded file with Google Drive (`get_file` + a ranged header read-back)
+before creating the `Media` row. Two failure modes specific to concurrency are
+handled here:
+
+- **Per-call Drive client isolation**: httplib2's `Http` object is **not
+  thread-safe** — it keeps one connection cache per instance, so when two
+  threads borrow the same socket at once their TLS streams cross, surfacing as
+  random `[SSL: WRONG_VERSION_NUMBER]` errors or whole-request hangs. `upload()`,
+  `download()`, `create_resumable_session()`, `get_file()` and `delete()` each
+  build their own `httplib2.Http` + `AuthorizedHttp` per call, route the
+  request's `execute()` through it, and close it afterwards. Building the
+  request object off the shared discovery client stays safe (pure client-side);
+  only the network call is isolated.
+- **Post-PUT propagation tolerance**: immediately after a browser's direct PUT
+  finishes, Drive can take a moment to finalize the new file. The confirmation's
+  metadata lookup retries a `404`/not-visible response a few times with a short
+  delay (`UPLOAD_CONFIRM_404_RETRIES` in `media_service.py`) before the session
+  is condemned as `failed`.
+- **Retry never dead-ends**: if a previous confirmation attempt still burned the
+  session to `failed`, calling `/upload-complete` against it would otherwise
+  409 forever ("This upload session is 'failed', not awaiting completion.").
+  `retryCompleteOnly` detects that `UPLOAD_NOT_IN_PROGRESS` response and falls
+  back to `startUpload`, which re-opens the failed session under the *same*
+  `upload_id` for a fresh upload — a burned batch stays recoverable instead of
+  being permanently stuck.
+
 ---
 
 ## 5. Failure Recovery & Edge Cases
@@ -155,7 +185,7 @@ Instead, during `complete_direct_upload`:
 |---|---|---|
 | **User navigates away from `/admin/uploads`** | `UploadContext` | Upload continues in background; `GlobalUploadBadge` displays live progress. |
 | **User cancels upload** | `abandonUploadSession` | In-flight XHR is aborted; backend marks session `cancelled` to free the ledger slot. |
-| **Drive upload succeeds, but confirm fails** | `retryCompleteOnly` | Frontend retains `driveFileId`. Retry skips byte transfer and re-runs only finalization. |
+| **Drive upload succeeds, but confirm fails** | `retryCompleteOnly` + recovery | Frontend retains `driveFileId` and first retries only the confirmation step (no byte re-transfer). If that fails with `UPLOAD_NOT_IN_PROGRESS` (a prior attempt burned the session to `failed`), it falls back to re-opening a fresh session under the same `upload_id` and re-uploading instead of dead-ending on "This upload session is 'failed'...". |
 | **Browser tab closed mid-upload** | Session recovery | On reload, incomplete sessions are retrieved via `GET /upload-sessions` and surfaced as failed (since browser `File` object cannot be restored). |
 | **Server restart while uploads in-flight** | Lifespan Startup Sweep | `app/main.py` scans for lingering `uploading`/`queued` sessions and marks them `failed` (`UPLOAD_STALE`). |
 | **Drive outage / 5xx errors** | `CircuitBreaker` | Trips after 3 consecutive network failures with a 20-second cooldown, preventing thread exhaustion. |
