@@ -86,7 +86,7 @@ function StudioProfileCard({
           <input
             value={studioName}
             onChange={(e) => setStudioName(e.target.value)}
-            placeholder="e.g. Sam Photography"
+            placeholder="e.g. Love Story Photography"
             maxLength={255}
           />
         </label>

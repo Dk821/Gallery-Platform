@@ -12,9 +12,9 @@ A private gallery platform for wedding photographers to manage clients, albums, 
 | Backend | Python 3.12, FastAPI 0.115, Uvicorn |
 | Database | MySQL 8 (via SQLAlchemy 2 + PyMySQL) |
 | Migrations | Alembic |
-| Storage | Google Drive v3 API (service account) |
-| Video Processing | FFmpeg (system binary) |
-| Image Processing | Pillow |
+| Storage | Google Drive v3 API (OAuth2 credentials) |
+| Video Processing | FFmpeg (system binary — **optional**, see below) |
+| Image Processing | Pillow (server-side fallbacks/resizing) + HTML5 Canvas/WebP (client-side) |
 | Auth | Argon2 (passwords), itsdangerous (admin tokens), Fernet (reversible encryption) |
 
 ---
@@ -24,12 +24,12 @@ A private gallery platform for wedding photographers to manage clients, albums, 
 - **Python 3.12+**
 - **Node.js 18+** and npm
 - **MySQL 8**
-- **FFmpeg** (installed at OS level, required for video thumbnail generation — see below)
-- **Google Drive API** credentials (OAuth2 service account with Drive access)
+- **Google Drive API** credentials (OAuth2 Desktop app credentials with Drive access)
+- **FFmpeg** (optional system binary — video poster frames are generated directly in the browser during upload; FFmpeg on the server is only used for administrative backfill tooling)
 
-### FFmpeg (required for video thumbnails)
+### FFmpeg (optional — server-side poster backfill tooling)
 
-Used to extract poster frames from uploaded videos. Without it, video uploads still work but videos show a placeholder icon instead of a preview thumbnail.
+Video poster frames and photo thumbnails are generated client-side by the browser during upload (`videoPoster.ts` and `photoThumbnail.ts`), saving server bandwidth and memory. The server-side FFmpeg integration is retained as an optional fallback and for administrative backfill tooling.
 
 ```bash
 # Debian/Ubuntu
@@ -52,14 +52,14 @@ Verify: `ffmpeg -version` or check `GET /api/health` once running.
 final v2/
 ├── backend/
 │   ├── app/
-│   │   ├── api/              # Route handlers
+│   │   ├── api/              # Route handlers (admin, client, auth, media streaming)
 │   │   ├── config/           # pydantic-settings (.env loader)
 │   │   ├── database/         # SQLAlchemy engine, session, Base
 │   │   ├── models/           # 10 ORM models
 │   │   ├── schemas/          # Pydantic request/response models
 │   │   ├── security/         # Password hashing, sessions, encryption
-│   │   ├── services/         # Business logic layer
-│   │   ├── workers/          # Thumbnail generation (PIL + FFmpeg)
+│   │   ├── services/         # Business logic layer (storage, direct upload, validation, etc.)
+│   │   ├── workers/          # Thumbnail worker (PIL + FFmpeg fallback)
 │   │   ├── main.py           # App factory, lifespan, middleware
 │   │   ├── create_admin.py   # First admin bootstrap
 │   │   ├── reconcile_orphans.py      # Cron: Drive orphan cleanup
@@ -71,16 +71,18 @@ final v2/
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── components/       # Shared UI (AdminLayout, Sidebar, Lightbox)
+│   │   ├── components/       # Shared UI (AdminLayout, Sidebar, Lightbox, GlobalUploadBadge)
+│   │   ├── contexts/         # React Contexts (UploadContext - persistent background queue)
 │   │   ├── pages/            # Admin + Client pages
-│   │   ├── services/         # Typed API client
+│   │   ├── services/         # Typed API client (auth, admin, gallery)
 │   │   ├── styles/           # Plain CSS (index.css, admin.css, gallery.css)
-│   │   ├── utils/            # Formatters
+│   │   ├── utils/            # format.ts, photoThumbnail.ts, videoPoster.ts
 │   │   ├── App.tsx           # Route definitions
 │   │   └── main.tsx          # Entry point
 │   ├── .env.example          # Frontend config template
 │   └── package.json
 ├── ARCHITECTURE.md
+├── Upload-Pipeline.md
 └── README.md
 ```
 
@@ -199,14 +201,15 @@ Verifies DB connectivity, Drive token, writable ZIP temp dir, and FFmpeg availab
 | `SECRET_KEY` | Random string for session signing | — |
 | `SESSION_TTL_MINUTES` | Session lifetime | `1440` |
 | `CROSS_SITE_FRONTEND` | `true` if frontend on different origin | `false` |
-| `CORS_ORIGINS` | Comma-separated allowed origins | — |
+| `CORS_ORIGINS` | Comma-separated allowed origins (forwarded to Drive to authorize browser direct-PUTs) | — |
 | `MAX_UPLOAD_SIZE_BYTES` | Max upload size | `10737418240` (10GB) |
 | `ZIP_TEMP_DIR` | Temp directory for ZIP jobs | `/tmp/gallery_zip_jobs` |
 | `ZIP_JOB_TTL_HOURS` | ZIP download link TTL | `24` |
 | `UPLOAD_MAX_CONCURRENT` | Max simultaneous Drive uploads | `3` |
 | `ENVIRONMENT` | `development` or `production` | `development` |
 
-See `backend/.env.example` for the full list with descriptions.
+See `backend/.env.example` for the full list with descriptions. Note that for direct-to-Drive uploads, your frontend origin (e.g. `http://localhost:5173`) must be present in `CORS_ORIGINS` so the backend can authorize the browser's origin with Google Drive when opening resumable upload sessions.
+
 
 ### Frontend (`.env`) — only if different origin
 

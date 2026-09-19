@@ -289,7 +289,7 @@ export default function Gallery() {
           </div>
 
           <div className="wedding-footer__right">
-            <div className="wedding-footer__studio">Sam Photography</div>
+            <div className="wedding-footer__studio">Love Story Photography</div>
             <p className="wedding-footer__categories">Weddings &nbsp;|&nbsp; Couples &nbsp;|&nbsp; Stories</p>
           </div>
         </footer>

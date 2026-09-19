@@ -589,6 +589,22 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         );
       })
       .catch((err) => {
+        // completeUpload only works against a session that is still
+        // "uploading" server-side. If a previous attempt already burned the
+        // session (its own /upload-complete failed and the backend marked it
+        // "failed" - e.g. a transient Drive confirm error - or it went
+        // stale), the bare confirm will 409 forever with "This upload
+        // session is 'failed', not awaiting completion", leaving the item
+        // permanently un-retryable even though its bytes already landed in
+        // Drive. The backend lets startUpload() reopen a failed/done
+        // session under the SAME upload_id (start_direct_upload), so fall
+        // back to the full re-upload flow rather than surfacing the dead
+        // end. Only for a 409 (session no longer in progress) - any other
+        // failure just means the confirm can simply be tried again.
+        if (item.file && err instanceof ApiRequestError && err.status === 409 && err.code === "UPLOAD_NOT_IN_PROGRESS") {
+          startUpload(item);
+          return;
+        }
         const message = err instanceof Error ? err.message : "Could not confirm the upload.";
         setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "error", error: message } : i)));
       });

@@ -23,9 +23,9 @@ export default function ClientNav({ galleryId }: ClientNavProps) {
         type="button"
         className="sam-nav__brand"
         onClick={() => navigate(`/gallery/${galleryId}/view`)}
-        aria-label="Sam Photography Home"
+        aria-label="Love Story Photography Home"
       >
-        <span className="sam-nav__logo-script">sam</span>
+        <span className="sam-nav__logo-script">Love Story</span>
         <span className="sam-nav__logo-sub">PHOTOGRAPHY</span>
       </button>
 

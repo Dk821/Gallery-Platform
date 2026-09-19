@@ -1,160 +1,162 @@
 # Architecture: Media Storage & Upload Pipeline
 
-_Last updated: reflects `GoogleDriveStorage` (backend) and `Uploads.tsx` (admin frontend) as reviewed._
+This document details the architecture, design decisions, end-to-end data flow, and error-handling mechanisms for media uploads and storage in **LoveStory PH**.
 
-## 1. Overview
+---
 
-The application stores client photos/videos in Google Drive. There are **two distinct upload
-architectures present in the codebase today**, and they do not currently agree with each other.
-This is flagged explicitly in §5 (Known Gap) because it's the direct cause of the CORS failure
-under investigation.
+## 1. Executive Summary
 
-| | Legacy / relay upload | Current frontend expectation |
+Media files (high-resolution wedding photos and large video files up to 10 GB) are stored in **Google Drive**, organized by client and album subfolders. 
+
+To prevent bandwidth saturation, server memory exhaustion, and long-running HTTP request timeouts on the application server, the platform implements a **Direct-to-Drive Resumable Upload Architecture**:
+
+- **Zero VPS Relay**: The browser transfers raw file bytes directly to Google Drive via resumable upload URLs. No multi-GB payload ever passes through the backend server's disk or network interface.
+- **Backend Session Coordination**: The backend authenticates requests, provisions the resumable session with Google Drive (injecting proper CORS origins), maintains an idempotency ledger in MySQL (`upload_sessions`), validates file metadata, and completes DB persistence.
+- **Client-Side Thumbnail Extraction**: Poster frames for videos and downscaled thumbnails for photos are generated in the browser using HTML5 Canvas and WebP compression, eliminating server-side FFmpeg processing and avoiding costly re-downloads of video files.
+- **Global Upload Persistence**: Upload state is managed via React Context (`UploadContext`), allowing admins to navigate freely between admin pages while transfers continue seamlessly in the background, monitored by a global floating status badge.
+
+---
+
+## 2. System Components
+
+### 2.1 Backend Services & Handlers
+
+| Component | File Path | Responsibilities |
 |---|---|---|
-| Where bytes travel | Browser → **backend** → Drive | Browser → **Drive directly** |
-| Implemented in | `GoogleDriveStorage.upload()` | `Uploads.tsx` (`runDirectUpload`) |
-| Backend touches file bytes? | Yes, streamed via `MediaIoBaseUpload` | No — only creates/confirms the session |
-| CORS exposure | None (server-to-server) | Yes — browser talks to `googleapis.com` |
+| **Admin Media Routes** | `backend/app/api/admin_media.py` | API endpoints for session creation, progress reporting, thumbnail attachment, completion confirmation, and abandonment. |
+| **Media Service** | `backend/app/services/media_service.py` | Business logic for validating upload intent, initiating Drive resumable sessions, validating file headers via ranged reads, managing session state transitions, and creating `Media` records. |
+| **Google Drive Service** | `backend/app/services/google_drive_service.py` | Encapsulates Google Drive API v3 interactions (resumable session initialization, ranged chunk downloads, folder management, file deletion). Holds OAuth2 credentials server-side; frontend never sees Drive credentials. |
+| **Thumbnail Worker** | `backend/app/workers/thumbnail_worker.py` | Normalizes browser-submitted WebP thumbnails; provides optional fallback image downscaling and server-side FFmpeg poster extraction for backfill scripts. |
+| **Upload Session Model** | `backend/app/models/upload_session.py` | MySQL `upload_sessions` table acting as an idempotency ledger with fields: `admin_id`, `upload_id`, `album_id`, `filename`, `total_bytes`, `bytes_uploaded`, `status`, `drive_file_id`, `thumbnail_drive_file_id`. |
+| **Circuit Breaker & Retry** | `backend/app/services/circuit_breaker.py`<br>`backend/app/services/retry.py` | Fast-failing protection against Google API outages and exponential backoff for transient network issues. |
 
-The frontend has been rebuilt around the second model (direct-to-Drive resumable upload), but the
-one backend module reviewed so far (`GoogleDriveStorage`) still only implements the first model.
-The endpoint the frontend actually calls to obtain a resumable `upload_url`
-(`adminService.createUploadSession`) has **not yet been reviewed** — see §5.
+### 2.2 Frontend Components & Utilities
 
-## 2. Components
+| Component | File Path | Responsibilities |
+|---|---|---|
+| **Upload Context** | `frontend/src/contexts/Uploadcontext.tsx` | Global React context holding upload queue state, scheduling concurrent uploads (max 4), tracking progress, retrying, and managing `File` memory cleanup. |
+| **Uploads Page** | `frontend/src/pages/Uploads.tsx` | UI interface for drag-and-drop file selection, album targeting, upload progress bars, error notifications, and batch actions. |
+| **Global Upload Badge** | `frontend/src/components/Globaluploadbadge.tsx` | Floating UI badge rendered across all admin routes when uploads are active in the background. |
+| **Video Poster Utility** | `frontend/src/utils/videoPoster.ts` | Uses `<video>` and `<canvas>` to capture a frame at $t \approx 1.0\text{s}$ into an uploaded video, exporting as WebP. |
+| **Photo Thumbnail Utility** | `frontend/src/utils/photoThumbnail.ts` | Uses `Image` and `<canvas>` to downscale photos to $\le 400\text{px}$ WebP thumbnails. |
+| **Admin API Service** | `frontend/src/services/admin.ts` | Handles XHR PUT requests to Google Drive resumable URLs, reporting upload progress, and calling backend session endpoints. |
 
-### 2.1 `GoogleDriveStorage` (backend, Python)
-- The **only** module permitted to import `googleapiclient` / `google.auth`. All other backend
-  code talks to Drive through `StorageService`'s abstract interface.
-- Holds a single OAuth2 refresh-token-based `Credentials` object; instantiated server-side only.
-  Frontend code never sees Drive credentials.
-- Responsibilities:
-  - Folder CRUD (`create_folder`, `rename_folder`, `delete_folder`)
-  - File CRUD (`upload`, `download`, `delete`, `get_file`, `move_file`)
-  - Storage quota reporting (`get_metadata`)
-- **Upload path (`upload()`)** currently implements a full **relay**: the backend receives the
-  file (already spooled server-side), wraps it in `MediaIoBaseUpload` with a bounded chunk size,
-  and performs the resumable upload to Drive itself, chunk by chunk, inside `next_chunk()` calls.
-  This means, as written, the backend is the party talking to `googleapis.com`, not the browser.
-- **Download path (`download()`)** streams file bytes back out as a generator, supporting HTTP
-  Range requests so video can be scrubbed without buffering the whole file server-side.
-- **Hardening built into this module:**
-  - Per-call dedicated `httplib2.Http` clients (not the shared service client) for both upload and
-    download, to avoid connection-cache crosstalk between concurrent transfers.
-  - Explicit socket timeouts everywhere (httplib2 has no default timeout).
-  - A circuit breaker (`get_drive_circuit_breaker`) short-circuits calls during a systemic outage
-    instead of letting every concurrent request pay full retry+backoff cost.
-  - Central retry classification (`_is_retryable_google_error`) covering `HttpError` (5xx/429),
-    `TimeoutError`/`ConnectionError`, `httplib2.HttpLib2Error`, transient `OSError`
-    (SSL/proxy-inspection failures), the known httplib2/CPython double-close bug on
-    `IncompleteRead`, and generic `http.client.HTTPException` (`IncompleteRead`, `BadStatusLine`).
-  - `redirect_codes` on the upload's raw `httplib2.Http` explicitly excludes `308`, since Drive's
-    resumable protocol uses HTTP 308 to mean "send next chunk," not "redirect" — httplib2's
-    default would otherwise raise `RedirectMissingLocation` on every multi-chunk upload.
-  - `delete()` trashes rather than permanently deletes, because the service account is typically
-    an Editor (not owner) on a human-owned Drive folder and lacks permanent-delete rights.
-  - Files are tagged with `appProperties` (`gallery_managed`, `gallery_upload_id`) to support
-    orphan reconciliation independent of filename matching.
+---
 
-### 2.2 `Uploads.tsx` (admin frontend, React)
-Implements a **direct-to-Drive resumable upload** flow with a queue/scheduler UI:
-
-1. **Reserve a session** — `adminService.createUploadSession(albumId, uploadId, filename, size)`
-   asks the backend to open a Google Drive resumable-upload session and returns an `upload_url`.
-   The backend is expected to do this itself (server-to-server call to Drive) and hand back the
-   session URL; **the file's bytes are not sent to the backend at all.**
-2. **Upload bytes directly to Drive** — `adminService.uploadToDrive(uploadUrl, file, onProgress)`
-   performs the resumable `PUT` sequence straight from the browser to `googleapis.com`.
-3. **Confirm with the backend** — once Drive returns a file id/size/mimeType,
-   `adminService.completeUpload(uploadId, driveFileId, size, mimeType)` tells the backend to
-   create the corresponding `Media` DB record.
-
-Supporting behavior:
-- **Idempotent `upload_id`**: a UUID (or timestamp/random fallback) generated client-side once per
-  file and reused verbatim across retries of that same file, so the backend can distinguish a
-  genuine retry from a duplicate upload. Deliberately does *not* embed the filename, since
-  `upload_session.upload_id` is a bounded `VARCHAR(100)` column and long filenames previously
-  caused raw 500s.
-- **Bounded concurrency** (`MAX_CONCURRENT_UPLOADS = 4`): a scheduler effect tops up active
-  uploads rather than firing an entire batch at once; "active" includes `finalizing`, since the
-  browser's request to the backend stays open through that phase too.
-- **Session recovery on refresh**: `listUploadSessions()` restores sessions the backend still
-  considers `queued`/`uploading`, but since the browser now owns the transfer, a restored session
-  can never actually resume — the `File` object is gone once the tab closes. These are surfaced as
-  failed, prompting the user to re-select and re-upload.
-- **Retry granularity**: if the Drive PUT already succeeded but `completeUpload` failed, the item
-  caches `driveFileId`/`reportedSize`/`reportedMimeType` and retry re-runs only the confirmation
-  call — never re-uploads the file.
-- **Cancellation**: aborts the in-flight XHR when possible; for items that already reached
-  `finalizing`, cancel is disabled since all bytes are already sent. Cancellation also calls
-  `abandonUploadSession()` so the backend doesn't hold the session open as "uploading" until its
-  own staleness sweep times it out.
-- **Best-effort progress reporting**: `reportUploadProgress()` is throttled to ~1/second purely so
-  *other* views (a second tab, a refreshed page) can see rough progress; failures here are
-  swallowed and never block or fail the upload itself.
-
-## 3. End-to-end flow (current frontend expectation)
+## 3. End-to-End Upload Sequence
 
 ```mermaid
 sequenceDiagram
-    participant Browser
-    participant Backend
-    participant Drive as Google Drive
+    autonumber
+    actor Admin as Studio Admin
+    participant Browser as Browser (UploadContext)
+    participant Backend as FastAPI Backend
+    participant Drive as Google Drive v3 API
+    participant DB as MySQL Database
 
-    Browser->>Backend: POST create-upload-session (albumId, uploadId, filename, size)
-    Backend->>Drive: POST .../upload/drive/v3/files?uploadType=resumable
-    Drive-->>Backend: 200 + resumable session URL (Location header)
-    Backend-->>Browser: { upload_url }
+    Admin->>Browser: Select files & target album
+    Note over Browser: Generate unique upload_id (UUID)
+    
+    %% Step 1: Session Initiation
+    Browser->>Backend: POST /api/admin/media/upload-session<br/>{album_id, upload_id, filename, file_size}<br/>[Header: Origin: https://app.example.com]
+    Backend->>Backend: Verify album & check CORS origin allowlist
+    Backend->>Drive: POST /upload/drive/v3/files?uploadType=resumable<br/>[Header: Origin: https://app.example.com]
+    Drive-->>Backend: 200 OK + Location: upload_url
+    Backend->>DB: Insert/Update upload_sessions (status='uploading')
+    Backend-->>Browser: 200 OK + { upload_url, upload_id }
 
-    loop resumable chunks
-        Browser->>Drive: PUT bytes (chunk) to upload_url
-        Drive-->>Browser: 308 (more) / 200-201 (done) + file metadata
+    %% Step 2: Direct Upload
+    par Direct Chunk Upload & Thumbnail Generation
+        Browser->>Drive: Resumable PUT bytes to upload_url (XHR with onProgress)
+        Drive-->>Browser: 200 OK + { id: drive_file_id, size, mimeType }
+    and Browser Thumbnail
+        Browser->>Browser: Extract frame/thumbnail via Canvas -> WebP Blob
+        Browser->>Backend: POST /api/admin/media/upload-session/{id}/thumbnail (Multipart)
+        Backend->>Drive: Upload thumbnail (thumb_{uuid}.webp)
+        Drive-->>Backend: Thumbnail drive_file_id
+        Backend->>DB: Record session.thumbnail_drive_file_id
+        Backend-->>Browser: 200 OK
     end
 
-    Browser->>Backend: POST complete-upload (uploadId, driveFileId, size, mimeType)
-    Backend->>Backend: create Media record
-    Backend-->>Browser: 200 OK
+    %% Step 3: Confirmation & Finalization
+    Browser->>Backend: POST /api/admin/media/upload-complete<br/>{upload_id, drive_file_id, reported_size, reported_mime_type}
+    Backend->>Drive: GET file metadata (authoritative size check)
+    Backend->>Drive: Ranged GET bytes [0..512] (Header signature validation)
+    Backend->>Backend: validate_upload() (Magic bytes / ISO-BMFF box checks)
+    Backend->>DB: Insert Media record & link thumbnail
+    Backend->>DB: Update upload_sessions (status='completed')
+    Backend->>DB: Record audit_logs ('media_uploaded')
+    Backend-->>Browser: 200 OK + MediaItem
+    Browser->>Admin: Update UI item to Completed
 ```
 
-## 4. Error handling & resiliency summary
+---
 
-| Failure | Where handled | Behavior |
+## 4. Key Architectural Mechanisms
+
+### 4.1 CORS Origin Forwarding on Resumable Sessions
+
+When initiating a resumable upload directly from a web browser to Google Drive (`googleapis.com`), the browser enforces Cross-Origin Resource Sharing (CORS). 
+
+Google Drive's resumable upload endpoint **requires** that the initial `POST` request opening the session includes the client's `Origin` header. If the initiating server does not forward this `Origin` header, Google Drive will not attach `Access-Control-Allow-Origin` response headers to subsequent `PUT` requests from the browser, resulting in client-side CORS errors.
+
+**Implementation**:
+1. In `admin_media.py`, the backend inspects `request.headers.get("origin")`.
+2. It verifies that the origin exists in `settings.effective_cors_origins` (derived from `CORS_ORIGINS` and local defaults). If valid, it forwards `Origin: <origin>` to Drive during `create_resumable_session()`.
+3. Google Drive binds this origin to the generated `upload_url`. Subsequent browser `PUT` requests succeed with standard CORS preflights.
+
+### 4.2 Client-Side Thumbnail Generation
+
+Generating video poster frames on a VPS server typically requires downloading multi-gigabyte video files back from Google Drive into server memory/disk and running FFmpeg. 
+
+To eliminate this bottleneck:
+1. **Video Poster Extraction (`videoPoster.ts`)**: When a video is queued, an off-screen HTML5 `<video>` element loads the `File` object using `URL.createObjectURL(file)`. It seeks to $1.0\text{s}$ (or midpoint for very short clips), draws the video frame to an HTML5 `<canvas>`, and converts it to an `image/webp` Blob (quality 0.82, max dimension 720px).
+2. **Photo Thumbnail Downscaling (`photoThumbnail.ts`)**: For high-resolution photos, an `Image` object renders to canvas and scales down to $\le 400\text{px}$ WebP.
+3. **Upload via Session Hook**: The browser uploads the lightweight WebP blob (~10–100 KB) to `POST /api/admin/media/upload-session/{upload_id}/thumbnail`.
+4. **Best-Effort Resiliency**: Thumbnail generation has a 20-second timeout. If the browser or client codec fails to extract a thumbnail, the main upload continues unimpeded. The gallery grid gracefully falls back to a placeholder icon.
+
+### 4.3 Idempotency Ledger & Upload Session Lifecycle
+
+The `upload_sessions` table ensures crash recovery, deduplication, and retry granularity:
+
+- **Idempotency Key (`upload_id`)**: A unique UUID generated by the frontend. Crucially, the filename is omitted from the ID string, preventing `VARCHAR(100)` DB column overflow on long filenames.
+- **Session States**:
+  - `queued`: Session reserved, awaiting client transfer.
+  - `uploading`: Resumable URL issued; client transfer in flight.
+  - `completed`: Drive upload confirmed and `Media` record created.
+  - `failed`: Terminal failure with `error_code` and `error_message`.
+  - `cancelled`: Explicitly cancelled by user via `abandon_direct_upload()`.
+- **Replay Safety**: If a client re-submits an `upload_id` that is already `completed`, the server immediately returns the existing `Media` record without initiating a duplicate upload.
+- **Two-Phase Commit Guarantee**: During `complete_direct_upload`, the backend records `session.drive_file_id` immediately before performing header validation. If validation fails or a crash occurs, the file ID is recorded, allowing orphan cleanup jobs to reclaim storage.
+
+### 4.4 Ranged Read Header Validation
+
+The server never trusts client-reported MIME types or file contents. However, downloading entire multi-gigabyte files to verify magic bytes would undermine the direct upload design.
+
+Instead, during `complete_direct_upload`:
+1. The backend issues an HTTP Range request to Google Drive (`storage.download(drive_file_id, range_start=0, range_end=511)`).
+2. `validate_upload()` verifies:
+   - Image magic signatures (JPEG SOI, PNG header, WebP RIFF).
+   - Video container validation: Walks ISO-BMFF boxes (`ftyp`, `moov`, `mdat`) for MP4 and QuickTime MOV containers.
+3. If signatures do not match the declared extension, the Drive file is deleted immediately and an error is returned.
+
+### 4.5 Concurrency & Memory Management
+
+- **Queue Throttling**: The frontend scheduler restricts active concurrent uploads to `MAX_CONCURRENT_UPLOADS = 4` to prevent saturating client uplink bandwidth and browser connection pools.
+- **DOM/Memory Release**: Once a file finishes uploading or is cancelled, `withReleasedFile()` nullifies the `File` reference in the React state. This prevents hundreds of megabytes of binary buffers from being pinned in browser heap memory during large batches.
+- **Global Upload Context**: Managed by `UploadContext.tsx`. State is mounted at the root admin provider level, ensuring route transitions do not interrupt ongoing XHR requests.
+- **Global Status Badge**: `GlobalUploadBadge.tsx` displays active upload counts, progress percentage, and spinning indicators across all admin screens.
+
+---
+
+## 5. Failure Recovery & Edge Cases
+
+| Scenario | Handled By | System Behavior |
 |---|---|---|
-| Drive 404 | `_translate_http_error` | → `StorageNotFoundError` |
-| Drive 403/429 | `_translate_http_error` | → `StorageQuotaExceededError` |
-| Transient network/SSL/proxy errors | `_is_retryable_google_error` + `_retry` | Retried with backoff; resumable protocol continues from last confirmed byte |
-| Refresh token revoked | `RefreshError` catch blocks | → `StorageError` ("authentication failed") |
-| Systemic outage | Circuit breaker | Fails fast without per-request retry cost |
-| Chunk/session exceeds timeout | `run_with_timeout` / session timer in `upload()` | → `StorageTimeoutError` |
-| Browser's direct PUT fails | `runDirectUpload` catch | Marks item `error`, calls `abandonUploadSession` so retry isn't rejected as a duplicate |
-| `completeUpload` fails after successful Drive PUT | `retryCompleteOnly` | Retries only the confirmation call, not the upload |
-| Page refreshed mid-upload | Session-recovery effect | Session shown as needing a fresh upload; no resume possible client-side |
-
-## 5. Known gap — CORS on the resumable session (open item)
-
-The reported CORS failure (`Access to XMLHttpRequest ... blocked by CORS policy`) occurs on the
-browser's direct `PUT` to the Drive `upload_id` URL. This points to the **session-creation step**
-on the backend (behind `adminService.createUploadSession`), which has not yet been shared/reviewed.
-
-For Drive to allow a browser to PUT directly to a resumable session URL, the **initial POST that
-creates that session** must include an `Origin` header matching the browser origin that will later
-perform the PUT (e.g. `http://localhost:5173` in dev). If that initiating POST is made
-server-side via `googleapiclient`/`httplib2` without an explicit `Origin` header — which is the
-default — Drive will not enable CORS for the resulting session, and every subsequent browser PUT
-to it fails exactly as observed.
-
-**Next step:** locate and review the backend route/service behind `createUploadSession`
-(likely named something like `create_upload_session`, in an `uploads` router or a dedicated
-`upload_session_service.py`), and confirm/add the `Origin` header on its session-creation request
-to Drive. This file should be added to this architecture doc once reviewed.
-
-## 6. Open questions / follow-ups
-- Reconcile `GoogleDriveStorage.upload()` (full relay) with the frontend's direct-to-Drive model —
-  is the relay path dead code, used for a different call site (e.g. a non-browser integration), or
-  mid-migration?
-- Document the backend upload-session and complete-upload endpoints once reviewed.
-- Document `adminService` (frontend) — `uploadToDrive`, `createUploadSession`, `completeUpload`,
-  `abandonUploadSession`, `reportUploadProgress`, `listUploadSessions`.
-- Document the `upload_session` DB table/model referenced by `upload_id` (VARCHAR(100)) and its
-  status lifecycle (`queued` → `uploading` → `done`/`error`/`cancelled`), plus the staleness sweep
-  that eventually times out abandoned sessions.
+| **User navigates away from `/admin/uploads`** | `UploadContext` | Upload continues in background; `GlobalUploadBadge` displays live progress. |
+| **User cancels upload** | `abandonUploadSession` | In-flight XHR is aborted; backend marks session `cancelled` to free the ledger slot. |
+| **Drive upload succeeds, but confirm fails** | `retryCompleteOnly` | Frontend retains `driveFileId`. Retry skips byte transfer and re-runs only finalization. |
+| **Browser tab closed mid-upload** | Session recovery | On reload, incomplete sessions are retrieved via `GET /upload-sessions` and surfaced as failed (since browser `File` object cannot be restored). |
+| **Server restart while uploads in-flight** | Lifespan Startup Sweep | `app/main.py` scans for lingering `uploading`/`queued` sessions and marks them `failed` (`UPLOAD_STALE`). |
+| **Drive outage / 5xx errors** | `CircuitBreaker` | Trips after 3 consecutive network failures with a 20-second cooldown, preventing thread exhaustion. |
+| **Orphaned files in Drive** | `reconcile_orphans.py` | Nightly cron identifies files in Drive without matching DB records (past grace period) and purges them. |

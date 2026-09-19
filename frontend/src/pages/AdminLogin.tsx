@@ -64,7 +64,7 @@ export default function AdminLogin() {
 
       <form className="auth-card" onSubmit={handleSubmit}>
         <div className="login-brand">
-          <span className="login-brand__script">sam</span>
+          <span className="login-brand__script">Love Story</span>
           <span className="login-brand__sub">Photography</span>
           <span className="login-brand__tag">Studio Admin</span>
         </div>
@@ -86,7 +86,7 @@ export default function AdminLogin() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             autoComplete="username"
-            placeholder="admin@samphotography.com"
+            placeholder="admin@lovestory.ph"
             autoFocus
             required
           />

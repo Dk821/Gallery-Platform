@@ -14,8 +14,8 @@ A private gallery platform for wedding photographers to manage clients, albums, 
 | Backend | Python 3.12, FastAPI 0.115, Uvicorn |
 | Database | MySQL 8 (via SQLAlchemy 2 + PyMySQL) |
 | Migrations | Alembic |
-| Storage | Google Drive v3 API (service account) |
-| Video Processing | FFmpeg (system binary) |
+| Storage | Google Drive v3 API (OAuth2 credentials) |
+| Video Processing | FFmpeg (system binary — **optional**, see below) |
 | Image Processing | Pillow |
 | Auth | Argon2 (passwords), itsdangerous (admin tokens), Fernet (reversible encryption) |
 | Testing | pytest, httpx, TestClient |
@@ -56,15 +56,17 @@ final v2/
 │   │                         # are on different origins (mirrors CROSS_SITE_FRONTEND)
 │   ├── .env                  # Local override (not committed)
 │   └── src/
-│       ├── components/       # Shared UI (AdminLayout, Sidebar, Lightbox, Modals)
+│       ├── components/       # Shared UI (AdminLayout, Sidebar, Lightbox, Modals, GlobalUploadBadge)
+│       ├── contexts/         # React Contexts (UploadContext - global persistent upload queue)
 │       ├── pages/            # Admin + Client pages
 │       ├── services/         # Typed API client (auth, admin, gallery)
 │       ├── styles/           # Plain CSS: index.css + admin.css + gallery.css
-│       ├── utils/            # Formatters (format.ts)
+│       ├── utils/            # format.ts, photoThumbnail.ts, videoPoster.ts
 │       ├── vite-env.d.ts     # ImportMetaEnv typing for VITE_ vars
 │       ├── App.tsx           # Route definitions
 │       └── main.tsx          # Entry point
 ├── ARCHITECTURE.md           # This file
+├── Upload-Pipeline.md        # Deep dive on direct-to-Drive upload pipeline
 └── README.md                 # Setup guide and project overview
 ```
 
@@ -166,7 +168,7 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 |---|---|
 | Clients | CRUD, view passwords, change password, change download password, disable/enable, regenerate gallery ID |
 | Albums | CRUD, filter by client, list media, selection summary |
-| Media | Resumable upload, upload status + upload-sessions list, bulk delete/move, stream, download, thumbnail, orphans |
+| Media | Direct upload session (`POST /upload-session`), thumbnail upload (`POST /upload-session/{id}/thumbnail`), completion confirmation (`POST /upload-complete`), progress ping (`POST /upload-progress/{id}`), abandonment (`POST /upload-session/{id}/abandon`), status (`GET /upload-status/{id}`), recent session list (`GET /upload-sessions`), bulk delete/move, stream, download, thumbnail, orphans |
 | Dashboard | Stats summary |
 | Activity | Audit log feed |
 | Storage | Google Drive quota |
@@ -203,39 +205,18 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 ### Download Password Gate
 - If client has a `download_password_hash`, downloads require `download_password_verified_at` flag on the session
 
-### Upload Hardening
-- Magic-byte validation + ISO-BMFF box-walk for mp4/mov (`app/services/media_validation.py`)
-- `DiskReservationTracker` for free disk checks (`app/services/disk_service.py`)
-- Retry with exponential backoff on `{429, 500, 502, 503, 504}` (`app/services/retry.py` — retryable
-  statuses only; auth/not-found/permission errors are never retried)
-- Per-request and per-upload concurrency limiters (`BoundedSemaphore`, `UploadConcurrencyLimiter`)
-- Max upload size: 10 GB (configurable)
-- **Disk spooling**: every upload is fully spooled to this machine's temp disk before being relayed
-  to Drive (temp file deleted once the request finishes) - this is why the free-disk floor below
-  matters with several files in flight at once
-- Structured upload log events via `upload_logging.py`, with a forbidden-keys guard that strips
-  passwords/tokens/secrets from any logged field
-- **Client-side throttling**: the Uploads page (`frontend/src/pages/Uploads.tsx`) caps itself to
-  `MAX_CONCURRENT_UPLOADS = 4` simultaneous transfers via a scheduler `useEffect` - queued items are
-  started only as active slots free up, instead of firing every selected file at once. This exists
-  specifically to support large batch uploads (e.g. ~250 files / ~50GB) without overwhelming the
-  server's own admission control below.
-- Server admission control is tuned to match: `UPLOAD_MAX_CONCURRENT=4`,
-  `UPLOAD_MAX_CONCURRENT_REQUESTS=8`, `UPLOAD_QUEUE_WAIT_SECONDS=300`, `UPLOAD_MIN_FREE_DISK_GB=5`,
-  `UPLOAD_CHUNK_SIZE_MB=8`, `UPLOAD_CHUNK_TIMEOUT=120`, `UPLOAD_SESSION_TIMEOUT=7200` (all in `backend/.env`)
-- **Socket-level timeouts**: every `httplib2.Http()` used to talk to Google Drive (metadata client,
-  resumable upload, download/streaming) is constructed with `timeout=settings.upload_chunk_timeout` -
-  httplib2 has no default socket timeout, so without this a single hung TLS handshake (e.g. an
-  antivirus/network SSL interception mangling the handshake, seen as `SSL: WRONG_VERSION_NUMBER`) could
-  block a worker thread forever instead of failing cleanly. `download()`'s chunk loop is additionally
-  wrapped in `run_with_timeout` (`app/services/timeout_utils.py`), mirroring what `upload()` already did.
-- **Circuit breaker** (`app/services/circuit_breaker.py`): a process-wide breaker wraps the shared
-  `_retry()` path in `google_drive_service.py`. After 3 consecutive pure transport/connectivity
-  failures it "opens" and fails fast (no network attempt) for a 20s cooldown, then lets one trial call
-  through - prevents a burst of failing Drive calls from exhausting the request-handling thread pool.
-  Only transport failures count against it (`httplib2.HttpLib2Error`, `OSError`/`ssl.SSLError`, the
-  httplib2 cleanup-bug `AttributeError`); application-level Drive errors (`HttpError`, `RefreshError`)
-  don't, since they prove connectivity is fine.
+### Upload Hardening (Direct-to-Drive Architecture)
+- **Direct-to-Drive transfers**: The browser transfers bytes directly to Google Drive via resumable session URLs (`adminService.uploadToDrive`). Large media payloads (up to 10 GB) never touch the application server's disk or relay through its network interface.
+- **CORS Origin forwarding**: During session creation (`POST /api/admin/media/upload-session`), the server validates the incoming browser `Origin` against `settings.effective_cors_origins` and forwards it to Google Drive's resumable session initiator, enabling Google Drive to issue standard CORS headers to subsequent browser PUTs.
+- **Client-Side WebP thumbnails**: Video poster frames (`videoPoster.ts`) and photo thumbnails (`photoThumbnail.ts`) are generated directly in the browser using HTML5 Canvas and WebP compression, then uploaded as small images to `POST /upload-session/{id}/thumbnail`. This eliminates heavy server-side video downloads and makes server-side FFmpeg optional.
+- **Ranged-read signature validation**: Upon completion (`POST /api/admin/media/upload-complete`), the server verifies the file with Drive and reads only the initial header bytes (range 0..511 bytes) to perform magic-byte and ISO-BMFF box-walk checks (`app/services/media_validation.py`) without downloading the bulk file.
+- **Idempotency ledger (`upload_sessions`)**: Each upload uses a UUID-based `upload_id` decoupled from filename to prevent `VARCHAR(100)` column overflow. Duplicate submissions of completed uploads safely return the existing `Media` record without re-uploading.
+- **Global queue persistence**: `UploadContext.tsx` maintains upload state globally across admin routes. Transfer progress is visible anywhere via `GlobalUploadBadge.tsx`. Memory is guarded by `withReleasedFile()`, which clears `File` object handles from React state upon upload completion or cancellation.
+- **Client-side throttling**: The upload queue scheduler caps active transfers to `MAX_CONCURRENT_UPLOADS = 4` simultaneous connections to prevent network saturation.
+- **Server admission control**: Configured via `UPLOAD_MAX_CONCURRENT=4`, `UPLOAD_QUEUE_WAIT_SECONDS=300`, `UPLOAD_CHUNK_TIMEOUT=120`, `UPLOAD_SESSION_TIMEOUT=7200` in `.env`.
+- **Socket-level timeouts**: Every `httplib2.Http()` used to communicate with Google Drive has explicit socket timeouts (`timeout=settings.upload_chunk_timeout`), preventing hung TLS handshakes from permanently blocking worker threads.
+- **Circuit breaker** (`app/services/circuit_breaker.py`): Wraps transport calls to Google Drive. Trips after 3 consecutive transport/connectivity failures with a 20-second cooldown, protecting the backend thread pool during Google Drive service degradation.
+
 
 ---
 
@@ -271,6 +252,8 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 
 ### Key Components
 - `AdminLayout` + `Sidebar` — Admin shell
+- `UploadContext` — Global upload queue manager mounted at admin root, maintaining in-flight transfers across page navigation
+- `GlobalUploadBadge` — Floating status badge displayed across admin screens when background uploads are in progress
 - `ClientNav` — Gallery navigation
 - `MediaLightbox` — Filmstrip + zoom + keyboard nav
 - `DownloadJobModal` — Creates ZIP job, polls every 1.5s until completion
@@ -290,7 +273,7 @@ No task queue (by design — single-VPS, single-process). Background work uses F
 |---|---|---|
 | ZIP download creation | `BackgroundTasks` + threading | Snaps media list, prefetches files concurrently (`ZIP_JOB_PARALLEL_DOWNLOADS=4`), builds ZIP incrementally, TTL from `studio_settings.download_link_ttl_hours` (admin-configurable, default 24h) |
 | Download analytics recording | Starlette `BackgroundTask` | Own DB session, non-blocking |
-| Thumbnail generation | Inline (synchronous) | PIL for images, FFmpeg for video posters |
+| Thumbnail generation | Client-side (WebP) with server fallback | Video posters and photo thumbnails are generated in the browser during direct upload; PIL and server-side FFmpeg are retained for fallbacks & backfills |
 | Orphan reconciliation | Cron script (`python -m app.reconcile_orphans --apply`) | Deletes Drive files with no DB row after `ORPHAN_FILE_GRACE_PERIOD_HOURS` (default 48h) grace; dry run without `--apply` |
 | Expired job cleanup | Cron script (`python -m app.cleanup_download_jobs`) | Removes stale ZIPs; flips rows to `expired` |
 | Stale upload sweep | On app boot (`lifespan`) | Marks `uploading`/`queued` sessions from a dead process as `failed` (`UPLOAD_STALE`) |
@@ -334,9 +317,7 @@ No task queue (by design — single-VPS, single-process). Background work uses F
 ## Notable Design Decisions
 
 1. **No task queue** — Deliberate choice for single-VPS simplicity; ZIP jobs run in-process via `BackgroundTasks`
-2. **Google Drive as storage** — Media never lives long-term on the app server's disk; uploads are
-   spooled to temp disk only while being relayed to Drive (and ZIPs while being built), then deleted.
-   Only `google_drive_service.py` imports the Drive SDK
+2. **Google Drive as direct storage** — Bulk media uploads never touch the application server's disk or relay through its network interface; browsers upload directly to Google Drive via resumable upload URLs, saving VPS bandwidth and disk space. Media files are organized into client and album Drive folders. Only `google_drive_service.py` imports the Drive SDK
 3. **Dual password system** — Login password (Argon2) + optional download password (separate gate)
 4. **Client-scoped routes** — Every client route validates `galleryId` ownership; no cross-tenant access possible
 5. **Upload idempotency** — `upload_sessions` table prevents duplicate uploads on retry
@@ -349,3 +330,7 @@ No task queue (by design — single-VPS, single-process). Background work uses F
    Drive connectivity calls from exhausting the request thread pool; a process-wide circuit breaker
    (`circuit_breaker.py`) fails fast during a cooldown window instead, and is deliberately scoped to
    transport-layer failures only, not application-level Drive errors
+10. **Client-side WebP thumbnail generation** — Generating video poster frames and photo thumbnails
+    in the browser via HTML5 Canvas and WebP compression avoids expensive server-side video re-downloads
+    and renders server-side FFmpeg optional (retained only for backfill tooling)
+

@@ -18,16 +18,16 @@ def test_update_studio_profile(client, seeded_admin):
 
     resp = client.put(
         "/api/admin/settings/profile",
-        json={"studio_name": "Sam Photography", "contact_email": "hello@samphoto.dev"},
+        json={"studio_name": "Love Story Photography", "contact_email": "hello@lovestory.ph"},
     )
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert data["studio_name"] == "Sam Photography"
-    assert data["contact_email"] == "hello@samphoto.dev"
+    assert data["studio_name"] == "Love Story Photography"
+    assert data["contact_email"] == "hello@lovestory.ph"
 
     # Persisted, not just echoed back.
     again = client.get("/api/admin/settings")
-    assert again.json()["data"]["studio"]["studio_name"] == "Sam Photography"
+    assert again.json()["data"]["studio"]["studio_name"] == "Love Story Photography"
 
 
 def test_update_security_policy_rejects_out_of_range(client, seeded_admin):

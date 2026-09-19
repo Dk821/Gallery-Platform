@@ -213,7 +213,7 @@ export default function Sidebar({ open, onNavigate }: SidebarProps) {
   return (
     <aside className={"admin-sidebar" + (open ? " admin-sidebar--open" : "")}>
       <div className="admin-sidebar__brand">
-        <span className="admin-sidebar__logo-script">sam</span>
+        <span className="admin-sidebar__logo-script">Love Story</span>
         <span className="admin-sidebar__logo-sub">PHOTOGRAPHY</span>
       </div>
 

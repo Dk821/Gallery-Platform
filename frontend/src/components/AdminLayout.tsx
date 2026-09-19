@@ -8,7 +8,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     <div className="admin-shell">
       <div className="admin-topbar">
         <div className="admin-topbar__brand">
-          <span className="admin-topbar__logo-script">sam</span>
+          <span className="admin-topbar__logo-script">Love Story</span>
           <span className="admin-topbar__logo-sub">PHOTOGRAPHY</span>
         </div>
         <button

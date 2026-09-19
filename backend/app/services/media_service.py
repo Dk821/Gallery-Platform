@@ -1,6 +1,7 @@
 import datetime
 import io
 import logging
+import time
 import uuid
 
 from sqlalchemy import func, or_, select
@@ -239,6 +240,20 @@ UPLOAD_ID_MAX_LENGTH = 100  # must match UploadSession.upload_id's String(100) c
 # against locally-spooled bytes (Section 16). Matches the header size the
 # old /upload route read from its SpooledTemporaryFile.
 HEADER_SIGNATURE_BYTES = 4096
+
+# A browser's direct PUT to a Drive resumable session can take a moment to
+# finalize on Google's side before the file shows up for a follow-up
+# metadata lookup. complete_direct_upload confirms the file right after that
+# PUT, so give the lookup a few short retries before burning the session as
+# failed - a 404 here is usually transient propagation, not a lost file, and
+# on a multi-file batch the session would otherwise be condemned over a
+# sub-second race (surfacing to the user as an impossible-to-retry "This
+# upload session is 'failed', not awaiting completion." on the next attempt).
+# Genuine quota/5xx statuses on the lookup itself are still covered by the
+# storage layer's own retry-with-backoff; this only pads the 404-not-vis (yet)
+# gap.
+UPLOAD_CONFIRM_404_RETRIES = 3
+UPLOAD_CONFIRM_404_DELAY_SECONDS = 1.5
 
 
 def _validate_upload_id(upload_id: str) -> None:
@@ -821,7 +836,21 @@ def complete_direct_upload(
     db.commit()
 
     try:
-        stored = storage.get_file(drive_file_id)
+        for attempt in range(1, UPLOAD_CONFIRM_404_RETRIES + 1):
+            try:
+                stored = storage.get_file(drive_file_id)
+                break
+            except StorageNotFoundError:
+                if attempt >= UPLOAD_CONFIRM_404_RETRIES:
+                    raise
+                log_event(
+                    logger,
+                    "upload_confirm_retry",
+                    upload_id=upload_id,
+                    attempt=attempt,
+                    reason="drive_file_not_visible",
+                )
+                time.sleep(UPLOAD_CONFIRM_404_DELAY_SECONDS)
     except StorageNotFoundError:
         _fail_upload_session(
             db,

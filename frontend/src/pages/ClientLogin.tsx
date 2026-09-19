@@ -70,7 +70,7 @@ export default function ClientLogin() {
 
       <div className="entrance-card">
         <div className="login-brand">
-          <span className="login-brand__script">sam</span>
+          <span className="login-brand__script">Love Story</span>
           <span className="login-brand__sub">Photography</span>
         </div>
 
