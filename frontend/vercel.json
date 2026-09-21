@@ -5,11 +5,8 @@
       "destination": "https://api.madgen.space/api/:path*"
     },
     {
-      "source": "/((?!api/).*)",
+      "source": "/:path*",
       "destination": "/index.html"
     }
-  ],
-  
-  "cleanUrls": true,
-  "trailingSlash": false
+  ]
 }
