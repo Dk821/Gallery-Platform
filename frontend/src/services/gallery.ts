@@ -4,6 +4,11 @@ export interface GalleryInfo {
   client_name: string;
   client_uuid: string;
   has_download_password: boolean;
+  // Whether this gallery has an automatic cover yet. False for galleries that
+  // haven't had an eligible photo uploaded since covers existed - the landing
+  // page then keeps its default hero instead of requesting an image that
+  // would 404.
+  has_cover: boolean;
 }
 
 export interface GalleryAlbum {
@@ -32,6 +37,11 @@ export interface SelectionSummary {
 export const galleryService = {
   getGallery: () => api.get<GalleryInfo>("/client/gallery"),
 
+  // The automatic cover of the signed-in client's own gallery. No id in the
+  // URL: the server resolves the client from the session cookie, so there is
+  // nothing to tamper with. Read-only - covers have no manual management.
+  coverUrl: () => `${API_BASE_URL}/api/client/gallery/cover`,
+
   listAlbums: (page = 1, limit = 50) =>
     api.get<Page<GalleryAlbum>>(`/client/albums?page=${page}&limit=${limit}`),
 
@@ -55,6 +65,22 @@ export const galleryService = {
     if (search) params.set("search", search);
     return api.get<SelectionSummary>(`/client/media/selection-summary?${params.toString()}`);
   },
+
+  // --- Wishlist (favourites) ---
+  // The signed-in client's wishlisted media, newest first. Media in albums
+  // that have expired is left out, same as every other client listing.
+  listWishlist: (page = 1, limit = 60, albumId?: number) => {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+    if (albumId !== undefined) params.set("album_id", String(albumId));
+    return api.get<Page<GalleryMedia>>(`/client/wishlist?${params.toString()}`);
+  },
+
+  // Both are idempotent server-side (adding twice / removing twice is fine).
+  addToWishlist: (mediaId: number) =>
+    api.post<{ media_id: number; is_wishlisted: boolean }>(`/client/wishlist/${mediaId}`),
+
+  removeFromWishlist: (mediaId: number) =>
+    api.delete<{ media_id: number; is_wishlisted: boolean }>(`/client/wishlist/${mediaId}`),
 
   thumbnailUrl: (mediaId: number) => `${API_BASE_URL}/api/client/media/${mediaId}/thumbnail`,
   viewUrl: (mediaId: number) => `${API_BASE_URL}/api/client/media/${mediaId}/view`,

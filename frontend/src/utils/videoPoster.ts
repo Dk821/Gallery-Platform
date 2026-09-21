@@ -25,6 +25,13 @@ const OVERALL_TIMEOUT_MS = 20_000;
 // Mean luma (0-255) under which a frame is treated as "basically black" -
 // many videos fade in from black, and a black poster is worse than none.
 const DARK_LUMA_THRESHOLD = 16;
+// Something this far below that is a placeholder/blank canvas (a video the
+// browser never decoded), not a merely-dark real frame. We never store it.
+const SOLID_BLACK_LUMA = 4;
+// Resumption points scanned in order until a clearly non-black frame is
+// found (each a fraction of the duration). Spot-checks further into the
+// video catch fade-in-from-black footage and recover from a blank frame.
+const CANDIDATE_FRACTIONS = [0.25, 0.5, 0.75];
 
 const VIDEO_EXTENSION = /\.(mp4|mov|webm)$/i;
 
@@ -72,6 +79,80 @@ async function seekTo(video: HTMLVideoElement, time: number, deadline: number): 
   if (video.readyState < 2) {
     await waitFor(video, ["loadeddata", "canplay"], deadline);
   }
+}
+
+// Browsers update the <video> element's presented frame asynchronously after
+// "seeked" fires - drawing the canvas immediately can capture a not-yet-
+// decoded frame. One requestAnimationFrame (~1 display refresh) is enough
+// for the decoder to hand over the real frame.
+function waitForPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame !== "function") return resolve();
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+// The core reason a <video>+<canvas> capture comes out black: a paused
+// <video> element can sit on a placeholder (black) frame even after a
+// "seeked" event, because it only ever PAINTS frames the decoder delivers
+// during playback. This resolves once a REAL decoded frame has been
+// presented to the element (the moment requestVideoFrameCallback fires, or
+// one muted playback tick on browsers without it), then pauses again.
+// Bounded by the shared deadline so a stalled decoder cannot hang the
+// extraction; on timeout it resolves anyway and the caller keeps whatever
+// it has (the solid-black guard then rejects it).
+function nextDecodedFrame(video: HTMLVideoElement, deadline: number): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let cancel: (() => void) | null = null;
+
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (cancel) {
+        try {
+          cancel();
+        } catch {
+          /* no-op */
+        }
+      }
+      try {
+        video.pause();
+      } catch {
+        /* no-op */
+      }
+      resolve();
+    };
+    const timer = setTimeout(done, Math.max(1, deadline - Date.now()));
+
+    // Start muted playback so the decoder actually produces painted frames.
+    // play() can reject (autoplay policy) - if it does, keep whatever frame
+    // the seek already produced rather than hanging.
+    if (video.paused) {
+      try {
+        const playPromise = video.play() as unknown as Promise<void> | undefined;
+        if (playPromise && typeof playPromise.catch === "function") {
+          playPromise.catch(() => done());
+        }
+      } catch {
+        /* autoplay unavailable - keep what we have */
+      }
+    }
+
+    if (typeof video.requestVideoFrameCallback === "function") {
+      const onFrame = () => done();
+      let id: number | undefined;
+      id = video.requestVideoFrameCallback(onFrame);
+      cancel = () => {
+        if (id !== undefined) video.cancelVideoFrameCallback(id);
+      };
+    } else {
+      const onTick = () => done();
+      video.addEventListener("timeupdate", onTick, { once: true });
+      cancel = () => video.removeEventListener("timeupdate", onTick);
+    }
+  });
 }
 
 function meanLuma(source: HTMLCanvasElement): number {
@@ -136,7 +217,22 @@ export async function extractVideoPoster(file: File): Promise<Blob | null> {
     // and keeps the browser from ever treating this as media to play aloud.
     video.muted = true;
     video.playsInline = true;
-    video.preload = "metadata";
+    // AUTO (not metadata): loading only metadata can leave the element sat
+    // on a blank black placeholder - we need a track it can actually play.
+    video.preload = "auto";
+    // The element must be IN the document to actually paint frames: a video
+    // that was never attached is never rendered, so the decoder has nothing
+    // to present and every canvas draw comes out black (Chrome especially).
+    // Hidden off-screen, 1x1, effectively invisible - never seen by anyone.
+    video.width = 1;
+    video.height = 1;
+    video.style.position = "fixed";
+    video.style.top = "0";
+    video.style.left = "-10000px";
+    video.style.opacity = "0.01";
+    video.style.pointerEvents = "none";
+    const host = document.body || document.documentElement;
+    host.appendChild(video);
     video.src = url;
 
     await waitFor(video, ["loadedmetadata"], deadline);
@@ -146,23 +242,43 @@ export async function extractVideoPoster(file: File): Promise<Blob | null> {
     // midpoint for clips shorter than 2 s.
     const primaryTime = duration > 0 ? Math.min(1, duration / 2) : 0;
 
-    await seekTo(video, primaryTime, deadline);
-    let best = drawFrame(video);
-    if (!best) return null;
-
-    // Faded in from black? Take one more look further in and keep whichever
-    // frame is brighter. One retry at most: this stays cheap on huge files.
-    if (duration > 4 && meanLuma(best) < DARK_LUMA_THRESHOLD) {
+    // Seek, force the decoder to DELIVER a painted frame (muted playback +
+    // requestVideoFrameCallback - a paused element can draw black), then
+    // capture it. Each spot is guarded: one un-seekable/unreadable position
+    // must never abort the whole extraction, it just moves on to the next.
+    const captureAt = async (time: number) => {
       try {
-        await seekTo(video, duration * 0.25, deadline);
-        const later = drawFrame(video);
-        if (later && meanLuma(later) > meanLuma(best)) best = later;
+        await seekTo(video, time, deadline);
+        await nextDecodedFrame(video, deadline);
+        await waitForPaint();
+        const canvas = drawFrame(video);
+        return canvas ? { canvas, luma: meanLuma(canvas) } : null;
       } catch {
-        /* keep the first frame */
+        return null;
       }
+    };
+
+    let best: { canvas: HTMLCanvasElement; luma: number } | null = await captureAt(primaryTime);
+
+    // A black poster is worse than none. If the first frame is (still) dark -
+    // faded in from black, or the decoder hasn't handed over a real frame -
+    // scan a few spot-checks further in and keep the BRIGHTEST real frame.
+    for (const fraction of CANDIDATE_FRACTIONS) {
+      if (best && best.luma >= DARK_LUMA_THRESHOLD) break; // good enough already
+      if (Date.now() > deadline) break;
+      const time = duration * fraction;
+      if (time <= 0 || Math.abs(time - primaryTime) < 0.05) continue;
+      const attempt = await captureAt(time);
+      if (attempt && (!best || attempt.luma > best.luma)) best = attempt;
     }
 
-    return await toImageBlob(best);
+    // A solid-black frame is a decoder placeholder, not a real image - never
+    // store it. Everything drawable failed or was still blank => no poster,
+    // the gallery shows its placeholder tile. A merely-dark-but-real frame
+    // (night footage) is still stored.
+    if (!best || best.luma <= SOLID_BLACK_LUMA) return null;
+
+    return await toImageBlob(best.canvas);
   } catch {
     return null;
   } finally {
@@ -173,6 +289,11 @@ export async function extractVideoPoster(file: File): Promise<Blob | null> {
       video.pause();
       video.removeAttribute("src");
       video.load();
+    } catch {
+      /* best effort */
+    }
+    try {
+      if (video.parentNode) video.parentNode.removeChild(video);
     } catch {
       /* best effort */
     }

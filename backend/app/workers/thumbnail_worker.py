@@ -53,6 +53,11 @@ VIDEO_POSTER_MAX_DIMENSION = 720
 # to decode just to be shrunk).
 BROWSER_THUMBNAIL_MAX_SOURCE_PIXELS = 16_000_000
 BROWSER_THUMBNAIL_ALLOWED_FORMATS = {"JPEG", "WEBP", "PNG"}
+# Automatic client cover (hero image on the gallery landing page). Much larger
+# than a grid thumbnail, but deliberately NOT original-resolution: it is a
+# single image shown once per gallery visit, so it must load fast.
+COVER_MAX_DIMENSION = 1600
+COVER_WEBP_QUALITY = 84
 FFMPEG_TIMEOUT_SECONDS = 30
 FFMPEG_POSTER_TIMESTAMP_SECONDS = 1.0
 
@@ -80,7 +85,11 @@ def is_ffmpeg_available() -> bool:
     return available
 
 
-def generate_image_thumbnail(file_obj: BinaryIO, max_dimension: int = THUMBNAIL_MAX_DIMENSION) -> bytes | None:
+def generate_image_thumbnail(
+    file_obj: BinaryIO,
+    max_dimension: int = THUMBNAIL_MAX_DIMENSION,
+    quality: int = THUMBNAIL_WEBP_QUALITY,
+) -> bytes | None:
     """
     Pillow can read directly from the file-like object already sitting in
     memory/disk from the upload - no extra copy needed for images, since
@@ -97,7 +106,7 @@ def generate_image_thumbnail(file_obj: BinaryIO, max_dimension: int = THUMBNAIL_
         image.thumbnail((max_dimension, max_dimension))
 
         buffer = BytesIO()
-        image.save(buffer, format="WEBP", quality=THUMBNAIL_WEBP_QUALITY)
+        image.save(buffer, format="WEBP", quality=quality)
         return buffer.getvalue()
     except Exception as exc:  # noqa: BLE001 - any decode failure just means "no thumbnail"
         logger.warning("Image thumbnail generation failed: %s", exc)
@@ -107,6 +116,26 @@ def generate_image_thumbnail(file_obj: BinaryIO, max_dimension: int = THUMBNAIL_
             file_obj.seek(0)
         except Exception:
             pass
+
+
+def _is_acceptable_browser_image(data: bytes) -> bool:
+    """
+    Cheap header probe shared by every browser-generated image we accept
+    (thumbnails, posters, covers): checks the format and the declared
+    dimensions WITHOUT decoding the pixels, so an oversized/decompression-bomb
+    image is rejected before it is ever loaded into memory.
+    """
+    try:
+        with Image.open(BytesIO(data)) as probe:
+            if probe.format not in BROWSER_THUMBNAIL_ALLOWED_FORMATS:
+                return False
+            width, height = probe.size
+        if width < 1 or height < 1 or width * height > BROWSER_THUMBNAIL_MAX_SOURCE_PIXELS:
+            return False
+    except Exception as exc:  # noqa: BLE001 - unreadable/hostile bytes just mean "no image"
+        logger.warning("Browser image rejected (unreadable image): %s", exc)
+        return False
+    return True
 
 
 def normalize_browser_thumbnail(data: bytes) -> bytes | None:
@@ -130,17 +159,27 @@ def normalize_browser_thumbnail(data: bytes) -> bytes | None:
     is probed BEFORE the full decode so an oversized/decompression-bomb
     image is rejected without ever being loaded into memory.
     """
-    try:
-        with Image.open(BytesIO(data)) as probe:
-            if probe.format not in BROWSER_THUMBNAIL_ALLOWED_FORMATS:
-                return None
-            width, height = probe.size
-        if width < 1 or height < 1 or width * height > BROWSER_THUMBNAIL_MAX_SOURCE_PIXELS:
-            return None
-    except Exception as exc:  # noqa: BLE001 - unreadable/hostile bytes just mean "no thumbnail"
-        logger.warning("Browser thumbnail rejected (unreadable image): %s", exc)
+    if not _is_acceptable_browser_image(data):
         return None
     return generate_image_thumbnail(BytesIO(data), max_dimension=VIDEO_POSTER_MAX_DIMENSION)
+
+
+def normalize_browser_cover(data: bytes) -> bytes | None:
+    """
+    Same job as normalize_browser_thumbnail, for the automatic client cover:
+    validates the small image the BROWSER produced from the photo it just
+    uploaded and re-encodes it as WebP capped at COVER_MAX_DIMENSION px (so a
+    client that ignored the size guidance can't store an original-resolution
+    "cover"), stripping metadata and guaranteeing the stored bytes really are
+    WebP - the cover streaming route always serves them as image/webp.
+
+    This is NOT where the cover is generated - the browser does that, from the
+    file the admin selected. This only sanitises what the browser sent; the
+    server never downloads the original photo to build a cover.
+    """
+    if not _is_acceptable_browser_image(data):
+        return None
+    return generate_image_thumbnail(BytesIO(data), max_dimension=COVER_MAX_DIMENSION, quality=COVER_WEBP_QUALITY)
 
 
 def generate_video_poster(file_obj: BinaryIO, filename_hint: str) -> bytes | None:

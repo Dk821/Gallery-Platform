@@ -4,13 +4,15 @@ import ClientNav from "../components/ClientNav";
 import DownloadJobModal from "../components/DownloadJobModal";
 import DownloadPasswordModal from "../components/DownloadPasswordModal";
 import MediaLightbox from "../components/MediaLightbox";
+import WishlistHeart from "../components/WishlistHeart";
+import { useWishlist } from "../hooks/useWishlist";
 import { ApiRequestError } from "../services/api";
 import { GalleryAlbum, GalleryMedia, galleryService } from "../services/gallery";
 import { formatBytes, getExpiryInfo } from "../utils/format";
 
 const PAGE_SIZE = 60;
 
-const DEFAULT_HERO_IMAGE = "/images/album-hero.jpg";
+const DEFAULT_HERO_IMAGE = "/images/album-hero.webp";
 
 function formatLongDate(dateStr?: string | null): string {
   if (!dateStr) return "14 FEBRUARY 2026";
@@ -52,6 +54,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     has_thumbnail: true,
     status: "ready",
     created_at: "2026-02-14T10:15:00Z",
+    is_wishlisted: false,
   },
   {
     id: 102,
@@ -66,6 +69,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     has_thumbnail: true,
     status: "ready",
     created_at: "2026-02-14T10:20:00Z",
+    is_wishlisted: false,
   },
   {
     id: 103,
@@ -80,6 +84,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     has_thumbnail: true,
     status: "ready",
     created_at: "2026-02-14T10:25:00Z",
+    is_wishlisted: false,
   },
   {
     id: 104,
@@ -94,6 +99,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     has_thumbnail: true,
     status: "ready",
     created_at: "2026-02-14T10:30:00Z",
+    is_wishlisted: false,
   },
   {
     id: 105,
@@ -108,6 +114,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     has_thumbnail: true,
     status: "ready",
     created_at: "2026-02-14T10:35:00Z",
+    is_wishlisted: false,
   },
   {
     id: 106,
@@ -122,6 +129,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     has_thumbnail: true,
     status: "ready",
     created_at: "2026-02-14T10:40:00Z",
+    is_wishlisted: false,
   },
   {
     id: 107,
@@ -136,6 +144,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     has_thumbnail: true,
     status: "ready",
     created_at: "2026-02-14T10:45:00Z",
+    is_wishlisted: false,
   },
   {
     id: 108,
@@ -150,6 +159,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     has_thumbnail: true,
     status: "ready",
     created_at: "2026-02-14T10:50:00Z",
+    is_wishlisted: false,
   },
   {
     id: 109,
@@ -164,6 +174,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     has_thumbnail: true,
     status: "ready",
     created_at: "2026-02-14T10:55:00Z",
+    is_wishlisted: false,
   },
   {
     id: 110,
@@ -178,6 +189,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     has_thumbnail: true,
     status: "ready",
     created_at: "2026-02-14T11:00:00Z",
+    is_wishlisted: false,
   },
 ];
 
@@ -232,6 +244,12 @@ export default function AlbumView() {
     setTimeout(() => setToast(null), 3000);
   }
 
+  // Wishlist hearts. Flags arrive with the media list itself (no request per
+  // photo); toggling is optimistic and rolls back with a toast on failure.
+  // Demo galleries have no server rows, so their hearts stay local.
+  const isDemoGallery = galleryId === "test-uuid" || galleryId === "preview" || galleryId === "demo";
+  const wishlist = useWishlist({ demo: isDemoGallery, onError: showToast });
+
   // Close more menu when clicking outside
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -255,6 +273,7 @@ export default function AlbumView() {
       setHasDownloadPassword(galleryInfo.has_download_password);
       setAlbum(albumData);
       setItems(mediaPage.items);
+      wishlist.seed(mediaPage.items);
       setHasMore(mediaPage.has_more);
       setSearchResultCount(searchTerm ? mediaPage.total : null);
       setPage(1);
@@ -281,7 +300,7 @@ export default function AlbumView() {
           album_uuid: "wedding-1",
           client_id: 1,
           album_name: albumIdNum === 2 ? "Reception" : albumIdNum === 3 ? "Pre-Wedding" : "Wedding",
-          description: "Our wedding story",
+          description: "Our story of",
           status: "active",
           expires_at: null,
           created_at: "2026-02-14T10:00:00Z",
@@ -308,6 +327,7 @@ export default function AlbumView() {
     const nextPage = page + 1;
     const mediaPage = await galleryService.listMedia(albumIdNum, nextPage, PAGE_SIZE, appliedSearch || undefined);
     setItems((prev) => [...prev, ...mediaPage.items]);
+    wishlist.seed(mediaPage.items); // only the NEW page - re-seeding older items would undo hearts toggled since
     setHasMore(mediaPage.has_more);
     setPage(nextPage);
   }
@@ -428,7 +448,7 @@ export default function AlbumView() {
           <span>All Albums</span>
         </button>
         <div className="album-hero__content">
-          <p className="album-hero__kicker">Our Wedding Story</p>
+          <p className="album-hero__kicker">Our Story</p>
           <h1 className="album-hero__title">{clientName}</h1>
           <p className="album-hero__date">{formatLongDate(album?.created_at)}</p>
           <p className="album-hero__tagline">Moments &nbsp;•&nbsp; Memories &nbsp;•&nbsp; Forever</p>
@@ -793,6 +813,8 @@ export default function AlbumView() {
                     {isSelected ? "✓" : ""}
                   </span>
 
+                  <WishlistHeart active={wishlist.isWishlisted(item.id)} onToggle={() => wishlist.toggle(item.id)} />
+
                   {/* Media Image Thumbnail */}
                   {item.has_thumbnail ? (
                     <img
@@ -916,6 +938,11 @@ export default function AlbumView() {
                   </div>
 
                   <div className="wedding-media-list-actions">
+                    <WishlistHeart
+                      variant="row"
+                      active={wishlist.isWishlisted(item.id)}
+                      onToggle={() => wishlist.toggle(item.id)}
+                    />
                     <button
                       type="button"
                       className="wedding-media-list-btn"
@@ -973,6 +1000,8 @@ export default function AlbumView() {
           onDownload={
             hasDownloadPassword ? (item) => setSingleDownloadUrl(galleryService.downloadUrl(item.id)) : undefined
           }
+          isWishlisted={(item) => wishlist.isWishlisted(item.id)}
+          onToggleWishlist={(item) => wishlist.toggle(item.id)}
         />
       )}
 

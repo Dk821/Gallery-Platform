@@ -110,6 +110,11 @@ def is_video_filename(settings: Settings, filename: str) -> bool:
     return _get_extension(filename) in settings.allowed_video_extensions
 
 
+def is_photo_filename(settings: Settings, filename: str) -> bool:
+    """True if the filename's extension is one of the configured image types."""
+    return _get_extension(filename) in settings.allowed_image_extensions
+
+
 def validate_upload_intent(settings: Settings, filename: str, file_size: int) -> str:
     """
     Cheap pre-flight check run BEFORE a Google Drive resumable session is

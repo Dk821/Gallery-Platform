@@ -49,6 +49,10 @@ export interface MediaItem {
   has_thumbnail: boolean;
   status: string;
   created_at: string;
+  // Whether the album's client has wishlisted (hearted) this item. Comes back
+  // with every media list/detail response, so the UI never needs a request
+  // per photo to draw its heart.
+  is_wishlisted: boolean;
 }
 
 export type DownloadJobStatus = "queued" | "preparing" | "processing" | "completed" | "failed" | "expired" | "cancelled";

@@ -6,7 +6,7 @@ from app.api.deps import get_current_client, get_current_client_session
 from app.database.connection import get_db
 from app.models.client import Client
 from app.models.session import ClientSession
-from app.api.media_streaming import stream_media_file, stream_media_thumbnail
+from app.api.media_streaming import stream_client_cover, stream_media_file, stream_media_thumbnail
 from app.api.presenters import album_to_response, media_to_response
 from app.schemas.pagination import build_page
 from app.services.album_service import get_album_for_client_or_403, list_albums_for_client
@@ -17,6 +17,7 @@ from app.services.media_service import (
 )
 from app.services.storage_provider import get_storage_service
 from app.services.storage_service import StorageService
+from app.services.wishlist_service import get_wishlisted_media_ids
 
 router = APIRouter(prefix="/api/client", tags=["client-gallery"])
 
@@ -34,8 +35,26 @@ def get_gallery(
             "client_name": client.client_name,
             "client_uuid": client.client_uuid,
             "has_download_password": bool(client.download_password_hash),
+            # Boolean only - never the Drive file id. The landing page uses it
+            # to decide whether to request /gallery/cover or keep its default
+            # hero, without firing a request that would just 404.
+            "has_cover": bool(client.cover_drive_file_id),
         },
     }
+
+
+@router.get("/gallery/cover")
+def get_gallery_cover(
+    request: Request,
+    client: Client = Depends(get_current_client),
+    storage: StorageService = Depends(get_storage_service),
+):
+    # The automatic cover of THE AUTHENTICATED client's gallery. No client or
+    # gallery id is accepted anywhere in this request - the client is the one
+    # the session cookie resolves to (get_current_client), so there is nothing
+    # to tamper with and no way to ask for another client's cover. Read-only:
+    # covers are generated automatically and have no manual management.
+    return stream_client_cover(client, storage, request.headers.get("if-none-match"))
 
 
 @router.get("/albums")
@@ -82,7 +101,10 @@ def list_media(
         get_album_for_client_or_403(db, album_id, client.id)
 
     rows, total, page, limit = list_media_for_client(db, client.id, album_id, page, limit, search)
-    items = [media_to_response(m) for m in rows]
+    # ONE query for the whole page, however many photos it holds - never a
+    # wishlist lookup per photo.
+    wishlisted = get_wishlisted_media_ids(db, client.id, [m.id for m in rows])
+    items = [media_to_response(m, is_wishlisted=m.id in wishlisted) for m in rows]
     return {
         "success": True,
         "data": build_page(items, page, limit, total),
@@ -115,7 +137,8 @@ def get_media(
     client: Client = Depends(get_current_client),
 ):
     media = get_media_for_client_or_403(db, media_id, client.id)
-    return {"success": True, "data": media_to_response(media)}
+    wishlisted = get_wishlisted_media_ids(db, client.id, [media.id])
+    return {"success": True, "data": media_to_response(media, is_wishlisted=media.id in wishlisted)}
 
 
 @router.get("/media/{media_id}/thumbnail")

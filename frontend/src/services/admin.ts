@@ -131,6 +131,15 @@ export interface UploadSessionStatus {
   error_message: string | null;
 }
 
+// Admin album filter: which of the client's wishlist state to show.
+export type WishlistFilter = "all" | "wishlisted" | "not_wishlisted";
+
+export interface WishlistCounts {
+  all: number;
+  wishlisted: number;
+  not_wishlisted: number;
+}
+
 export const adminService = {
   getDashboard: () => api.get<DashboardSummary>("/admin/dashboard"),
 
@@ -206,21 +215,41 @@ export const adminService = {
 
   // --- Album media management (admin) ---
 
-  listAlbumMedia: (albumId: number, page = 1, limit = 50, search?: string) => {
+  listAlbumMedia: (albumId: number, page = 1, limit = 50, search?: string, wishlist: WishlistFilter = "all") => {
     const params = new URLSearchParams({ page: String(page), limit: String(limit) });
     if (search) params.set("search", search);
+    if (wishlist !== "all") params.set("wishlist", wishlist);
     return api.get<Page<MediaItem>>(`/admin/albums/${albumId}/media?${params.toString()}`);
   },
 
   // Backs "Select All" so it selects every matching item across all pages,
-  // not just what's currently loaded in the grid.
-  getAlbumMediaSelectionSummary: (albumId: number, search?: string) => {
+  // not just what's currently loaded in the grid. Takes the SAME wishlist
+  // filter as the grid: Select All feeds bulk delete/move/download, so under
+  // the Wishlist tab it must select only the wishlisted items.
+  getAlbumMediaSelectionSummary: (albumId: number, search?: string, wishlist: WishlistFilter = "all") => {
     const params = new URLSearchParams();
     if (search) params.set("search", search);
+    if (wishlist !== "all") params.set("wishlist", wishlist);
     const qs = params.toString();
     return api.get<{ ids: number[]; total_count: number; total_bytes: number }>(
       `/admin/albums/${albumId}/media/selection-summary${qs ? `?${qs}` : ""}`
     );
+  },
+
+  // "All 250 / Wishlist 38 / Not wishlisted 212" - one aggregate query.
+  getAlbumWishlistCounts: (albumId: number, search?: string) => {
+    const params = new URLSearchParams();
+    if (search) params.set("search", search);
+    const qs = params.toString();
+    return api.get<WishlistCounts>(`/admin/albums/${albumId}/media/wishlist-counts${qs ? `?${qs}` : ""}`);
+  },
+
+  // Everything a client has wishlisted (read-only for admins), optionally
+  // narrowed to one of that client's albums.
+  getClientWishlist: (clientId: number, page = 1, limit = 50, albumId?: number) => {
+    const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+    if (albumId !== undefined) params.set("album_id", String(albumId));
+    return api.get<Page<MediaItem>>(`/admin/clients/${clientId}/wishlist?${params.toString()}`);
   },
 
   getMedia: (mediaId: number) => api.get<MediaItem>(`/admin/media/${mediaId}`),
@@ -270,7 +299,7 @@ export const adminService = {
   // already-completed upload (media_id will be set instead - nothing left
   // to send).
   createUploadSession: (albumId: number, uploadId: string, filename: string, fileSize: number) =>
-    api.post<UploadSessionStatus & { upload_url: string | null }>("/admin/media/upload-session", {
+    api.post<UploadSessionStatus & { upload_url: string | null; cover_needed: boolean }>("/admin/media/upload-session", {
       album_id: albumId,
       upload_id: uploadId,
       filename,
@@ -339,6 +368,23 @@ export const adminService = {
     form.append("file", thumbnail, "thumb.webp");
     return api.postForm<{ upload_id: string; has_thumbnail: boolean }>(
       `/admin/media/upload-session/${uploadId}/thumbnail`,
+      form
+    );
+  },
+
+  // Automatic client cover - sent AFTER completeUpload() has succeeded, and
+  // only when createUploadSession() said `cover_needed`. The browser builds a
+  // <= 1600px WebP from the photo it just uploaded (photoThumbnail.ts); the
+  // backend stores it under the client's "Cover Images" folder. There is no
+  // client/album/media id here on purpose - the server derives the client
+  // from this completed upload session. Callers MUST treat any failure as
+  // non-fatal: the upload is already saved, and the next eligible upload
+  // simply tries again.
+  uploadCover: (uploadId: string, cover: Blob) => {
+    const form = new FormData();
+    form.append("file", cover, "cover.webp");
+    return api.postForm<{ upload_id: string; cover_created: boolean }>(
+      `/admin/media/upload-session/${uploadId}/cover`,
       form
     );
   },

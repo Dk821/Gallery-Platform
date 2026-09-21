@@ -13,6 +13,7 @@ from app.config.settings import Settings, get_settings
 from app.database.connection import get_db
 from app.models.admin import Admin
 from app.models.audit_log import AuditLog
+from app.models.media import Media
 from app.schemas.errors import bad_request
 from app.schemas.media import (
     BulkDeleteRequest,
@@ -24,6 +25,8 @@ from app.schemas.media import (
     UploadProgressRequest,
 )
 from app.services.album_service import get_album_or_404
+from app.services.wishlist_service import get_wishlisted_media_ids
+from app.services.cover_service import attach_cover_from_upload, client_needs_cover, is_cover_eligible_filename
 from app.services.media_service import (
     abandon_direct_upload,
     attach_direct_upload_thumbnail,
@@ -74,6 +77,15 @@ def _log_bulk(db: DbSession, admin_id: int, action: str, request: Request, count
     db.commit()
 
 
+def _media_response_with_wishlist(db: DbSession, media: Media):
+    # Single-item admin responses carry the REAL wishlist state (one lookup),
+    # not the schema default of False - otherwise an admin UI that swaps the
+    # response into its list after an edit would silently drop the heart badge.
+    # (POST /upload-complete is exempt: a brand-new item can't be wishlisted.)
+    wishlisted = get_wishlisted_media_ids(db, media.client_id, [media.id])
+    return media_to_response(media, is_wishlisted=media.id in wishlisted)
+
+
 @router.post("/upload-session")
 def start_direct_upload_route(
     payload: CreateUploadSessionRequest,
@@ -118,7 +130,12 @@ def start_direct_upload_route(
         # Idempotent replay of an already-completed upload - nothing left
         # to send, the frontend should treat this as done.
         return {"success": True, "data": upload_session_start_response(session, None)}
-    return {"success": True, "data": upload_session_start_response(session, upload_url)}
+
+    # Tells the browser whether to also build a cover from this file (see
+    # services/cover_service.py). Pure read of two facts - nothing here can
+    # affect the upload itself, which proceeds identically either way.
+    cover_needed = client_needs_cover(album.client) and is_cover_eligible_filename(settings, payload.filename)
+    return {"success": True, "data": upload_session_start_response(session, upload_url, cover_needed)}
 
 
 @router.post("/upload-complete")
@@ -184,6 +201,40 @@ def attach_direct_upload_thumbnail_route(
         "success": True,
         "data": {"upload_id": session.upload_id, "has_thumbnail": bool(session.thumbnail_drive_file_id)},
     }
+
+
+@router.post("/upload-session/{upload_id}/cover")
+def attach_client_cover_route(
+    upload_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    db: DbSession = Depends(get_db),
+    admin: Admin = Depends(get_current_admin),
+    storage: StorageService = Depends(get_storage_service),
+    settings: Settings = Depends(get_settings),
+):
+    # Automatic client cover - the one step added to the direct-upload flow.
+    # The browser builds a <= 1600px WebP from the photo it just uploaded and
+    # sends it here AFTER POST /upload-complete has succeeded (only when
+    # POST /upload-session said `cover_needed`). Because the media is already
+    # committed by then, nothing that happens here can fail or roll back the
+    # upload; the browser ignores any error from this route.
+    #
+    # There is deliberately no client/album/media id in this request: the
+    # client is derived server-side from this admin's own completed upload
+    # session (see cover_service.attach_cover_from_upload), and a client that
+    # already has a cover is a no-op - a cover is never replaced. There is no
+    # GET/PUT/DELETE counterpart for admins: the cover is fully automatic.
+    #
+    # Size cap enforced twice, exactly like the thumbnail route: cheaply up
+    # front from Content-Length, then authoritatively on the bytes read.
+    max_bytes = settings.cover_upload_max_bytes
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > max_bytes + 64 * 1024:  # + multipart framing
+        raise bad_request("Cover image is too large.", code="COVER_INVALID")
+    image_bytes = file.file.read(max_bytes + 1)
+    created = attach_cover_from_upload(db, storage, settings, admin.id, upload_id, image_bytes)
+    return {"success": True, "data": {"upload_id": upload_id, "cover_created": created}}
 
 
 @router.post("/upload-session/{upload_id}/abandon")
@@ -309,7 +360,7 @@ def get_media_route(
     admin: Admin = Depends(get_current_admin),
 ):
     media = get_media_or_404(db, media_id)
-    return {"success": True, "data": media_to_response(media)}
+    return {"success": True, "data": _media_response_with_wishlist(db, media)}
 
 
 @router.patch("/{media_id}")
@@ -323,7 +374,7 @@ def update_media_route(
     media = get_media_or_404(db, media_id)
     media = update_media_metadata(db, media, payload)
     _log(db, admin.id, "media_updated", media.id, request)
-    return {"success": True, "data": media_to_response(media)}
+    return {"success": True, "data": _media_response_with_wishlist(db, media)}
 
 
 @router.post("/{media_id}/move")
@@ -343,7 +394,7 @@ def move_media_route(
     target_album = get_album_or_404(db, payload.target_album_id)
     media = move_media_to_album(db, storage, media, target_album)
     _log(db, admin.id, "media_moved", media.id, request)
-    return {"success": True, "data": media_to_response(media)}
+    return {"success": True, "data": _media_response_with_wishlist(db, media)}
 
 
 @router.delete("/{media_id}")

@@ -10,6 +10,10 @@ const DEFAULT_COVERS = [
   "https://images.unsplash.com/photo-1511285560929-80b456fea0bc?auto=format&fit=crop&w=1000&q=80",
 ];
 
+// What the landing page shows behind the header until a gallery has its own
+// automatic cover (or if that cover can't be loaded). Local album-bg artwork.
+const DEFAULT_LANDING_BACKDROP = "/images/album-bg.webp";
+
 function getScriptTitle(name: string, index: number): string {
   const lower = name.toLowerCase();
   if (lower.includes("wedding") && !lower.includes("pre")) return "Our Wedding";
@@ -76,6 +80,9 @@ export default function Gallery() {
   const [mediaStats, setMediaStats] = useState<Record<number, { photos: number; videos: number }>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Set if the cover exists but could not be fetched (e.g. Drive hiccup): the
+  // page then quietly keeps its default backdrop instead of a blank hero.
+  const [coverFailed, setCoverFailed] = useState(false);
 
   useEffect(() => {
     Promise.all([galleryService.getGallery(), galleryService.listAlbums(1, 200)])
@@ -112,7 +119,7 @@ export default function Gallery() {
       .catch(() => {
         if (galleryId === "test-uuid" || galleryId === "preview" || galleryId === "demo" || !info) {
           // Provide demo preview albums matching Reference Image 2
-          setInfo({ client_name: "Sam & Priya", client_uuid: galleryId, has_download_password: false });
+          setInfo({ client_name: "Sam & Priya", client_uuid: galleryId, has_download_password: false, has_cover: false });
           setAlbums(DEMO_ALBUMS);
           setMediaStats({
             1: { photos: 428, videos: 18 },
@@ -132,11 +139,28 @@ export default function Gallery() {
       .finally(() => setLoading(false));
   }, [galleryId, navigate]);
 
+  // The cover is the signed-in client's OWN automatic cover, served by
+  // GET /api/client/gallery/cover (session cookie decides whose - no id is
+  // sent). Probe it once so a failure falls back to the default backdrop
+  // rather than leaving the hero empty.
+  const hasCover = Boolean(info?.has_cover);
+  useEffect(() => {
+    if (!hasCover) return;
+    setCoverFailed(false);
+    const probe = new Image();
+    probe.onerror = () => setCoverFailed(true);
+    probe.src = galleryService.coverUrl();
+    return () => {
+      probe.onerror = null;
+    };
+  }, [hasCover]);
+
   if (loading) {
     return <div className="client-shell" />;
   }
 
   const clientName = info?.client_name || "Sam & Priya";
+  const showCover = hasCover && !coverFailed;
 
   return (
     <div className="client-shell">
@@ -146,9 +170,9 @@ export default function Gallery() {
       <main className="wedding-landing">
         {/* Background ambience */}
         <div
-          className="wedding-landing__bg"
+          className={`wedding-landing__bg${showCover ? " wedding-landing__bg--cover" : ""}`}
           style={{
-            backgroundImage: `url("https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=1920&q=70")`,
+            backgroundImage: `url("${showCover ? galleryService.coverUrl() : DEFAULT_LANDING_BACKDROP}")`,
           }}
           aria-hidden="true"
         />

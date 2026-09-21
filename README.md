@@ -206,6 +206,7 @@ Verifies DB connectivity, Drive token, writable ZIP temp dir, and FFmpeg availab
 | `ZIP_TEMP_DIR` | Temp directory for ZIP jobs | `/tmp/gallery_zip_jobs` |
 | `ZIP_JOB_TTL_HOURS` | ZIP download link TTL | `24` |
 | `UPLOAD_MAX_CONCURRENT` | Max simultaneous Drive uploads | `3` |
+| `COVER_UPLOAD_MAX_KB` | Max size of the browser-generated automatic cover image a single request may send | `4096` |
 | `ENVIRONMENT` | `development` or `production` | `development` |
 
 See `backend/.env.example` for the full list with descriptions. Note that for direct-to-Drive uploads, your frontend origin (e.g. `http://localhost:5173`) must be present in `CORS_ORIGINS` so the backend can authorize the browser's origin with Google Drive when opening resumable upload sessions.
@@ -240,7 +241,7 @@ cd backend
 pytest
 ```
 
-18 test files covering auth, authorization, client search, admin management, album expiry, media management, bulk ops, download jobs/analytics, upload hardening, thumbnails/streaming, dashboard, storage integration, Drive folder naming, resumable uploads, FFmpeg availability, httplib2 cleanup-bug regression, and studio settings.
+21 test files covering auth, authorization, client search, admin management, album expiry, media management, bulk ops, download jobs/analytics, upload hardening, thumbnails/streaming, dashboard, storage integration, Drive folder naming, resumable uploads, FFmpeg availability, httplib2 cleanup-bug regression, studio settings, the automatic client cover, the client wishlist (incl. cross-client isolation), and the Alembic single-head check.
 
 Tests use an in-memory SQLite database and `FakeStorageService` — no real Drive calls.
 

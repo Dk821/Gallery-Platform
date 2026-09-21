@@ -56,6 +56,7 @@ from app.api.admin_storage import router as admin_storage_router
 from app.api.auth import router as auth_router
 from app.api.client_download_jobs import router as client_download_jobs_router
 from app.api.client_gallery import router as client_gallery_router
+from app.api.client_wishlist import router as client_wishlist_router
 # NOTE: if client media routes (list/detail/stream/thumbnail/download) live
 # in their own module per ARCHITECTURE.md, import + include it below.
 # from app.api.client_media import router as client_media_router
@@ -283,6 +284,7 @@ app.include_router(admin_download_jobs_router)
 app.include_router(admin_downloads_router)
 app.include_router(client_gallery_router)
 app.include_router(client_download_jobs_router)
+app.include_router(client_wishlist_router)
 # app.include_router(client_media_router)  # <-- uncomment once confirmed/added
 
 

@@ -38,7 +38,8 @@ To prevent bandwidth saturation, server memory exhaustion, and long-running HTTP
 | **Uploads Page** | `frontend/src/pages/Uploads.tsx` | UI interface for drag-and-drop file selection, album targeting, upload progress bars, error notifications, and batch actions. |
 | **Global Upload Badge** | `frontend/src/components/Globaluploadbadge.tsx` | Floating UI badge rendered across all admin routes when uploads are active in the background. |
 | **Video Poster Utility** | `frontend/src/utils/videoPoster.ts` | Uses `<video>` and `<canvas>` to capture a frame at $t \approx 1.0\text{s}$ into an uploaded video, exporting as WebP. |
-| **Photo Thumbnail Utility** | `frontend/src/utils/photoThumbnail.ts` | Uses `Image` and `<canvas>` to downscale photos to $\le 400\text{px}$ WebP thumbnails. |
+| **Photo Thumbnail Utility** | `frontend/src/utils/photoThumbnail.ts` | Uses `Image` and `<canvas>` to downscale photos to $\le 400\text{px}$ WebP thumbnails, and (through the same renderer) the automatic client cover at $\le 1600\text{px}$. |
+| **Cover Service** | `backend/app/services/cover_service.py` | Decides cover eligibility, stores the client's single automatic cover under its `Cover Images` Drive folder (shared with video posters / photo thumbnails) with atomic compare-and-set, and attaches it from a completed upload session (§4.7). |
 | **Admin API Service** | `frontend/src/services/admin.ts` | Handles XHR PUT requests to Google Drive resumable URLs, reporting upload progress, and calling backend session endpoints. |
 
 ---
@@ -63,7 +64,7 @@ sequenceDiagram
     Backend->>Drive: POST /upload/drive/v3/files?uploadType=resumable<br/>[Header: Origin: https://app.example.com]
     Drive-->>Backend: 200 OK + Location: upload_url
     Backend->>DB: Insert/Update upload_sessions (status='uploading')
-    Backend-->>Browser: 200 OK + { upload_url, upload_id }
+    Backend-->>Browser: 200 OK + { upload_url, upload_id, cover_needed }
 
     %% Step 2: Direct Upload
     par Direct Chunk Upload & Thumbnail Generation
@@ -72,7 +73,7 @@ sequenceDiagram
     and Browser Thumbnail
         Browser->>Browser: Extract frame/thumbnail via Canvas -> WebP Blob
         Browser->>Backend: POST /api/admin/media/upload-session/{id}/thumbnail (Multipart)
-        Backend->>Drive: Upload thumbnail (thumb_{uuid}.webp)
+        Backend->>Drive: Upload thumbnail → Client/Cover Images/thumb_{uuid}.webp (same folder as the cover)
         Drive-->>Backend: Thumbnail drive_file_id
         Backend->>DB: Record session.thumbnail_drive_file_id
         Backend-->>Browser: 200 OK
@@ -88,6 +89,16 @@ sequenceDiagram
     Backend->>DB: Record audit_logs ('media_uploaded')
     Backend-->>Browser: 200 OK + MediaItem
     Browser->>Admin: Update UI item to Completed
+
+    %% Step 4: Automatic cover (only when cover_needed; never affects the upload)
+    opt cover_needed = true (client has no cover, file is an eligible photo)
+        Browser->>Browser: Render <=1600px WebP cover from the same local file
+        Browser->>Backend: POST /api/admin/media/upload-session/{id}/cover (Multipart)
+        Backend->>DB: Client derived from completed session -> Media -> client
+        Backend->>Drive: Upload Client/Cover Images/cover.webp
+        Backend->>DB: Compare-and-set clients.cover_drive_file_id (only if still NULL)
+        Backend-->>Browser: 200 { cover_created } (any error is ignored by the browser)
+    end
 ```
 
 ---
@@ -110,10 +121,11 @@ Google Drive's resumable upload endpoint **requires** that the initial `POST` re
 Generating video poster frames on a VPS server typically requires downloading multi-gigabyte video files back from Google Drive into server memory/disk and running FFmpeg. 
 
 To eliminate this bottleneck:
-1. **Video Poster Extraction (`videoPoster.ts`)**: When a video is queued, an off-screen HTML5 `<video>` element loads the `File` object using `URL.createObjectURL(file)`. It seeks to $1.0\text{s}$ (or midpoint for very short clips), draws the video frame to an HTML5 `<canvas>`, and converts it to an `image/webp` Blob (quality 0.82, max dimension 720px).
+1. **Video Poster Extraction (`videoPoster.ts`)**: When a video is queued, a hidden 1×1px `<video>` element is **attached to the document** (off-screen, `opacity: 0.01`) with `URL.createObjectURL(file)`. The element must be in the DOM — browsers only *paint* frames for rendered media, so a detached element draws black. With `preload="auto"` it seeks to a position, then plays muted while waiting for `requestVideoFrameCallback` (a frame the decoder actually delivered), pauses, and draws to an HTML5 `<canvas>` as `image/webp` (quality 0.82, max dimension 720px). It samples 25%, 50% and 75% of the clip and keeps the brightest frame; a never-decoded, solid-black frame (luma ≤ 4) is never stored — the utility returns `null` instead.
 2. **Photo Thumbnail Downscaling (`photoThumbnail.ts`)**: For high-resolution photos, an `Image` object renders to canvas and scales down to $\le 400\text{px}$ WebP.
 3. **Upload via Session Hook**: The browser uploads the lightweight WebP blob (~10–100 KB) to `POST /api/admin/media/upload-session/{upload_id}/thumbnail`.
-4. **Best-Effort Resiliency**: Thumbnail generation has a 20-second timeout. If the browser or client codec fails to extract a thumbnail, the main upload continues unimpeded. The gallery grid gracefully falls back to a placeholder icon.
+4. **Where they are stored**: both the video poster and the photo thumbnail are written to the client's single **`Cover Images`** Drive folder — the same folder that holds `cover.webp` — never inside an album folder. A shared `Cover Images` folder is created/claimed once per client (`ensure_cover_folder`), so every client has exactly one imagery folder.
+5. **Best-Effort Resiliency**: Thumbnail generation has a 20-second timeout. If the browser or client codec fails to extract a frame (or only produces black), nothing is stored and the main upload continues unimpeded. The gallery grid gracefully falls back to a placeholder icon.
 
 ### 4.3 Idempotency Ledger & Upload Session Lifecycle
 
@@ -177,6 +189,24 @@ handled here:
   `upload_id` for a fresh upload — a burned batch stays recoverable instead of
   being permanently stuck.
 
+### 4.7 Automatic Client Cover
+
+Every client gets one cover for the gallery landing page, with no admin action and no way to change it. It rides on the pipeline above without changing it: the original still goes browser → Drive directly, nothing is stored on the VPS, and the original is never downloaded or copied.
+
+1. **Is one needed?** `POST /upload-session` returns `cover_needed = client has no cover AND the file is a still photo (jpg/jpeg/png/webp; not video, not GIF)`. When false the browser does no extra work at all.
+2. **Build it in the browser.** In parallel with the thumbnail, `extractPhotoCover` renders the *same* local file to a $\le 1600\text{px}$ WebP (high-quality resampling) - big enough for a hero, nowhere near original resolution.
+3. **Send it after completion.** Only once `POST /upload-complete` has succeeded and the item shows Completed, the browser fires `POST /upload-session/{id}/cover` and does not wait for it. Consequences: the cover always derives from a stored, validated, committed photo; it cannot hold an upload slot; and a cover failure **cannot** fail or roll back the upload - the Media row is already committed.
+4. **Server side.** The client is derived from the admin's own *completed* session → its Media → that Media's client (nothing about client/album/media comes from the request). The blob is re-encoded (`normalize_browser_cover`: WebP, $\le 1600\text{px}$, metadata stripped), a `Cover Images` folder is created under the **client** folder if needed (never inside an album), and `cover.webp` is stored there without an `upload_id` (so orphan reconciliation cannot mistake it for an abandoned upload). This folder is shared — video posters and photo thumbnails are stored in the same `Cover Images` folder, so a client has exactly one imagery folder.
+5. **Exactly one, first wins.** Both the folder id (`clients.cover_folder_id`) and the file id (`clients.cover_drive_file_id`) are claimed with `UPDATE ... WHERE col IS NULL`. If several uploads of a new client finish together, one wins and the others delete their own stray file and report `cover_created: false`. Once set the cover is never replaced.
+6. **Failure and recovery.** Errors are logged (`cover.failed`) and the client simply still has no cover; the next eligible upload is told `cover_needed` again and retries, reusing the recorded folder. A `Cover Images` folder deleted by hand is forgotten and recreated. Clients that predate covers (`NULL`) heal the same way; the landing page shows its default backdrop until then.
+
+| Column / route | Purpose |
+|---|---|
+| `clients.cover_drive_file_id` | Drive id of `cover.webp` (nullable, never returned by any API) |
+| `clients.cover_folder_id` | Drive id of the client's `Cover Images` folder (nullable; also holds the video posters / photo thumbnails) |
+| `POST /api/admin/media/upload-session/{id}/cover` | Admin-only; 409 `UPLOAD_NOT_COMPLETED` before completion, 409 `COVER_SOURCE_NOT_ELIGIBLE` for a video, 400 `COVER_INVALID`, 502 `COVER_STORAGE_FAILED`; otherwise `{cover_created}` |
+| `GET /api/client/gallery/cover` | The signed-in client's own cover; `no-cache` + `ETag` (the URL is the same for every client) |
+
 ---
 
 ## 5. Failure Recovery & Edge Cases
@@ -189,4 +219,5 @@ handled here:
 | **Browser tab closed mid-upload** | Session recovery | On reload, incomplete sessions are retrieved via `GET /upload-sessions` and surfaced as failed (since browser `File` object cannot be restored). |
 | **Server restart while uploads in-flight** | Lifespan Startup Sweep | `app/main.py` scans for lingering `uploading`/`queued` sessions and marks them `failed` (`UPLOAD_STALE`). |
 | **Drive outage / 5xx errors** | `CircuitBreaker` | Trips after 3 consecutive network failures with a 20-second cooldown, preventing thread exhaustion. |
+| **Cover generation or upload fails** | `attach_cover_from_upload` (best-effort) | Upload already completed and unaffected. Logged; the client keeps its default hero and the next eligible upload retries (§4.7). |
 | **Orphaned files in Drive** | `reconcile_orphans.py` | Nightly cron identifies files in Drive without matching DB records (past grace period) and purges them. |

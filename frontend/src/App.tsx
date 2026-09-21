@@ -11,8 +11,9 @@ import Storage from "./pages/Storage";
 import ClientLogin from "./pages/ClientLogin";
 import Gallery from "./pages/Gallery";
 import AlbumView from "./pages/AlbumView";
+import Wishlist from "./pages/Wishlist";
 import Settings from "./pages/Settings";
-import { UploadProvider } from "./contexts/Uploadcontext";
+import { UploadProvider } from "./contexts/Uploadcontext"
 import GlobalUploadBadge from "./components/Globaluploadbadge";
 
 export default function App() {
@@ -42,6 +43,7 @@ export default function App() {
         <Route path="/gallery/:galleryId" element={<ClientLogin />} />
         <Route path="/gallery/:galleryId/view" element={<Gallery />} />
         <Route path="/gallery/:galleryId/view/:albumId" element={<AlbumView />} />
+        <Route path="/gallery/:galleryId/wishlist" element={<Wishlist />} />
 
         <Route path="*" element={<p>Page not found.</p>} />
       </Routes>

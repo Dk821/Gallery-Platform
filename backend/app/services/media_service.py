@@ -4,7 +4,7 @@ import logging
 import time
 import uuid
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DbSession
 
@@ -12,11 +12,13 @@ from app.config.settings import Settings, get_settings
 from app.models.album import Album
 from app.models.client import Client
 from app.models.media import Media
+from app.models.media_wishlist import MediaWishlist
 from app.models.upload_session import UploadSession
 from app.schemas.errors import ApiError, bad_request, forbidden, not_found
 from app.schemas.media import MediaUpdateRequest
 from app.schemas.pagination import paginate_params
-from app.services.album_service import check_album_not_expired
+from app.services.album_service import album_not_expired_clause, check_album_not_expired
+from app.services.cover_service import ensure_cover_folder
 from app.services.media_validation import (
     guess_mime_type,
     validate_upload,
@@ -24,15 +26,16 @@ from app.services.media_validation import (
 )
 from app.services.storage_service import StorageError, StorageNotFoundError, StorageService
 from app.services.upload_logging import log_event
+from app.services.wishlist_service import WISHLIST_FILTER_ALL, apply_wishlist_filter
 from app.workers.thumbnail_worker import generate_image_thumbnail, normalize_browser_thumbnail
 
 logger = logging.getLogger("gallery.media")
 
 
 def _not_expired_clause():
-    # A fresh clause per call, NOT a module-level constant - datetime.utcnow()
-    # must be evaluated at query time, not once at import/server-startup time.
-    return or_(Album.expires_at.is_(None), Album.expires_at > datetime.datetime.utcnow())
+    # Delegates to album_service so the wishlist queries (which cannot import
+    # this module without a cycle) share the exact same expiry rule.
+    return album_not_expired_clause()
 
 
 def get_media_for_client_or_403(db: DbSession, media_id: int, client_id: int) -> Media:
@@ -111,13 +114,21 @@ def get_media_selection_summary(
 
 
 def list_media_for_album_admin(
-    db: DbSession, album_id: int, page: int, limit: int, search: str | None = None
+    db: DbSession,
+    album_id: int,
+    page: int,
+    limit: int,
+    search: str | None = None,
+    wishlist_filter: str = WISHLIST_FILTER_ALL,
 ):
     """
     Admin-facing equivalent of list_media_for_client, but scoped by album_id
     directly rather than by an authenticated client - the caller
     (api/admin_albums.py) is responsible for confirming the album itself
     exists via get_album_or_404 before calling this.
+
+    wishlist_filter narrows to the items the album's client has (or hasn't)
+    wishlisted, as an SQL EXISTS - see wishlist_service.apply_wishlist_filter.
     """
     page, limit = paginate_params(page, limit)
 
@@ -127,6 +138,7 @@ def list_media_for_album_admin(
         # dialect we target (SQLite in tests, MySQL in production), not
         # just Postgres-native ILIKE.
         query = query.filter(Media.file_name.ilike(f"%{search.strip()}%"))
+    query = apply_wishlist_filter(query, wishlist_filter)
     query = query.order_by(Media.created_at.desc())
 
     total = query.count()
@@ -134,16 +146,26 @@ def list_media_for_album_admin(
     return rows, total, page, limit
 
 
-def get_album_media_selection_summary(db: DbSession, album_id: int, search: str | None = None) -> dict:
+def get_album_media_selection_summary(
+    db: DbSession,
+    album_id: int,
+    search: str | None = None,
+    wishlist_filter: str = WISHLIST_FILTER_ALL,
+) -> dict:
     """
     Admin equivalent of get_media_selection_summary - backs "Select All"
     on the admin media grid so it selects every matching item across all
     pages, not just what's currently loaded (same id+size-only query shape,
     no full-metadata fetch for the whole album).
+
+    MUST honour the same wishlist filter as the grid it backs: "Select All"
+    feeds bulk delete / move / download, so with the Wishlist tab open it has
+    to select exactly the visible wishlisted items - never the whole album.
     """
     query = db.query(Media.id, Media.file_size).filter(Media.album_id == album_id)
     if search:
         query = query.filter(Media.file_name.ilike(f"%{search.strip()}%"))
+    query = apply_wishlist_filter(query, wishlist_filter)
     rows = query.all()
     ids = [r[0] for r in rows]
     total_bytes = sum(r[1] for r in rows)
@@ -188,12 +210,13 @@ def move_media_to_album(db: DbSession, storage: StorageService, media: Media, ta
     old_album = db.query(Album).filter(Album.id == media.album_id).first()
     old_folder_id = old_album.drive_folder_id if old_album else None
 
-    moved_thumbnail = False
+    # Only the ORIGINAL file moves with the media. The thumbnail does NOT:
+    # thumbnails live in the client's Cover Images folder (see
+    # _thumbnail_storage_folder), which is per-client and shared across the
+    # client's albums, so it must not be dragged from one album folder to
+    # another.
     try:
         storage.move_file(media.google_drive_file_id, target_album.drive_folder_id, old_folder_id)
-        if media.thumbnail_reference:
-            storage.move_file(media.thumbnail_reference, target_album.drive_folder_id, old_folder_id)
-            moved_thumbnail = True
     except StorageError as exc:
         logger.error("Failed to move media %s to album %s: %s", media.id, target_album.id, exc)
         raise ApiError(502, "STORAGE_MOVE_FAILED", "Could not move the file in storage. Please retry.")
@@ -214,8 +237,6 @@ def move_media_to_album(db: DbSession, storage: StorageService, media: Media, ta
         )
         try:
             storage.move_file(media.google_drive_file_id, old_folder_id, target_album.drive_folder_id)
-            if moved_thumbnail:
-                storage.move_file(media.thumbnail_reference, old_folder_id, target_album.drive_folder_id)
             logger.info("Rolled back Drive move for media %s after DB failure.", media.id)
         except StorageError as rollback_exc:
             logger.critical(
@@ -617,6 +638,22 @@ def list_recent_upload_sessions(
         for s in sessions
     ]
 
+def _thumbnail_storage_folder(db: DbSession, storage: StorageService, album: Album) -> str:
+    """
+    The folder every item thumbnail (video poster or photo thumb) is stored
+    in: the client's ONE "Cover Images" folder - the same folder that holds
+    the automatic cover.webp (see cover_service.ensure_cover_folder). All
+    cover-like images belong to the CLIENT, not to an album, so thumbnails
+    stay put when media moves between albums and each client has exactly one
+    folder holding covers. Falls back to the album folder only if the client
+    has no Drive folder at all (shouldn't happen - albums are provisioned
+    inside the client's folder).
+    """
+    client = db.query(Client).filter(Client.id == album.client_id).first()
+    if client is None or not client.drive_folder_id:
+        return album.drive_folder_id
+    return ensure_cover_folder(db, storage, client)
+
 
 def _generate_thumbnail_from_storage(
     storage: StorageService,
@@ -671,11 +708,12 @@ def attach_direct_upload_thumbnail(
     The thumbnail is a small image the browser produced locally from the
     file (a <video>+<canvas> poster frame, or a <img>+<canvas> downscale) -
     this server never sees, and never needs to download from Drive, the
-    original file to make it. It is validated, normalized to WebP, stored
-    through the same StorageService.upload() the server-side thumbnails
-    use, and its Drive id is recorded on UploadSession.thumbnail_drive_file_id
-    - a server-side ledger, so the id is never taken from the browser and
-    complete_direct_upload needs no new request fields to find it.
+    original file to make it. It is validated, normalized to WebP, stored in
+    the CLIENT's "Cover Images" folder (see _thumbnail_storage_folder) - the
+    same folder the automatic cover uses - and its Drive id is recorded on
+    UploadSession.thumbnail_drive_file_id - a server-side ledger, so the id
+    is never taken from the browser and complete_direct_upload needs no new
+    request fields to find it.
 
     Deliberately idempotent and non-fatal in spirit: a repeated call for a
     session that already has a thumbnail is a no-op (a client retrying after
@@ -714,7 +752,7 @@ def attach_direct_upload_thumbnail(
             io.BytesIO(thumb_bytes),
             f"thumb_{uuid.uuid4()}.webp",
             "image/webp",
-            album.drive_folder_id,
+            _thumbnail_storage_folder(db, storage, album),
             upload_id=upload_id,
         )
     except StorageError as exc:
@@ -934,7 +972,8 @@ def complete_direct_upload(
             if thumb_bytes:
                 thumb_stream = io.BytesIO(thumb_bytes)
                 thumb_stored = storage.upload(
-                    thumb_stream, f"thumb_{file_uuid}.webp", "image/webp", album.drive_folder_id, upload_id=upload_id
+                    thumb_stream, f"thumb_{file_uuid}.webp", "image/webp", _thumbnail_storage_folder(db, storage, album),
+                    upload_id=upload_id
                 )
                 thumbnail_file_id = thumb_stored.provider_file_id
                 session.thumbnail_drive_file_id = thumbnail_file_id
@@ -995,6 +1034,12 @@ def delete_media(db: DbSession, storage: StorageService, media: Media) -> None:
             logger.error("Failed to delete Drive file %s: %s", file_id, exc)
             raise ApiError(502, "STORAGE_DELETE_FAILED", "Could not delete the file from storage. Please retry.")
 
+    # ON DELETE CASCADE on media_wishlists.media_id does this in MySQL, but
+    # SQLite (the test database) doesn't enforce foreign keys by default and
+    # relying on it here would leave dangling rows there. One indexed DELETE
+    # in the same transaction as the media row makes the behaviour identical
+    # everywhere.
+    db.query(MediaWishlist).filter(MediaWishlist.media_id == media.id).delete(synchronize_session=False)
     db.delete(media)
     db.commit()
 

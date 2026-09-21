@@ -16,6 +16,12 @@
 
 const MAX_DIMENSION = 400; // long side, px. Matches THUMBNAIL_MAX_DIMENSION on the backend.
 const WEBP_QUALITY = 0.82;
+// The automatic client cover (the gallery landing hero) is produced by the
+// SAME pipeline below, just bigger: large enough to fill a hero, but nowhere
+// near original resolution so it loads fast. Matches COVER_MAX_DIMENSION on
+// the backend, which re-caps whatever arrives.
+const COVER_MAX_DIMENSION = 1600;
+const COVER_WEBP_QUALITY = 0.85;
 // Decode guard: a legitimate thumbnail source is a normal photo, so anything
 // decoding larger than this is treated as a hostile/accidental resource hog
 // and skipped rather than pushed through Image + canvas.
@@ -34,23 +40,35 @@ export function isImageFile(file: File): boolean {
 // toBlob can silently fail for an unsupported type (e.g. WebP on older
 // Safari), so try the requested type first and fall back to JPEG if the
 // canvas refused to encode it.
-function toBlobWithFallback(canvas: HTMLCanvasElement): Promise<Blob | null> {
+function toBlobWithFallback(canvas: HTMLCanvasElement, quality: number): Promise<Blob | null> {
   return new Promise((resolve) => {
     canvas.toBlob(
       (webp) => {
         if (webp) {
           resolve(webp);
         } else {
-          canvas.toBlob((jpeg) => resolve(jpeg), "image/jpeg", WEBP_QUALITY);
+          canvas.toBlob((jpeg) => resolve(jpeg), "image/jpeg", quality);
         }
       },
       "image/webp",
-      WEBP_QUALITY
+      quality
     );
   });
 }
 
-export async function extractPhotoThumbnail(file: File): Promise<Blob | null> {
+interface RenderOptions {
+  maxDimension: number;
+  quality: number;
+  // Downscaling a multi-thousand-pixel photo to a hero in one bilinear step
+  // aliases visibly; "high" makes the browser resample properly. Left off for
+  // the 400px grid thumbnail, whose behaviour is unchanged.
+  highQualitySmoothing?: boolean;
+  what: string; // for the timeout error message only
+}
+
+// The one implementation: decode a local image File natively, downscale it
+// onto a canvas, re-encode as WebP. Never throws - any failure is null.
+async function renderPhotoToBlob(file: File, options: RenderOptions): Promise<Blob | null> {
   if (typeof document === "undefined") return null;
 
   const url = URL.createObjectURL(file);
@@ -61,7 +79,7 @@ export async function extractPhotoThumbnail(file: File): Promise<Blob | null> {
     img.decoding = "async";
     img.src = url;
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("thumbnail extraction timed out")), deadline - Date.now());
+      const timer = setTimeout(() => reject(new Error(`${options.what} extraction timed out`)), deadline - Date.now());
       img.onload = () => {
         clearTimeout(timer);
         resolve();
@@ -77,18 +95,22 @@ export async function extractPhotoThumbnail(file: File): Promise<Blob | null> {
     if (!iw || !ih) return null;
     if (iw * ih > MAX_SOURCE_PIXELS) return null;
 
-    const scale = Math.min(1, MAX_DIMENSION / Math.max(iw, ih));
+    const scale = Math.min(1, options.maxDimension / Math.max(iw, ih));
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(iw * scale));
     canvas.height = Math.max(1, Math.round(ih * scale));
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
+    if (options.highQualitySmoothing) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+    }
     // Browsers apply EXIF orientation to <img> decoding by default, so a
     // phone photo drawn here comes out the right way up, same as the
     // backend's ImageOps.exif_transpose used to guarantee server-side.
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-    return await toBlobWithFallback(canvas);
+    return await toBlobWithFallback(canvas, options.quality);
   } catch {
     return null;
   } finally {
@@ -96,4 +118,28 @@ export async function extractPhotoThumbnail(file: File): Promise<Blob | null> {
     img.onerror = null;
     URL.revokeObjectURL(url);
   }
+}
+
+// Grid/lightbox thumbnail (<= 400px). Behaviour unchanged by the refactor.
+export function extractPhotoThumbnail(file: File): Promise<Blob | null> {
+  return renderPhotoToBlob(file, { maxDimension: MAX_DIMENSION, quality: WEBP_QUALITY, what: "thumbnail" });
+}
+
+// The automatic client cover (<= 1600px). Only ever called when the server
+// says this client still has no cover (see Uploadcontext.tsx), and only for
+// still photos - the caller guards on isCoverEligibleFile().
+export function extractPhotoCover(file: File): Promise<Blob | null> {
+  return renderPhotoToBlob(file, {
+    maxDimension: COVER_MAX_DIMENSION,
+    quality: COVER_WEBP_QUALITY,
+    highQualitySmoothing: true,
+    what: "cover",
+  });
+}
+
+// Mirrors the backend's cover_service.is_cover_eligible_filename: a still
+// photo (not a video, and not a GIF, which is animated/palette-limited and
+// makes a poor hero). The server re-checks; this only avoids wasted work.
+export function isCoverEligibleFile(file: File): boolean {
+  return isImageFile(file) && !/\.gif$/i.test(file.name) && file.type !== "image/gif";
 }

@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
+import WishlistHeart from "./WishlistHeart";
 
 export interface LightboxItem {
   id: number;
@@ -20,6 +21,12 @@ interface MediaLightboxProps<T extends LightboxItem> {
   thumbnailUrl?: (id: number) => string;
   onDownload?: (item: T) => void;
   renderActions?: (item: T, index: number) => ReactNode;
+  // Client wishlist. Both optional: the admin lightbox passes neither and
+  // shows no heart. The lightbox owns no wishlist state - the page does
+  // (hooks/useWishlist.ts), so the heart here, on the grid tile and on the
+  // wishlist page can never disagree.
+  isWishlisted?: (item: T) => boolean;
+  onToggleWishlist?: (item: T) => void;
 }
 
 export default function MediaLightbox<T extends LightboxItem>({
@@ -31,6 +38,8 @@ export default function MediaLightbox<T extends LightboxItem>({
   thumbnailUrl,
   onDownload,
   renderActions,
+  isWishlisted,
+  onToggleWishlist,
 }: MediaLightboxProps<T>) {
   const filmstripThumbnailUrl = thumbnailUrl ?? viewUrl;
   const [index, setIndex] = useState(startIndex);
@@ -139,6 +148,14 @@ export default function MediaLightbox<T extends LightboxItem>({
               </svg>
               <span>Download</span>
             </a>
+          )}
+
+          {onToggleWishlist && (
+            <WishlistHeart
+              variant="lightbox"
+              active={isWishlisted ? isWishlisted(current) : false}
+              onToggle={() => onToggleWishlist(current)}
+            />
           )}
 
           {renderActions && renderActions(current, index)}

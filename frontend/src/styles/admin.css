@@ -4424,3 +4424,73 @@
     grid-template-columns: 1fr;
   }
 }
+/* ===========================================================================
+   Client wishlist - admin view (read-only)
+   =========================================================================== */
+
+/* Filter tabs (All media / Wishlist / Not wishlisted), reusing .view-toggle.
+   .view-toggle pushes itself to the right (margin-left: auto) for the layout
+   toggle in the toolbar; this one sits on its own row, left-aligned. */
+.wishlist-filter {
+  margin-left: 0;
+  margin-top: 1.25rem;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+.wishlist-filter__count {
+  min-width: 1.6rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--panel-raised);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.view-toggle__btn--active .wishlist-filter__count {
+  background: rgba(180, 133, 59, 0.2);
+  color: var(--accent);
+}
+
+/* Small heart on a tile / list thumbnail: "the client wishlisted this".
+   Purely informational - admins can read a client's wishlist, not edit it. */
+.wishlist-badge {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #c2453d;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  z-index: 4;
+}
+
+.wishlist-badge--inline {
+  position: static;
+  width: auto;
+  height: auto;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+}
+
+.wishlist-admin-tag {
+  cursor: default;
+  color: #ff8f86;
+  border-color: rgba(255, 143, 134, 0.45);
+  background: rgba(255, 143, 134, 0.1);
+}
+
+.wishlist-admin-tag:hover {
+  transform: none;
+  background: rgba(255, 143, 134, 0.1);
+}

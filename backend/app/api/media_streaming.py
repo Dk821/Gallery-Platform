@@ -6,12 +6,14 @@ authorization check they run before calling into this module (client
 ownership vs admin access).
 """
 
+import hashlib
 import logging
 import re
 from urllib.parse import quote
 
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
+from app.models.client import Client
 from app.models.media import Media
 from app.schemas.errors import ApiError, not_found
 from app.services.storage_service import StorageError, StorageNotFoundError, StorageService
@@ -181,3 +183,56 @@ def stream_media_thumbnail(media: Media, storage: StorageService) -> StreamingRe
     thumbnail_mime_type = media.thumbnail_mime_type or "image/jpeg"
     headers = {"Cache-Control": "private, max-age=86400"}
     return StreamingResponse(iter_bytes(), media_type=thumbnail_mime_type, headers=headers)
+
+
+def _cover_etag(client: Client) -> str:
+    # Derived from the stored Drive file id, so it changes if (and only if)
+    # the cover file itself is ever different - and can be computed from the
+    # database alone, without a Drive round trip.
+    digest = hashlib.sha1(client.cover_drive_file_id.encode("utf-8")).hexdigest()[:20]
+    return f'"cover-{digest}"'
+
+
+def _etag_matches(if_none_match: str | None, etag: str) -> bool:
+    if not if_none_match:
+        return False
+    candidates = {part.strip().removeprefix("W/") for part in if_none_match.split(",")}
+    return "*" in candidates or etag in candidates
+
+
+def stream_client_cover(client: Client, storage: StorageService, if_none_match: str | None = None):
+    """
+    Streams the client's automatic cover (cover.webp), inline.
+
+    Unlike thumbnails - whose URL contains a media id, so a URL always means
+    the same bytes - the cover URL (/api/client/gallery/cover) is the SAME for
+    every client and only the session cookie says whose it is. A long
+    `max-age` would therefore let a browser that has viewed client A's gallery
+    serve A's cover to client B. So it is `no-cache` (always revalidate) with
+    an ETag and `Vary: Cookie`: a repeat visit costs one tiny 304 answered
+    from the database alone - no Drive call, no bytes.
+    """
+    if not client.cover_drive_file_id:
+        raise not_found("This gallery has no cover image.", code="COVER_NOT_AVAILABLE")
+
+    etag = _cover_etag(client)
+    headers = {"Cache-Control": "private, no-cache", "ETag": etag, "Vary": "Cookie"}
+
+    if _etag_matches(if_none_match, etag):
+        return Response(status_code=304, headers=headers)
+
+    try:
+        storage.get_file(client.cover_drive_file_id)
+    except StorageNotFoundError:
+        raise not_found("This gallery has no cover image.", code="COVER_NOT_AVAILABLE")
+    except StorageError:
+        raise ApiError(502, "STORAGE_DOWNLOAD_FAILED", "Could not retrieve the cover image. Please retry.")
+
+    def iter_bytes():
+        try:
+            yield from storage.download(client.cover_drive_file_id)
+        except StorageError as exc:
+            logger.error("Storage error mid-stream for cover of client %s: %s", client.id, exc)
+            return
+
+    return StreamingResponse(iter_bytes(), media_type="image/webp", headers=headers)

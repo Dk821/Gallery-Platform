@@ -23,6 +23,15 @@ import uuid
 CLIENT_FOLDER_SEPARATOR = "_C_"
 ALBUM_FOLDER_SEPARATOR = "_A_"
 
+# Fixed (not per-record) names for the client's cover images: a single
+# "Cover Images" folder sits directly under the client folder, as a sibling of
+# the album folders - never inside one - and holds the one cover.webp along
+# with every item thumbnail (video poster / photo thumb; see
+# media_service._thumbnail_storage_folder). All cover-like images belong to
+# the client, not to any album.
+COVER_FOLDER_NAME = "Cover Images"
+COVER_FILE_NAME = "cover.webp"
+
 # Generous but bounded - keeps the final folder name well under Drive's
 # (very high) folder name length limit without truncating any name a real
 # client/album would plausibly have.

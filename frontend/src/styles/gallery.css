@@ -1849,3 +1849,160 @@
   font-size: 0.76rem;
   margin-bottom: 0;
 }
+
+/* ===========================================================================
+   Automatic cover (landing hero)
+   ---------------------------------------------------------------------------
+   With no cover the landing keeps its faint, blurred ambient backdrop (rules
+   above, unchanged). When the gallery HAS a cover it becomes a real hero band
+   across the top of the page that fades into the cream background, kept at a
+   moderate opacity so the dark header text stays legible over any photo.
+   =========================================================================== */
+
+.wedding-landing__bg--cover {
+  bottom: auto;
+  height: min(78vh, 680px);
+  opacity: 0.42;
+  filter: none;
+  background-position: center 30%;
+  -webkit-mask-image: linear-gradient(to bottom, #000 40%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 40%, transparent 100%);
+}
+
+/* ===========================================================================
+   Wishlist (favourites)
+   =========================================================================== */
+
+/* Nav link */
+.sam-nav__wishlist-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: none;
+  border: none;
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
+  font-weight: 400;
+  color: #453e38;
+  cursor: pointer;
+  padding: 0.35rem 0.6rem;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.sam-nav__wishlist-btn:hover,
+.sam-nav__wishlist-btn.is-current {
+  color: #a4453d;
+  background: rgba(164, 69, 61, 0.07);
+}
+
+.sam-nav__wishlist-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* The round heart pinned to a photo tile (top-right; top-left is the select
+   checkbox and bottom-right is the video duration badge). Glass style to
+   match that checkbox. */
+.wishlist-heart {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 5;
+  transition: transform 0.15s ease, background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.wishlist-heart:hover {
+  transform: scale(1.1);
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.wishlist-heart:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+}
+
+.wishlist-heart.is-active {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: #ffffff;
+  color: #c2453d;
+}
+
+.wishlist-heart.is-active:hover {
+  background: #ffffff;
+}
+
+/* On devices with a real hover, an UN-hearted heart only appears when you
+   hover/focus the tile (keeps the grid clean); a hearted one is always shown.
+   Touch devices have no hover, so the heart is always visible there. */
+@media (hover: hover) {
+  .wedding-media-tile .wishlist-heart:not(.is-active) {
+    opacity: 0;
+  }
+
+  .wedding-media-tile:hover .wishlist-heart,
+  .wedding-media-tile:focus-within .wishlist-heart {
+    opacity: 1;
+  }
+}
+
+/* Heart button in a list row (matches View / Download) and in the lightbox. */
+.wishlist-row-btn.is-active {
+  color: #c2453d;
+  border-color: rgba(194, 69, 61, 0.45);
+}
+
+.wishlist-row-btn.is-active:hover {
+  background: #c2453d;
+  color: #ffffff;
+  border-color: #c2453d;
+}
+
+.wishlist-lightbox-btn.is-active {
+  color: #ff8f86;
+  border-color: rgba(255, 143, 134, 0.55);
+  background: rgba(255, 143, 134, 0.12);
+}
+
+/* Wishlist page */
+.wishlist-page__back {
+  margin-top: 1.25rem;
+}
+
+.wishlist-page__no-thumb {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+/* Un-hearted while the page is open: stays put (so it can be undone and the
+   lightbox never jumps) but reads as removed. */
+/* Doubled class + .is-loaded so it outranks `.wedding-media-tile img.is-loaded`
+   (the fade-in rule that sets opacity: 1), which would otherwise win. */
+.wedding-media-tile.wedding-media-tile--unwishlisted img,
+.wedding-media-tile.wedding-media-tile--unwishlisted img.is-loaded {
+  opacity: 0.4;
+  filter: grayscale(0.6);
+}
+
+@media (max-width: 520px) {
+  .sam-nav__wishlist-btn span {
+    display: none;
+  }
+}

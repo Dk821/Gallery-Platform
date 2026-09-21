@@ -27,7 +27,7 @@ def album_to_response(album: Album, media_count: int = 0) -> AlbumResponse:
     )
 
 
-def media_to_response(media: Media) -> MediaResponse:
+def media_to_response(media: Media, is_wishlisted: bool = False) -> MediaResponse:
     return MediaResponse(
         id=media.id,
         file_uuid=media.file_uuid,
@@ -41,6 +41,7 @@ def media_to_response(media: Media) -> MediaResponse:
         has_thumbnail=bool(media.thumbnail_reference),
         status=media.status,
         created_at=media.created_at,
+        is_wishlisted=is_wishlisted,
     )
 
 
@@ -83,7 +84,9 @@ def upload_session_to_response(session: UploadSession) -> UploadStatusResponse:
     )
 
 
-def upload_session_start_response(session: UploadSession, upload_url: str | None) -> DirectUploadSessionResponse:
+def upload_session_start_response(
+    session: UploadSession, upload_url: str | None, cover_needed: bool = False
+) -> DirectUploadSessionResponse:
     """
     upload_url is passed in separately rather than read off the session -
     the session only durably stores it for refresh-recovery bookkeeping
@@ -93,7 +96,7 @@ def upload_session_start_response(session: UploadSession, upload_url: str | None
     path, where there's nothing left to upload).
     """
     base = upload_session_to_response(session)
-    return DirectUploadSessionResponse(upload_url=upload_url, **base.model_dump())
+    return DirectUploadSessionResponse(upload_url=upload_url, cover_needed=cover_needed, **base.model_dump())
 
 
 def upload_session_list_item(

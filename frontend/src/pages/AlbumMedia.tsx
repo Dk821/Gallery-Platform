@@ -13,7 +13,7 @@ import AdminLayout from "../components/AdminLayout";
 import Modal from "../components/Modal";
 import DownloadJobModal from "../components/DownloadJobModal";
 import MediaLightbox from "../components/MediaLightbox";
-import { AlbumItem, adminService, MediaItem } from "../services/admin";
+import { AlbumItem, adminService, MediaItem, WishlistCounts, WishlistFilter } from "../services/admin";
 import { formatBytes, getExpiryInfo } from "../utils/format";
 
 const PAGE_SIZE = 40;
@@ -21,6 +21,29 @@ const PAGE_SIZE = 40;
 type MediaViewMode = "grid" | "gallery" | "list";
 
 const VIEW_MODE_KEY = "admin-media-view-mode";
+
+// The client's wishlist, as a filter over this album (a database query only -
+// nothing is copied anywhere).
+const WISHLIST_FILTER_TABS: { key: WishlistFilter; label: string }[] = [
+  { key: "all", label: "All media" },
+  { key: "wishlisted", label: "Wishlist" },
+  { key: "not_wishlisted", label: "Not wishlisted" },
+];
+
+function WishlistBadge({ inline = false }: { inline?: boolean }) {
+  return (
+    <span
+      className={"wishlist-badge" + (inline ? " wishlist-badge--inline" : "")}
+      title="In the client's wishlist"
+      aria-label="In the client's wishlist"
+      role="img"
+    >
+      <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true">
+        <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+      </svg>
+    </span>
+  );
+}
 
 type ModalState =
   | { kind: "edit"; media: MediaItem }
@@ -55,6 +78,10 @@ export default function AlbumMedia() {
     return stored === "gallery" ? "gallery" : stored === "list" ? "list" : "grid";
   });
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
+  const [wishlistFilter, setWishlistFilter] = useState<WishlistFilter>("all");
+  const [wishlistCounts, setWishlistCounts] = useState<WishlistCounts | null>(null);
+  // Guards rapid tab clicks: only the most recent filter request may apply its result.
+  const filterRequestRef = useRef(0);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuAnchorRef = useRef<HTMLButtonElement>(null);
 
@@ -63,15 +90,18 @@ export default function AlbumMedia() {
     setTimeout(() => setToast(null), 3000);
   }
 
-  async function loadAlbumAndMedia(searchTerm = search) {
+  async function loadAlbumAndMedia(searchTerm = search, filter: WishlistFilter = wishlistFilter) {
     setLoading(true);
     try {
-      const [albumData, mediaPage, clientPage] = await Promise.all([
+      const [albumData, mediaPage, clientPage, counts] = await Promise.all([
         adminService.getAlbum(albumIdNum),
-        adminService.listAlbumMedia(albumIdNum, 1, PAGE_SIZE, searchTerm || undefined),
+        adminService.listAlbumMedia(albumIdNum, 1, PAGE_SIZE, searchTerm || undefined, filter),
         adminService.listClients(1, 200),
+        // Counts are decoration: never let them fail the page load.
+        adminService.getAlbumWishlistCounts(albumIdNum, searchTerm || undefined).catch(() => null),
       ]);
       setAlbum(albumData);
+      setWishlistCounts(counts);
       setItems(mediaPage.items);
       setHasMore(mediaPage.has_more);
       setPage(1);
@@ -90,7 +120,9 @@ export default function AlbumMedia() {
   }
 
   useEffect(() => {
-    loadAlbumAndMedia("");
+    // A different album always starts on "All media".
+    setWishlistFilter("all");
+    loadAlbumAndMedia("", "all");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [albumIdNum]);
 
@@ -118,7 +150,13 @@ export default function AlbumMedia() {
 
   async function loadMore() {
     const nextPage = page + 1;
-    const mediaPage = await adminService.listAlbumMedia(albumIdNum, nextPage, PAGE_SIZE, search || undefined);
+    const mediaPage = await adminService.listAlbumMedia(
+      albumIdNum,
+      nextPage,
+      PAGE_SIZE,
+      search || undefined,
+      wishlistFilter
+    );
     setItems((prev) => [...prev, ...mediaPage.items]);
     setHasMore(mediaPage.has_more);
     setPage(nextPage);
@@ -127,6 +165,43 @@ export default function AlbumMedia() {
   function handleSearchSubmit(e: FormEvent) {
     e.preventDefault();
     loadAlbumAndMedia(search);
+  }
+
+  // Lightweight on purpose: a tab click re-fetches only page 1 of the media and
+  // the counts - not the album, the client list and the album list that a full
+  // loadAlbumAndMedia() also pulls.
+  async function changeWishlistFilter(next: WishlistFilter) {
+    if (next === wishlistFilter) return;
+    const previous = wishlistFilter;
+    const requestId = ++filterRequestRef.current;
+    setWishlistFilter(next);
+    try {
+      const [mediaPage, counts] = await Promise.all([
+        adminService.listAlbumMedia(albumIdNum, 1, PAGE_SIZE, search || undefined, next),
+        adminService.getAlbumWishlistCounts(albumIdNum, search || undefined).catch(() => null),
+      ]);
+      if (requestId !== filterRequestRef.current) return; // a newer click superseded this one
+      setItems(mediaPage.items);
+      setHasMore(mediaPage.has_more);
+      setPage(1);
+      // Selection belongs to what was on screen: a different filter is a different set.
+      setSelectedIds(new Set());
+      setLightboxIndex(null);
+      if (counts) setWishlistCounts(counts);
+    } catch (err) {
+      if (requestId !== filterRequestRef.current) return;
+      setWishlistFilter(previous);
+      showToast(err instanceof Error ? err.message : "Failed to apply filter.");
+    }
+  }
+
+  function refreshWishlistCounts() {
+    adminService
+      .getAlbumWishlistCounts(albumIdNum, search || undefined)
+      .then(setWishlistCounts)
+      .catch(() => {
+        // Counts are decoration; keep the last known numbers.
+      });
   }
 
   function replaceItem(updated: MediaItem) {
@@ -142,6 +217,7 @@ export default function AlbumMedia() {
       return next;
     });
     setLightboxIndex(null);
+    refreshWishlistCounts();
   }
 
   function toggleSelect(id: number) {
@@ -155,7 +231,9 @@ export default function AlbumMedia() {
 
   async function selectAllAcrossAlbum() {
     try {
-      const summary = await adminService.getAlbumMediaSelectionSummary(albumIdNum, search || undefined);
+      // Same wishlist filter as the grid: "Select all" feeds bulk delete /
+      // move / download, so under the Wishlist tab it selects ONLY those.
+      const summary = await adminService.getAlbumMediaSelectionSummary(albumIdNum, search || undefined, wishlistFilter);
       setSelectedIds(new Set(summary.ids));
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Failed to select all.");
@@ -228,6 +306,24 @@ export default function AlbumMedia() {
         />
       )}
 
+      <div className="view-toggle wishlist-filter" role="group" aria-label="Filter by the client's wishlist">
+        {WISHLIST_FILTER_TABS.map((tab) => {
+          const active = wishlistFilter === tab.key;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              className={"view-toggle__btn" + (active ? " view-toggle__btn--active" : "")}
+              onClick={() => changeWishlistFilter(tab.key)}
+              aria-pressed={active}
+            >
+              <span>{tab.label}</span>
+              <span className="wishlist-filter__count">{wishlistCounts ? wishlistCounts[tab.key] : "–"}</span>
+            </button>
+          );
+        })}
+      </div>
+
       <form
         onSubmit={handleSearchSubmit}
         className="album-media-toolbar"
@@ -252,14 +348,14 @@ export default function AlbumMedia() {
           Search
         </button>
         <button type="button" className="btn-text" onClick={selectAllAcrossAlbum}>
-          Select all{search ? " matching" : ""}
+          Select all{search || wishlistFilter !== "all" ? " matching" : ""}
         </button>
         {selectedCount > 0 && (
           <button type="button" className="btn-text" onClick={clearSelection}>
             Clear selection
           </button>
         )}
-        {!search && (
+        {!search && wishlistFilter === "all" && (
           <button type="button" className="btn-secondary" onClick={() => setDownloadJobRequest("all")}>
             Download Album as ZIP
           </button>
@@ -338,7 +434,13 @@ export default function AlbumMedia() {
 
       {!loading && items.length === 0 && (
         <div className="empty-state">
-          {search ? "No files match that search." : "No photos or videos in this album yet."}
+          {search
+            ? "No files match that search."
+            : wishlistFilter === "wishlisted"
+              ? "The client hasn't added anything from this album to their wishlist yet."
+              : wishlistFilter === "not_wishlisted"
+                ? "Every item in this album is on the client's wishlist."
+                : "No photos or videos in this album yet."}
         </div>
       )}
 
@@ -369,6 +471,7 @@ export default function AlbumMedia() {
                   >
                     {isSelected ? "✓" : ""}
                   </span>
+                  {item.is_wishlisted && <WishlistBadge />}
                   <button
                     className="media-row__open"
                     onClick={() => setLightboxIndex(i)}
@@ -469,6 +572,7 @@ export default function AlbumMedia() {
               >
                 {isSelected ? "✓" : ""}
               </span>
+              {item.is_wishlisted && <WishlistBadge />}
               <button
                 style={{ all: "unset", cursor: "pointer", display: "block", width: "100%", height: "100%" }}
                 onClick={() => setLightboxIndex(i)}
@@ -509,6 +613,11 @@ export default function AlbumMedia() {
           thumbnailUrl={adminService.adminThumbnailUrl}
           renderActions={(item) => (
             <>
+              {item.is_wishlisted && (
+                <span className="lightbox-icon-btn wishlist-admin-tag" title="The client added this to their wishlist">
+                  <WishlistBadge inline /> In wishlist
+                </span>
+              )}
               <button className="lightbox-icon-btn" onClick={() => setModal({ kind: "edit", media: item })}>
                 Edit
               </button>

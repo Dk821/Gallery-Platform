@@ -2,7 +2,7 @@ import datetime
 import logging
 import uuid
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session as DbSession
 
 from app.models.album import Album
@@ -19,6 +19,16 @@ logger = logging.getLogger("gallery.albums")
 
 def is_album_expired(album: Album) -> bool:
     return album.expires_at is not None and album.expires_at <= datetime.datetime.utcnow()
+
+
+def album_not_expired_clause():
+    """
+    SQL equivalent of `not is_album_expired(album)`, for queries that join
+    Album. A fresh clause per call, NOT a module-level constant -
+    datetime.utcnow() must be evaluated at query time, not once at
+    import/server-startup time.
+    """
+    return or_(Album.expires_at.is_(None), Album.expires_at > datetime.datetime.utcnow())
 
 
 def check_album_not_expired(album: Album) -> None:

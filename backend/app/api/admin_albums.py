@@ -19,6 +19,11 @@ from app.services.album_service import (
 from app.services.media_service import get_album_media_selection_summary, list_media_for_album_admin
 from app.services.storage_provider import get_storage_service
 from app.services.storage_service import StorageService
+from app.services.wishlist_service import (
+    get_album_wishlist_counts,
+    get_wishlisted_media_ids,
+    validate_wishlist_filter,
+)
 
 router = APIRouter(prefix="/api/admin/albums", tags=["admin-albums"])
 
@@ -69,15 +74,21 @@ def list_album_media_route(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
     search: str | None = Query(default=None, max_length=255),
+    wishlist: str = Query(default="all", description="all | wishlisted | not_wishlisted"),
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
     # Confirms the album itself exists before listing its media - admin
     # access isn't scoped to a single client, but a bogus album_id should
     # still 404 rather than silently returning an empty page.
-    get_album_or_404(db, album_id)
-    rows, total, page, limit = list_media_for_album_admin(db, album_id, page, limit, search)
-    items = [media_to_response(m) for m in rows]
+    album = get_album_or_404(db, album_id)
+    wishlist_filter = validate_wishlist_filter(wishlist)
+    rows, total, page, limit = list_media_for_album_admin(db, album_id, page, limit, search, wishlist_filter)
+    # The wishlist filter is an SQL EXISTS in the query above; the per-item
+    # flag is ONE batched lookup for the page (never one query per photo).
+    # "Wishlisted" always means: by the client who owns this album.
+    wishlisted = get_wishlisted_media_ids(db, album.client_id, [m.id for m in rows])
+    items = [media_to_response(m, is_wishlisted=m.id in wishlisted) for m in rows]
     return {"success": True, "data": build_page(items, page, limit, total)}
 
 
@@ -85,12 +96,28 @@ def list_album_media_route(
 def get_album_media_selection_summary_route(
     album_id: int,
     search: str | None = Query(default=None, max_length=255),
+    wishlist: str = Query(default="all", description="all | wishlisted | not_wishlisted"),
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
     get_album_or_404(db, album_id)
-    summary = get_album_media_selection_summary(db, album_id, search)
+    # Must mirror the grid's filter: "Select All" feeds bulk delete/move, so
+    # under the Wishlist tab it may only ever select the wishlisted items.
+    summary = get_album_media_selection_summary(db, album_id, search, validate_wishlist_filter(wishlist))
     return {"success": True, "data": summary}
+
+
+@router.get("/{album_id}/media/wishlist-counts")
+def get_album_wishlist_counts_route(
+    album_id: int,
+    search: str | None = Query(default=None, max_length=255),
+    db: DbSession = Depends(get_db),
+    admin: Admin = Depends(get_current_admin),
+):
+    # Backs the filter tabs' counts ("All 250 / Wishlist 38 / Not wishlisted
+    # 212") - a single aggregate query, not one count per tab.
+    get_album_or_404(db, album_id)
+    return {"success": True, "data": get_album_wishlist_counts(db, album_id, search)}
 
 
 @router.post("")

@@ -5,6 +5,7 @@ from app.api.deps import get_current_admin
 from app.database.connection import get_db
 from app.models.admin import Admin
 from app.models.audit_log import AuditLog
+from app.api.presenters import media_to_response
 from app.schemas.client import (
     ClientChangeDownloadPasswordRequest,
     ClientChangePasswordRequest,
@@ -27,6 +28,7 @@ from app.services.client_service import (
 )
 from app.services.storage_provider import get_storage_service
 from app.services.storage_service import StorageService
+from app.services.wishlist_service import get_album_of_client_or_404, list_wishlist_for_admin
 
 router = APIRouter(prefix="/api/admin/clients", tags=["admin-clients"])
 
@@ -93,6 +95,28 @@ def get_client_route(
 ):
     client = get_client_or_404(db, client_id)
     return {"success": True, "data": _to_response(client)}
+
+
+@router.get("/{client_id}/wishlist")
+def get_client_wishlist_route(
+    client_id: int,
+    album_id: int | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: DbSession = Depends(get_db),
+    admin: Admin = Depends(get_current_admin),
+):
+    # What this client has wishlisted, optionally narrowed to one album.
+    # Read-only and admin-only (get_current_admin): admins see the client's
+    # selections but cannot change them. A bogus client is a 404, and an
+    # album_id must belong to THIS client - otherwise it 404s rather than
+    # quietly returning another client's album's data.
+    get_client_or_404(db, client_id)
+    if album_id is not None:
+        get_album_of_client_or_404(db, album_id, client_id)
+    rows, total, page, limit = list_wishlist_for_admin(db, client_id, album_id, page, limit)
+    items = [media_to_response(m, is_wishlisted=True) for m in rows]
+    return {"success": True, "data": build_page(items, page, limit, total)}
 
 
 @router.put("/{client_id}")

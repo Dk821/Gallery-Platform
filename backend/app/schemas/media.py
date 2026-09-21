@@ -20,6 +20,12 @@ class MediaResponse(BaseModel):
     has_thumbnail: bool
     status: str
     created_at: datetime.datetime
+    # Whether the OWNING client has wishlisted this item. Filled in by the
+    # list/detail routes from one batched lookup per page (never a query per
+    # item - see wishlist_service.get_wishlisted_media_ids). Defaults to False
+    # so every place that builds a MediaResponse without wishlist context
+    # (e.g. right after an upload/edit) stays valid.
+    is_wishlisted: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -137,6 +143,13 @@ class DirectUploadSessionResponse(UploadStatusResponse):
     """
 
     upload_url: str | None
+    # True when the browser should also build a cover from this file and send
+    # it to POST /upload-session/{id}/cover after the upload completes: the
+    # client has no cover yet AND this is a cover-eligible photo. Only ever
+    # true on the response to POST /upload-session (the browser decides once,
+    # up front, whether the extra work is worth doing) - the server re-checks
+    # everything when the cover actually arrives.
+    cover_needed: bool = False
 
 
 class UploadSessionListItem(BaseModel):
