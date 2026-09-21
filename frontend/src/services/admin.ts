@@ -194,13 +194,21 @@ export const adminService = {
 
   removeClient: (clientId: number) => api.delete<null>(`/admin/clients/${clientId}`),
 
-  listAlbums: (page = 1, limit = 50) =>
-    api.get<Page<AlbumItem>>(`/admin/albums?page=${page}&limit=${limit}`),
+  listAlbums: (page = 1, limit = 50, clientId?: number) => {
+    const qs = new URLSearchParams({ page: String(page), limit: String(limit) });
+    if (clientId !== undefined && clientId !== null) qs.set("client_id", String(clientId));
+    return api.get<Page<AlbumItem>>(`/admin/albums?${qs.toString()}`);
+  },
 
   getAlbum: (albumId: number) => api.get<AlbumItem>(`/admin/albums/${albumId}`),
 
-  createAlbum: (clientId: number, albumName: string, description?: string) =>
-    api.post<AlbumItem>("/admin/albums", { client_id: clientId, album_name: albumName, description }),
+  createAlbum: (clientId: number, albumName: string, description?: string, expiresAt?: string | null) =>
+    api.post<AlbumItem>("/admin/albums", {
+      client_id: clientId,
+      album_name: albumName,
+      description,
+      ...(expiresAt ? { expires_at: expiresAt } : {}),
+    }),
 
   // expiresAt: pass an ISO string to set/change it, null to clear it, or
   // omit the key entirely (don't include expiresAt in the call) to leave

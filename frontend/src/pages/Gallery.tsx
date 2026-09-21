@@ -80,9 +80,6 @@ export default function Gallery() {
   const [mediaStats, setMediaStats] = useState<Record<number, { photos: number; videos: number }>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Set if the cover exists but could not be fetched (e.g. Drive hiccup): the
-  // page then quietly keeps its default backdrop instead of a blank hero.
-  const [coverFailed, setCoverFailed] = useState(false);
 
   useEffect(() => {
     Promise.all([galleryService.getGallery(), galleryService.listAlbums(1, 200)])
@@ -139,28 +136,11 @@ export default function Gallery() {
       .finally(() => setLoading(false));
   }, [galleryId, navigate]);
 
-  // The cover is the signed-in client's OWN automatic cover, served by
-  // GET /api/client/gallery/cover (session cookie decides whose - no id is
-  // sent). Probe it once so a failure falls back to the default backdrop
-  // rather than leaving the hero empty.
-  const hasCover = Boolean(info?.has_cover);
-  useEffect(() => {
-    if (!hasCover) return;
-    setCoverFailed(false);
-    const probe = new Image();
-    probe.onerror = () => setCoverFailed(true);
-    probe.src = galleryService.coverUrl();
-    return () => {
-      probe.onerror = null;
-    };
-  }, [hasCover]);
-
   if (loading) {
     return <div className="client-shell" />;
   }
 
   const clientName = info?.client_name || "Sam & Priya";
-  const showCover = hasCover && !coverFailed;
 
   return (
     <div className="client-shell">
@@ -170,9 +150,9 @@ export default function Gallery() {
       <main className="wedding-landing">
         {/* Background ambience */}
         <div
-          className={`wedding-landing__bg${showCover ? " wedding-landing__bg--cover" : ""}`}
+          className="wedding-landing__bg"
           style={{
-            backgroundImage: `url("${showCover ? galleryService.coverUrl() : DEFAULT_LANDING_BACKDROP}")`,
+            backgroundImage: `url("${DEFAULT_LANDING_BACKDROP}")`,
           }}
           aria-hidden="true"
         />

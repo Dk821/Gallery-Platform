@@ -120,6 +120,13 @@ export default function Wishlist() {
       <ClientNav galleryId={galleryId} />
 
       <main className="wedding-landing">
+        <div
+          className="wedding-landing__bg"
+          style={{
+            backgroundImage: 'url("/images/album-bg.webp")',
+          }}
+          aria-hidden="true"
+        />
         <div className="wedding-landing__content">
           <section className="wedding-landing__header">
             <p className="wedding-landing__kicker">Your favourites</p>
