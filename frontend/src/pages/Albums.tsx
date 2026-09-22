@@ -281,7 +281,7 @@ export default function Albums() {
       {error && <p className="auth-error">{error}</p>}
 
       {/* KPI Metric Cards */}
-      <div className="admin-kpi-grid" style={{ gridTemplateColumns: "repeat(4, minmax(0, 1fr))" }}>
+      <div className="admin-kpi-grid admin-kpi-grid--4col">
         <div className="admin-kpi-card">
           <div className="admin-kpi-card__top">
             <div className="admin-kpi-icon-box admin-kpi-icon-box--amber">
@@ -358,110 +358,118 @@ export default function Albums() {
       {/* Filter and Search Toolbar */}
       {albums.length > 0 && (
         <div className="albums-toolbar">
-          {/* Search box */}
-          <div className="albums-search">
-            <span className="search-icon">⌕</span>
-            <input
-              className="search-input"
-              type="text"
-              placeholder="Search albums, clients, or notes…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+          {/* Row 1: Search + Client filter */}
+          <div className="albums-toolbar__row albums-toolbar__row--search">
+            {/* Search box */}
+            <div className="albums-search">
+              <span className="search-icon">⌕</span>
+              <input
+                className="search-input"
+                type="text"
+                placeholder="Search albums, clients…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+
+            {/* Client Filter Dropdown */}
+            <select
+              className="albums-client-select"
+              value={clientFilter}
+              onChange={(e) => setClientFilter(e.target.value)}
+              title="Filter by client"
+            >
+              <option value="all">All Clients ({clients.length})</option>
+              {clients.map((c) => (
+                <option key={c.id} value={String(c.id)}>
+                  {c.client_name}
+                </option>
+              ))}
+            </select>
           </div>
 
-          {/* Client Filter Dropdown */}
-          <select
-            className="albums-client-select"
-            value={clientFilter}
-            onChange={(e) => setClientFilter(e.target.value)}
-            title="Filter by client"
-          >
-            <option value="all">All Clients ({clients.length})</option>
-            {clients.map((c) => (
-              <option key={c.id} value={String(c.id)}>
-                {c.client_name}
-              </option>
-            ))}
-          </select>
+          {/* Row 2: Status filters + Sort + View toggle + Count */}
+          <div className="albums-toolbar__row albums-toolbar__row--filters">
+            {/* Status Segmented Buttons */}
+            <div className="filter-group">
+              {[
+                { id: "all", label: "All" },
+                { id: "active", label: "Active" },
+                { id: "expiring_soon", label: "Expiring" },
+                { id: "expired", label: "Expired" },
+                { id: "with_media", label: "Has Media" },
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  className={"filter-btn" + (statusFilter === tab.id ? " filter-btn--active" : "")}
+                  onClick={() => setStatusFilter(tab.id as StatusFilter)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
 
-          {/* Status Segmented Buttons */}
-          <div className="filter-group">
-            {[
-              { id: "all", label: "All" },
-              { id: "active", label: "Active" },
-              { id: "expiring_soon", label: "Expiring Soon" },
-              { id: "expired", label: "Expired" },
-              { id: "with_media", label: "Has Media" },
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                className={"filter-btn" + (statusFilter === tab.id ? " filter-btn--active" : "")}
-                onClick={() => setStatusFilter(tab.id as StatusFilter)}
+            <div className="albums-toolbar__controls">
+              {/* Sort Dropdown */}
+              <select
+                className="sort-select"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as SortOption)}
+                title="Sort order"
               >
-                {tab.label}
-              </button>
-            ))}
+                <option value="created_desc">Newest</option>
+                <option value="created_asc">Oldest</option>
+                <option value="name_asc">Name A–Z</option>
+                <option value="name_desc">Name Z–A</option>
+                <option value="media_desc">Most files</option>
+                <option value="media_asc">Fewest files</option>
+                <option value="expiry_asc">Soonest expiring</option>
+              </select>
+
+              {/* View Mode Switcher */}
+              <div className="view-mode-toggle" title="Switch layout">
+                <button
+                  type="button"
+                  className={"view-mode-btn" + (viewMode === "table" ? " view-mode-btn--active" : "")}
+                  onClick={() => setViewMode("table")}
+                  title="Table view"
+                  aria-label="Table view"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <line x1="3" y1="6" x2="21" y2="6" />
+                    <line x1="3" y1="12" x2="21" y2="12" />
+                    <line x1="3" y1="18" x2="21" y2="18" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  className={"view-mode-btn" + (viewMode === "grid" ? " view-mode-btn--active" : "")}
+                  onClick={() => setViewMode("grid")}
+                  title="Grid card view"
+                  aria-label="Grid card view"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="3" width="7" height="7" />
+                    <rect x="14" y="3" width="7" height="7" />
+                    <rect x="14" y="14" width="7" height="7" />
+                    <rect x="3" y="14" width="7" height="7" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Clear Filters */}
+              {hasActiveFilters && (
+                <button className="clear-filters-btn" onClick={clearFilters}>
+                  Clear
+                </button>
+              )}
+
+              {/* Count Badge */}
+              <span className="filter-count">
+                {filteredAlbums.length} / {albums.length}
+              </span>
+            </div>
           </div>
-
-          {/* Sort Dropdown */}
-          <select
-            className="sort-select"
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as SortOption)}
-            title="Sort order"
-          >
-            <option value="created_desc">Newest created</option>
-            <option value="created_asc">Oldest created</option>
-            <option value="name_asc">Album name A–Z</option>
-            <option value="name_desc">Album name Z–A</option>
-            <option value="media_desc">Most media files</option>
-            <option value="media_asc">Fewest media files</option>
-            <option value="expiry_asc">Soonest expiring</option>
-          </select>
-
-          {/* View Mode Switcher */}
-          <div className="view-mode-toggle" title="Switch layout">
-            <button
-              type="button"
-              className={"view-mode-btn" + (viewMode === "table" ? " view-mode-btn--active" : "")}
-              onClick={() => setViewMode("table")}
-              title="Table view"
-              aria-label="Table view"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <line x1="3" y1="6" x2="21" y2="6" />
-                <line x1="3" y1="12" x2="21" y2="12" />
-                <line x1="3" y1="18" x2="21" y2="18" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className={"view-mode-btn" + (viewMode === "grid" ? " view-mode-btn--active" : "")}
-              onClick={() => setViewMode("grid")}
-              title="Grid card view"
-              aria-label="Grid card view"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <rect x="3" y="3" width="7" height="7" />
-                <rect x="14" y="3" width="7" height="7" />
-                <rect x="14" y="14" width="7" height="7" />
-                <rect x="3" y="14" width="7" height="7" />
-              </svg>
-            </button>
-          </div>
-
-          {/* Clear Filters */}
-          {hasActiveFilters && (
-            <button className="clear-filters-btn" onClick={clearFilters}>
-              Clear filters
-            </button>
-          )}
-
-          {/* Count Badge */}
-          <span className="filter-count">
-            {filteredAlbums.length} of {albums.length}
-          </span>
         </div>
       )}
 

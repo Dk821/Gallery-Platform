@@ -292,6 +292,17 @@
   gap: 1.25rem;
 }
 
+/* Albums page header row (title left, actions right) */
+.section-header,
+.admin-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
 .admin-page-title {
   font-family: var(--font-display);
   font-size: 2.1rem;
@@ -693,19 +704,40 @@
 }
 
 .sort-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
   background: var(--panel);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236e6860' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 13px 13px;
   border: 1px solid var(--hairline);
   color: var(--text);
   font-size: 0.8rem;
-  padding: 0.42rem 0.6rem;
+  font-weight: 500;
+  padding: 0.45rem 1.85rem 0.45rem 0.65rem;
   border-radius: 6px;
   cursor: pointer;
   font-family: var(--font-ui);
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.sort-select:hover {
+  border-color: var(--hairline-dark);
+  background-color: var(--panel-raised);
+}
+
+.sort-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(180, 133, 59, 0.15);
 }
 
 .sort-select option {
-  background: var(--panel-raised);
+  background: var(--panel);
   color: var(--text);
+  padding: 0.4rem;
 }
 
 .clear-filters-btn {
@@ -2188,9 +2220,18 @@
 .admin-kpi-subtext {
   font-size: 0.72rem;
   color: #9e978f;
-  white-space: nowrap;
+  /* Allow wrapping on small cards instead of clipping */
+  white-space: normal;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* 4-column variant used on the Albums page */
+.admin-kpi-grid--4col {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .admin-kpi-subtext--trend {
@@ -4507,14 +4548,42 @@
 
 .albums-toolbar {
   display: flex;
-  align-items: center;
-  gap: 0.65rem;
+  flex-direction: column;
+  gap: 0.6rem;
   margin-bottom: 1.25rem;
-  flex-wrap: wrap;
   background: var(--panel);
   border: 1px solid var(--hairline);
   padding: 0.75rem 1rem;
   border-radius: 10px;
+}
+
+/* Each row within the toolbar */
+.albums-toolbar__row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.albums-toolbar__row--search {
+  /* search box should grow, client select stays compact */
+}
+
+.albums-toolbar__row--filters {
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* Right-side controls cluster: sort + view toggle + clear + count */
+.albums-toolbar__controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .albums-search {
@@ -4525,20 +4594,44 @@
 }
 
 .albums-client-select {
-  background: var(--bg);
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background: var(--panel);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236e6860' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.65rem center;
+  background-size: 13px 13px;
   border: 1px solid var(--hairline);
   color: var(--text);
   font-size: 0.82rem;
-  padding: 0.45rem 0.65rem;
+  font-weight: 500;
+  padding: 0.48rem 2rem 0.48rem 0.75rem;
   border-radius: 6px;
   cursor: pointer;
   font-family: var(--font-ui);
-  max-width: 200px;
+  max-width: 220px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.albums-client-select:hover {
+  border-color: var(--hairline-dark);
+  background-color: var(--panel-raised);
+}
+
+.albums-client-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(180, 133, 59, 0.15);
 }
 
 .albums-client-select option {
-  background: var(--panel-raised);
+  background: var(--panel);
   color: var(--text);
+  padding: 0.4rem;
 }
 
 .view-mode-toggle {
@@ -4775,3 +4868,399 @@
   color: var(--text);
 }
 
+/* ===========================================================================
+   Album Expiry Control — semantic CSS (replaces inline styles)
+   =========================================================================== */
+
+.album-expiry-control {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.album-expiry-control__label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+}
+
+.album-expiry-control__input {
+  background: var(--bg);
+  border: 1px solid var(--hairline);
+  color: var(--text);
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-family: var(--font-ui);
+  min-height: 36px;
+}
+
+/* ===========================================================================
+   Album Media Toolbar — semantic CSS (replaces inline styles)
+   =========================================================================== */
+
+.album-media-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.album-media-toolbar__search-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.album-media-search-input {
+  flex: 1;
+  max-width: 320px;
+  background: var(--bg);
+  border: 1px solid var(--hairline);
+  color: var(--text);
+  padding: 0.55rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-family: var(--font-ui);
+  min-height: 40px;
+  transition: border-color 0.15s ease;
+}
+
+.album-media-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.album-media-search-input::placeholder {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.album-media-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+/* Long label shown on wider screens, short on mobile */
+.album-media-toolbar__zip-label-short {
+  display: none;
+}
+
+/* ===========================================================================
+   Mobile Responsive — Admin Album View / Manage Page
+   860px · 640px · 480px · 360px
+   =========================================================================== */
+
+/* ── 860px: sidebar collapses, start adapting main content ── */
+@media (max-width: 860px) {
+  /* Wishlist filter tabs: horizontal scroll instead of wrapping */
+  .wishlist-filter {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    padding-bottom: 2px;
+  }
+
+  .wishlist-filter::-webkit-scrollbar {
+    display: none;
+  }
+
+  .wishlist-filter .view-toggle__btn {
+    flex-shrink: 0;
+  }
+
+  /* Albums page: let toolbar wrap naturally */
+  .albums-toolbar {
+    gap: 0.5rem;
+  }
+
+  .albums-search {
+    min-width: 160px;
+  }
+
+  .filter-group {
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+}
+
+/* ── 640px: phone landscape / small tablet ── */
+@media (max-width: 640px) {
+  /* Expiry control */
+  .album-expiry-control {
+    gap: 0.5rem;
+  }
+
+  /* Search row fills full width */
+  .album-media-toolbar__search-row {
+    width: 100%;
+  }
+
+  .album-media-search-input {
+    max-width: 100%;
+    flex: 1;
+  }
+
+  /* Actions row fills full width */
+  .album-media-toolbar__actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  /* View-toggle: push right on its own line */
+  .album-media-toolbar .view-toggle {
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
+  /* Short ZIP button label on mobile */
+  .album-media-toolbar__zip-label-long {
+    display: none;
+  }
+
+  .album-media-toolbar__zip-label-short {
+    display: inline;
+  }
+
+  /* ── Bulk selection bar: fixed floating at bottom ── */
+  .selection-bar {
+    position: fixed !important;
+    top: auto !important;
+    bottom: 1rem;
+    left: 1rem;
+    right: 1rem;
+    border-radius: 14px;
+    padding: 0.7rem 1rem;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1);
+    z-index: 50;
+    margin-bottom: 0;
+  }
+
+  .selection-bar__actions {
+    gap: 0.4rem;
+  }
+
+  .selection-bar__actions .btn-secondary {
+    flex: 1;
+    justify-content: center;
+    text-align: center;
+    padding: 0.5rem 0.65rem;
+    font-size: 0.82rem;
+  }
+
+  /* Extra bottom space so content doesn't hide behind floating bar */
+  .media-grid {
+    padding-bottom: 5.5rem;
+  }
+
+  /* ── Albums toolbar sub-rows ── */
+  .albums-toolbar {
+    gap: 0.55rem;
+    padding: 0.75rem;
+  }
+
+  .albums-toolbar__row--search {
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+  }
+
+  .albums-search {
+    min-width: 0;
+    max-width: 100%;
+    flex: 1;
+  }
+
+  .albums-client-select {
+    max-width: 160px;
+    flex-shrink: 0;
+  }
+
+  .albums-toolbar__row--filters {
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .albums-toolbar__controls {
+    gap: 0.4rem;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+
+  .sort-select {
+    max-width: 120px;
+  }
+
+  .filter-group {
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+
+  .filter-btn {
+    font-size: 0.76rem;
+    padding: 0.3rem 0.6rem;
+  }
+
+  /* 4-col KPI → 2-col on mobile */
+  .admin-kpi-grid--4col {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* Albums grid: single column */
+  .albums-grid {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+
+  /* Table: horizontal scroll */
+  .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 8px;
+  }
+
+  /* Modal: full-width */
+  .modal-card {
+    max-width: calc(100vw - 2rem);
+    margin: 1rem;
+  }
+
+  .modal-card--wide {
+    max-width: calc(100vw - 2rem);
+  }
+}
+
+/* ── 480px: phone portrait ── */
+@media (max-width: 480px) {
+  /* Tighter 2-column media grid */
+  .media-grid--grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.45rem;
+  }
+
+  .media-grid--gallery {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.65rem;
+  }
+
+  /* Bigger checkbox for touch */
+  .media-tile__checkbox {
+    width: 28px;
+    height: 28px;
+    font-size: 0.8rem;
+  }
+
+  /* List view: compact */
+  .media-row {
+    gap: 0.65rem;
+    padding: 0.5rem 0.65rem;
+  }
+
+  .media-row__thumb {
+    width: 56px;
+    height: 40px;
+  }
+
+  /* ⋯ menu button: 40 × 40 touch target */
+  .media-row__menu-btn {
+    min-width: 40px;
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Dropdown: never clip off-screen */
+  .row-actions__menu {
+    max-width: calc(100vw - 24px);
+    right: 0;
+  }
+
+  /* Page header: stack on mobile */
+  .admin-page-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+
+  .albums-header-actions {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    width: 100%;
+  }
+
+  .albums-header-actions .btn-primary,
+  .albums-header-actions .btn-secondary {
+    flex: 1;
+    justify-content: center;
+    text-align: center;
+  }
+
+  /* KPI cards: 2-col on small phones */
+  .admin-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  /* Expiry control: stack vertically */
+  .album-expiry-control {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .album-expiry-control__label {
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .album-expiry-control__input {
+    width: 100%;
+  }
+
+  .albums-client-select {
+    max-width: 130px;
+    font-size: 0.76rem;
+    padding: 0.42rem 1.4rem 0.42rem 0.55rem;
+    background-position: right 0.4rem center;
+    background-size: 11px 11px;
+  }
+}
+
+/* ── 360px: extra-small phones ── */
+@media (max-width: 360px) {
+  .media-grid--grid {
+    gap: 0.35rem;
+  }
+
+  .media-grid--gallery {
+    gap: 0.5rem;
+  }
+
+  .view-toggle__btn {
+    padding: 0.45rem 0.6rem;
+    font-size: 0.75rem;
+  }
+
+  .selection-bar {
+    left: 0.5rem;
+    right: 0.5rem;
+    border-radius: 12px;
+    padding: 0.6rem 0.8rem;
+  }
+
+  .selection-bar__actions .btn-secondary {
+    font-size: 0.78rem;
+    padding: 0.4rem 0.5rem;
+  }
+}

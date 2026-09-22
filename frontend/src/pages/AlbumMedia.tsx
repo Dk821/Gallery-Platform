@@ -327,39 +327,34 @@ export default function AlbumMedia() {
       <form
         onSubmit={handleSearchSubmit}
         className="album-media-toolbar"
-        style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem", marginTop: "1.25rem", flexWrap: "wrap", alignItems: "center" }}
       >
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by filename..."
-          style={{
-            background: "var(--bg)",
-            border: "1px solid var(--hairline)",
-            color: "var(--text)",
-            padding: "0.55rem 0.75rem",
-            borderRadius: "6px",
-            fontSize: "0.9rem",
-            flex: 1,
-            maxWidth: "320px",
-          }}
-        />
-        <button type="submit" className="btn-secondary">
-          Search
-        </button>
-        <button type="button" className="btn-text" onClick={selectAllAcrossAlbum}>
-          Select all{search || wishlistFilter !== "all" ? " matching" : ""}
-        </button>
-        {selectedCount > 0 && (
-          <button type="button" className="btn-text" onClick={clearSelection}>
-            Clear selection
+        <div className="album-media-toolbar__search-row">
+          <input
+            className="album-media-search-input"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by filename..."
+          />
+          <button type="submit" className="btn-secondary">
+            Search
           </button>
-        )}
-        {!search && wishlistFilter === "all" && (
-          <button type="button" className="btn-secondary" onClick={() => setDownloadJobRequest("all")}>
-            Download Album as ZIP
+        </div>
+        <div className="album-media-toolbar__actions">
+          <button type="button" className="btn-text" onClick={selectAllAcrossAlbum}>
+            Select all{search || wishlistFilter !== "all" ? " matching" : ""}
           </button>
-        )}
+          {selectedCount > 0 && (
+            <button type="button" className="btn-text" onClick={clearSelection}>
+              Clear selection
+            </button>
+          )}
+          {!search && wishlistFilter === "all" && (
+            <button type="button" className="btn-secondary album-media-toolbar__zip-btn" onClick={() => setDownloadJobRequest("all")}>
+              <span className="album-media-toolbar__zip-label-long">Download Album as ZIP</span>
+              <span className="album-media-toolbar__zip-label-short">Download ZIP</span>
+            </button>
+          )}
+        </div>
 
         <div className="view-toggle" role="group" aria-label="Media view">
           <button
@@ -753,7 +748,7 @@ function AlbumExpiryControl({ album, onSaved }: { album: AlbumItem; onSaved: (up
   }
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+    <div className="album-expiry-control">
       {expiry && (
         <span
           className={
@@ -764,20 +759,13 @@ function AlbumExpiryControl({ album, onSaved }: { album: AlbumItem; onSaved: (up
           {expiry.label}
         </span>
       )}
-      <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.82rem", color: "var(--text-muted)" }}>
+      <label className="album-expiry-control__label">
         Expiry date
         <input
+          className="album-expiry-control__input"
           type="date"
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          style={{
-            background: "var(--bg)",
-            border: "1px solid var(--hairline)",
-            color: "var(--text)",
-            padding: "0.35rem 0.5rem",
-            borderRadius: "6px",
-            fontSize: "0.82rem",
-          }}
         />
       </label>
       <button className="btn-text" onClick={handleSave} disabled={submitting}>

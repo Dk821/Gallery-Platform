@@ -2143,3 +2143,98 @@
     display: none;
   }
 }
+
+/* ===========================================================================
+   Lightbox — Mobile Responsive (admin + client gallery shared component)
+   =========================================================================== */
+
+@media (max-width: 640px) {
+  /* Top bar: smaller padding, hide filename, keep counter + buttons */
+  .lightbox-topbar {
+    padding: 0.65rem 0.85rem;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .lightbox-topbar__left {
+    gap: 0.5rem;
+    min-width: 0;
+    flex: 1;
+  }
+
+  /* Hide the long filename on small screens to avoid crowding buttons */
+  .lightbox-topbar__name {
+    display: none;
+  }
+
+  /* Smaller action buttons */
+  .lightbox-icon-btn {
+    padding: 0.4rem 0.7rem;
+    font-size: 0.78rem;
+    gap: 0.3rem;
+  }
+
+  .lightbox-topbar__actions {
+    gap: 0.4rem;
+    flex-shrink: 0;
+  }
+
+  /* Main stage: tighter padding */
+  .lightbox-stage {
+    padding: 0.75rem;
+  }
+
+  /* Media: allow up to full viewport on small screens */
+  .lightbox-media-wrapper {
+    max-width: 100%;
+    max-height: 60vh;
+  }
+
+  .lightbox-stage img,
+  .lightbox-stage video {
+    max-height: 60vh;
+    border-radius: 4px;
+  }
+
+  /* Navigation arrows: smaller, closer to edge */
+  .lightbox-nav {
+    width: 36px;
+    font-size: 1.6rem;
+  }
+
+  /* Filmstrip: smaller thumbnails */
+  .lightbox-filmstrip-bar {
+    padding: 0.5rem 0.75rem;
+  }
+
+  .lightbox-filmstrip-item {
+    width: 46px;
+    height: 32px;
+  }
+}
+
+@media (max-width: 420px) {
+  .lightbox-topbar {
+    padding: 0.5rem 0.65rem;
+  }
+
+  .lightbox-icon-btn span {
+    display: none;   /* icon-only buttons on very small phones */
+  }
+
+  .lightbox-icon-btn {
+    padding: 0.4rem 0.55rem;
+    border-radius: 6px;
+  }
+
+  .lightbox-icon-btn--close {
+    padding: 0.4rem 0.55rem;
+    width: 32px;
+    height: 32px;
+  }
+
+  .lightbox-filmstrip-item {
+    width: 38px;
+    height: 28px;
+  }
+}
