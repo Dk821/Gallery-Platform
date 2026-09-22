@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#eed89d" />
+      <stop offset="45%" stop-color="#b4853b" />
+      <stop offset="100%" stop-color="#8c6224" />
+    </linearGradient>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#24211e" />
+      <stop offset="100%" stop-color="#121110" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Rounded Base -->
+  <rect width="64" height="64" rx="16" fill="url(#bg)" />
+  
+  <!-- Subtle Border Ring -->
+  <rect x="2.5" y="2.5" width="59" height="59" rx="13.5" fill="none" stroke="url(#gold)" stroke-width="1.2" stroke-opacity="0.75" />
+  
+  <!-- Romantic Heart Silhouette -->
+  <path d="M32 47 C23.5 38.5 15.5 30 15.5 22.5 C15.5 16.5 20.5 12.5 26.5 12.5 C30 12.5 31.3 14.2 32 15.6 C32.7 14.2 34 12.5 37.5 12.5 C43.5 12.5 48.5 16.5 48.5 22.5 C48.5 30 40.5 38.5 32 47 Z" 
+        fill="none" 
+        stroke="url(#gold)" 
+        stroke-width="2.6" 
+        stroke-linecap="round" 
+        stroke-linejoin="round" />
+        
+  <!-- Camera Lens / Inner Aperture Rings -->
+  <circle cx="32" cy="25" r="5" fill="none" stroke="url(#gold)" stroke-width="1.5" stroke-opacity="0.85" />
+  <circle cx="32" cy="25" r="1.8" fill="url(#gold)" />
+  
+  <!-- Delicate Lens Sparkle -->
+  <path d="M44 14 Q44 17.5 47.5 17.5 Q44 17.5 44 21 Q44 17.5 40.5 17.5 Q44 17.5 44 14 Z" fill="url(#gold)" opacity="0.9" />
+</svg>

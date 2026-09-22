@@ -1,0 +1,15 @@
+# https://www.robotstxt.org/robotstxt.html
+User-agent: *
+Allow: /
+Allow: /gallery/
+
+# Block Admin Portal and private internal routes
+Disallow: /admin/
+Disallow: /admin
+Disallow: /api/
+Disallow: /.git/
+Disallow: /.git/*
+Disallow: /.env*
+
+# Sitemap location
+Sitemap: https://lovestory.madgen.space/sitemap.xml
