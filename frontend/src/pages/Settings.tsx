@@ -158,7 +158,14 @@ function AdminAccountCard({ adminEmail }: { adminEmail: string }) {
         {error && <p className="auth-error">{error}</p>}
         <label>
           Signed in as
-          <input value={adminEmail} disabled />
+          <input
+            type="email"
+            name="username"
+            value={adminEmail}
+            autoComplete="username"
+            readOnly
+            disabled
+          />
         </label>
         <label>
           Current password
