@@ -1,6 +1,7 @@
-import { CSSProperties, FormEvent, useState } from "react";
+import { CSSProperties, FormEvent, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { authService } from "../services/auth";
+import { galleryService } from "../services/gallery";
 
 type FloatStyle = CSSProperties & Record<`--${string}`, string | number>;
 
@@ -24,7 +25,54 @@ export default function ClientLogin() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // While we ask the backend whether this gallery even has a password, we
+  // render the entrance backdrop without flashing the password form - a
+  // passwordless gallery should open straight in, not poke a form at the
+  // visitor first.
+  const [checking, setChecking] = useState(true);
   const navigate = useNavigate();
+
+  const isDemoGallery = galleryId === "test-uuid" || galleryId === "preview" || galleryId === "demo";
+
+  useEffect(() => {
+    if (isDemoGallery) {
+      setChecking(false);
+      return;
+    }
+    let cancelled = false;
+    galleryService
+      .checkGalleryAccess(galleryId)
+      .then((access) => {
+        if (cancelled) return;
+        if (!access.requires_password) {
+          // No password on this gallery -> straight to the gallery. Login
+          // with an empty password still creates the normal server-side
+          // session, so every authenticated client page works unchanged.
+          authService
+            .clientLogin(galleryId, "")
+            .then(() => {
+              if (!cancelled) {
+                navigate(`/gallery/${galleryId}/view`, { state: { name: access.client_name } });
+              }
+            })
+            .catch(() => {
+              // Fall back to the form on any hiccup; submitting will surface
+              // the real error.
+              if (!cancelled) setChecking(false);
+            });
+        } else {
+          setChecking(false);
+        }
+      })
+      .catch(() => {
+        // Unknown gallery / network error: show the form. A bogus gallery id
+        // then reports "Invalid gallery link or password." on submit.
+        if (!cancelled) setChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [galleryId, isDemoGallery, navigate]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -34,7 +82,7 @@ export default function ClientLogin() {
       const client = await authService.clientLogin(galleryId, password);
       navigate(`/gallery/${galleryId}/view`, { state: { name: client.name } });
     } catch (err) {
-      if (galleryId === "test-uuid" || galleryId === "preview" || galleryId === "demo") {
+      if (isDemoGallery) {
         navigate(`/gallery/${galleryId}/view`, { state: { name: "Sam & Priya" } });
         return;
       }
@@ -42,6 +90,10 @@ export default function ClientLogin() {
     } finally {
       setLoading(false);
     }
+  }
+
+  if (checking) {
+    return <div className="client-shell entrance" aria-hidden="true" />;
   }
 
   return (

@@ -50,7 +50,7 @@ final v2/
 │   ├── alembic/              # Database migrations
 │   ├── .env                  # Backend config (secrets - not committed)
 │   ├── .env.example          # Config template (committed)
-│   └── tests/                # 21 pytest test files + conftest/fakes/direct_upload_helpers
+│   └── tests/                # 18 pytest test files + conftest/fakes
 ├── frontend/
 │   ├── .env.example          # VITE_API_BASE_URL - only needed when frontend/backend
 │   │                         # are on different origins (mirrors CROSS_SITE_FRONTEND)
@@ -140,7 +140,7 @@ include session token hashes and encrypted password blobs.
 | Table | Purpose |
 |---|---|
 | `admins` | Admin/staff users (email, Argon2 password hash, status) |
-| `clients` | Client accounts with `client_uuid` (public galleryId), Drive folder ID, encrypted password copies, and the automatic cover (`cover_drive_file_id` = the one `cover.webp`, `cover_folder_id` = its "Cover Images" Drive folder, shared with the client's video posters / photo thumbnails; both nullable - see *Automatic Client Cover*) |
+| `clients` | Client accounts with `client_uuid` (public galleryId), Drive folder ID, encrypted password copies, and the automatic cover (`cover_drive_file_id` = the one `cover.webp`, `cover_folder_id` = its "Cover Images" Drive folder, shared with the client's video posters / photo thumbnails; both nullable - see *Automatic Client Cover*). `password_hash` is **nullable**: a `NULL` gallery password means the gallery has no password prompt (see *Client Auth*) |
 | `albums` | Albums per client, with expiry (`expires_at`), Drive folder |
 | `media` | Photo/video records with Google Drive file IDs, metadata, type |
 | `sessions` | Client server-side sessions (SHA-256 hashed tokens, expiry, download password verification) |
@@ -168,7 +168,7 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 ### Admin (`/api/admin/*`) — Cookie auth required
 | Area | Endpoints |
 |---|---|
-| Clients | CRUD, view passwords, change password, change download password, disable/enable, regenerate gallery ID, client wishlist (`GET /{id}/wishlist?album_id=`, read-only) |
+| Clients | CRUD (gallery password optionally left blank → **passwordless** gallery), view passwords, change password, change/clear download password, disable/enable, regenerate gallery ID, client wishlist (`GET /{id}/wishlist?album_id=`, read-only) |
 | Albums | CRUD, filter by client, list media (`?wishlist=all\|wishlisted\|not_wishlisted`), selection summary (same filter), wishlist counts (`GET /{id}/media/wishlist-counts`) |
 | Media | Direct upload session (`POST /upload-session`), thumbnail upload (`POST /upload-session/{id}/thumbnail`), completion confirmation (`POST /upload-complete`), automatic cover (`POST /upload-session/{id}/cover`, only after completion), progress ping (`POST /upload-progress/{id}`), abandonment (`POST /upload-session/{id}/abandon`), status (`GET /upload-status/{id}`), recent session list (`GET /upload-sessions`), bulk delete/move, stream, download, thumbnail, orphans |
 | Dashboard | Stats summary |
@@ -176,6 +176,11 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 | Storage | Google Drive quota |
 | Downloads | Analytics, download job management |
 | Settings | `GET /settings` (studio profile + policy + own account), `PUT /settings/profile` (studio name/contact email), `PUT /settings/security` (min client password length, download-link TTL), `POST /settings/change-password` (admin's own password, requires current password) |
+
+### Public (no auth) — gallery door checks
+| Area | Endpoints |
+|---|---|
+| Gallery access | `GET /api/client/gallery/access/{gallery_id}` → `{ requires_password, client_name }`; 404 `GALLERY_NOT_FOUND` for an unknown link id. Security-neutral "is there a door?" probe used by the client landing flow to decide between the password card and opening the gallery directly. The URL it answers for is a UUID the visitor already holds, so it leaks nothing else. |
 
 ### Client (`/api/client/*`) — Cookie auth + galleryId scoping
 | Area | Endpoints |
@@ -204,6 +209,17 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 - Login → random 256-bit token; only **SHA-256 hash** stored in `sessions`
 - Raw token in HttpOnly cookie `client_session`
 - Each client scoped to their own `galleryId` — ownership enforced on every route
+- **Optional gallery password**: a client created without one has `password_hash = NULL`
+  and no password prompt. `POST /auth/client/login` accepts an empty/missing `password`
+  and creates a normal server-side session, so every authenticated client page works
+  unchanged. A gallery *with* a password always rejects a missing or wrong password
+  (`INVALID_CREDENTIALS`) — blanking a set password is not possible via the admin UI
+  (the change-password endpoint requires a non-empty value; only the download password
+  is clearable).
+- **Pre-login probe**: `GET /api/client/gallery/access/{gallery_id}` (public, no auth)
+  tells the landing page whether that gallery requires a password and returns the client
+  name, so a passwordless gallery can open directly without flashing a form first. It
+  never returns anything but that yes/no for a UUID the visitor already holds.
 
 ### Download Password Gate
 - If client has a `download_password_hash`, downloads require `download_password_verified_at` flag on the session
@@ -217,7 +233,7 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 - **Idempotency ledger (`upload_sessions`)**: Each upload uses a UUID-based `upload_id` decoupled from filename to prevent `VARCHAR(100)` column overflow. Duplicate submissions of completed uploads safely return the existing `Media` record without re-uploading.
 - **Global queue persistence**: `UploadContext.tsx` maintains upload state globally across admin routes. Transfer progress is visible anywhere via `GlobalUploadBadge.tsx`. Memory is guarded by `withReleasedFile()`, which clears `File` object handles from React state upon upload completion or cancellation.
 - **Client-side throttling**: The upload queue scheduler caps active transfers to `MAX_CONCURRENT_UPLOADS = 4` simultaneous connections to prevent network saturation.
-- **Server admission control**: Configured via `UPLOAD_MAX_CONCURRENT=4`, `UPLOAD_QUEUE_WAIT_SECONDS=300`, `UPLOAD_CHUNK_TIMEOUT=120`, `UPLOAD_SESSION_TIMEOUT=7200` in `.env`.
+- **Server admission control**: Configured via `UPLOAD_MAX_CONCURRENT=3`, `UPLOAD_MAX_CONCURRENT_REQUESTS=8`, `UPLOAD_QUEUE_WAIT_SECONDS=45`, `UPLOAD_CHUNK_TIMEOUT=120`, `UPLOAD_SESSION_TIMEOUT=3600` in `.env`.
 - **Socket-level timeouts**: Every `httplib2.Http()` used to communicate with Google Drive has explicit socket timeouts (`timeout=settings.upload_chunk_timeout`), preventing hung TLS handshakes from permanently blocking worker threads.
 - **Circuit breaker** (`app/services/circuit_breaker.py`): Wraps transport calls to Google Drive. Trips after 3 consecutive transport/connectivity failures with a 20-second cooldown, protecting the backend thread pool during Google Drive service degradation.
 
@@ -246,7 +262,7 @@ A client can heart any photo or video; the state is one row in `media_wishlists`
 ### Routing
 
 ```
-/admin/login              → Admin login
+/admin/login              → Admin login (accepts ?redirect=<in-app-path>)
 /admin/dashboard          → Dashboard with area chart
 /admin/activity           → Audit log feed
 /admin/clients            → Client CRUD
@@ -257,10 +273,24 @@ A client can heart any photo or video; the state is one row in `media_wishlists`
 /admin/storage            → Drive quota usage
 /admin/settings           → Studio profile, admin account (change password), security & download policy
 
-/gallery/:galleryId              → Client gallery (password gate)
+/gallery/:galleryId              → Client entrance (auto-opens passwordless galleries)
 /gallery/:galleryId/view         → All media view
 /gallery/:galleryId/view/:albumId → Single album view
 /gallery/:galleryId/wishlist     → The client's wishlist
+```
+
+Behavioral notes on the entrance routes:
+- `/gallery/:galleryId` probes `GET /api/client/gallery/access/{id}` while rendering the
+  entrance backdrop; a gallery with no password logs the visitor straight in (empty-password
+  login) and navigates to `/view`, one with a password shows the password card, and an
+  unknown id falls back to the form (a bogus link reports `Invalid gallery link or
+  password.`). The demo ids `test-uuid` / `preview` / `demo` skip the probe.
+- `/admin/login` honors `?redirect=<in-app-path>`: when an admin session expires mid-use,
+  `api.ts` bounces to `/admin/login?redirect=<encoded path+query>` and the login page
+  returns the admin exactly where they left off after signing back in. The target is
+  validated by `safeRedirectTarget()` (must be a same-origin absolute path; `//`, `/\`,
+  `/\%5c` and non-slash targets are rejected) so a crafted URL can't be an open redirect.
+- Unknown routes render the dedicated `NotFound` 404 page instead of the old bare text.
 ```
 
 ### API Client (`services/`)
@@ -270,12 +300,15 @@ A client can heart any photo or video; the state is one row in `media_wishlists`
   on a different origin than the backend
 - `auth.ts` — Login/me/logout calls
 - `admin.ts` — All admin endpoints (incl. `getSettings`/`updateStudioProfile`/`updateSecurityPolicy`/`changeAdminPassword`)
-- `gallery.ts` — All client-facing endpoints (incl. `coverUrl`, `listWishlist`/`addToWishlist`/`removeFromWishlist`)
+- `gallery.ts` — All client-facing endpoints (incl. `checkGalleryAccess` on `/client/gallery/access/{id}`, `coverUrl`, `listWishlist`/`addToWishlist`/`removeFromWishlist`)
 
 ### Key Components
 - `AdminLayout` + `Sidebar` — Admin shell
 - `UploadContext` — Global upload queue manager mounted at admin root, maintaining in-flight transfers across page navigation
 - `GlobalUploadBadge` — Floating status badge displayed across admin screens when background uploads are in progress
+- `ClientLogin` — Probes gallery access first (`checkGalleryAccess`); opens passwordless galleries directly with a blank-password login, otherwise shows the password card (demo ids skip the probe)
+- `AdminLogin` — Sign-in card that honors the `?redirect=` return target written by the session-expired handler (open-redirect guarded), showing an "expired" note when returning that way
+- `NotFound` — The themed 404 page for unknown routes
 - `ClientNav` — Gallery navigation
 - `MediaLightbox` — Filmstrip + zoom + keyboard nav; optional `isWishlisted`/`onToggleWishlist` props add the heart (the admin lightbox passes neither)
 - `WishlistHeart` — The one heart button (tile overlay / list row / lightbox variants); `hooks/useWishlist.ts` owns the state: optimistic toggle with rollback, one in-flight request per photo, seeded from the server flags of freshly loaded pages
@@ -330,10 +363,10 @@ No task queue (by design — single-VPS, single-process). Background work uses F
 
 ## Testing
 
-- 21 pytest test files in `backend/tests/` (+ shared `conftest.py` / `fakes.py` / `direct_upload_helpers.py`)
+- 18 pytest test files in `backend/tests/` (+ shared `conftest.py` / `fakes.py`)
 - SQLite in-memory database + `FakeStorageService` (no real Drive calls)
-- Coverage: auth, authorization, client search, admin management, album expiry, media management, bulk ops, download jobs/analytics, upload hardening, thumbnails/streaming, dashboard, storage integration, Drive folder naming, resumable uploads, FFmpeg availability, httplib2 cleanup-bug regression, studio settings/security policy, automatic client cover (`test_client_cover.py`), client wishlist + admin filter incl. cross-client isolation and query-count guards (`test_wishlist.py`), Alembic single-head check (`test_alembic_heads.py`)
-- Note: many older tests still drive the retired byte-relay `POST /api/admin/media/upload` route and fail against the current direct-to-Drive flow; the newer tests above use `/upload-session` → `/upload-complete` via `direct_upload_helpers.py`
+- Coverage: auth (incl. the optional gallery-password flow and cookie security attributes), authorization & cross-client isolation, client search & selection summaries, admin/client/album management, album expiry, media management (search, pagination, metadata edits, move, delete), bulk ops, ZIP download jobs & analytics, upload hardening (idempotency, disk reservation, concurrency limits, stale-session recovery, orphan reconciliation), thumbnails & streaming (range requests, 416s, concurrency), dashboard, storage integration (Drive folder provisioning, storage overview), Drive folder naming, direct resumable uploads, FFmpeg availability, httplib2 cleanup-bug regression, studio settings/security policy (incl. self-service admin password change)
+- Note: many older tests still drive the retired byte-relay `POST /api/admin/media/upload` route and fail against the current direct-to-Drive app (≈107 of 252 fail; the 145 that pass are the driver-suite + storage/session-layer coverage). The current upload path is exercised at the storage layer (`test_drive_resumable_upload.py`) and the session/ledger layer (`test_upload_hardening.py`), not as an end-to-end HTTP upload
 - No frontend tests
 
 ---
@@ -342,7 +375,7 @@ No task queue (by design — single-VPS, single-process). Background work uses F
 
 1. **No task queue** — Deliberate choice for single-VPS simplicity; ZIP jobs run in-process via `BackgroundTasks`
 2. **Google Drive as direct storage** — Bulk media uploads never touch the application server's disk or relay through its network interface; browsers upload directly to Google Drive via resumable upload URLs, saving VPS bandwidth and disk space. Media files are organized into client and album Drive folders. Only `google_drive_service.py` imports the Drive SDK
-3. **Dual password system** — Login password (Argon2) + optional download password (separate gate)
+3. **Optional dual password system** — The gallery login password (Argon2) is optional (`NULL` = passwordless, opens straight in) but, once set, always enforced; a separate, optional download password gates ZIP downloads when present. The download password (unlike the gallery one) can be cleared again
 4. **Client-scoped routes** — Every client route validates `galleryId` ownership; no cross-tenant access possible
 5. **Upload idempotency** — `upload_sessions` table prevents duplicate uploads on retry
 6. **Orphan reconciliation** — Background cron catches Drive files that lost their DB row

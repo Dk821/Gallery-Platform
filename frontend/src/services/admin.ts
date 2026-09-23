@@ -164,10 +164,12 @@ export const adminService = {
 
   listClients: (page = 1, limit = 50) =>
     api.get<Page<ClientListItem>>(`/admin/clients?page=${page}&limit=${limit}`),
-  createClient: (clientName: string, password: string, downloadPassword?: string) =>
+  createClient: (clientName: string, password?: string, downloadPassword?: string) =>
     api.post<ClientDetail>("/admin/clients", {
       client_name: clientName,
-      password,
+      // Gallery password is optional - omit it entirely when blank so the
+      // gallery is created without password protection.
+      ...(password ? { password } : {}),
       ...(downloadPassword ? { download_password: downloadPassword } : {}),
     }),
 

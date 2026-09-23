@@ -55,7 +55,7 @@ final v2/
 │   │   ├── api/              # Route handlers (admin, client, auth, media streaming)
 │   │   ├── config/           # pydantic-settings (.env loader)
 │   │   ├── database/         # SQLAlchemy engine, session, Base
-│   │   ├── models/           # 10 ORM models
+│   │   ├── models/           # 11 ORM models
 │   │   ├── schemas/          # Pydantic request/response models
 │   │   ├── security/         # Password hashing, sessions, encryption
 │   │   ├── services/         # Business logic layer (storage, direct upload, validation, etc.)
@@ -178,6 +178,18 @@ python -m app.create_admin
 ```
 Password must be exactly 8 characters.
 
+### Client Gallery Passwords (optional)
+
+Gallery passwords are optional. Creating a client with the gallery password
+left blank (or omitting it) produces a **passwordless gallery**: the client
+landing page probes `GET /api/client/gallery/access/{gallery_id}`, skips the
+password prompt when none is required, logs the visitor straight in with an
+empty-password login, and opens the gallery. A password-protected gallery
+always rejects a missing or wrong password. Admins can always set or change a
+gallery password later (once set, it can't be blanked again — only the
+download password can be cleared); `password_hash IS NULL` is the
+passwordless state.
+
 ### Pre-Deploy Sanity Check
 
 ```bash
@@ -241,9 +253,25 @@ cd backend
 pytest
 ```
 
-21 test files covering auth, authorization, client search, admin management, album expiry, media management, bulk ops, download jobs/analytics, upload hardening, thumbnails/streaming, dashboard, storage integration, Drive folder naming, resumable uploads, FFmpeg availability, httplib2 cleanup-bug regression, studio settings, the automatic client cover, the client wishlist (incl. cross-client isolation), and the Alembic single-head check.
+18 test files covering auth (including the optional gallery-password flow),
+authorization & cross-client isolation, client search & selection summaries,
+admin/client/album management, album expiry, media management (search,
+pagination, metadata edits, move, delete), bulk operations, ZIP download jobs
+& analytics, upload hardening (idempotency, disk reservations, concurrency
+limits, stale-session recovery, orphan reconciliation), thumbnails & streaming
+(range requests, 416s, concurrency), the dashboard, storage integration (Drive
+folder provisioning, storage overview), Drive folder naming, direct resumable
+uploads, FFmpeg availability, the httplib2 cleanup-bug regression, and studio
+settings/security policy (incl. self-service admin password change).
 
 Tests use an in-memory SQLite database and `FakeStorageService` — no real Drive calls.
+
+> **Suite status:** a large part of the suite still drives the retired
+> byte-relay `POST /api/admin/media/upload` route, which no longer exists in
+> the direct-to-Drive app, so those tests currently fail (~145 pass, ~107
+> fail). The original upload path under the current architecture is covered at
+> the storage layer (`test_drive_resumable_upload.py`) and the session/ledger
+> layer (`test_upload_hardening.py`).
 
 ---
 

@@ -13,6 +13,7 @@ import Gallery from "./pages/Gallery";
 import AlbumView from "./pages/AlbumView";
 import Wishlist from "./pages/Wishlist";
 import Settings from "./pages/Settings";
+import NotFound from "./pages/NotFound";
 import { UploadProvider } from "./contexts/Uploadcontext"
 import GlobalUploadBadge from "./components/Globaluploadbadge";
 
@@ -45,7 +46,7 @@ export default function App() {
         <Route path="/gallery/:galleryId/view/:albumId" element={<AlbumView />} />
         <Route path="/gallery/:galleryId/wishlist" element={<Wishlist />} />
 
-        <Route path="*" element={<p>Page not found.</p>} />
+        <Route path="*" element={<NotFound />} />
       </Routes>
       <GlobalUploadBadge />
     </UploadProvider>

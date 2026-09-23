@@ -561,7 +561,7 @@ function CreateClientModal({
     try {
       await adminService.createClient(
         name,
-        password,
+        password ? password.trim() : undefined,
         downloadPassword.trim() ? downloadPassword : undefined
       );
       onCreated();
@@ -592,15 +592,14 @@ function CreateClientModal({
           />
         </label>
         <label>
-          Gallery password
+          Gallery password (optional)
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             minLength={minPasswordLength}
             maxLength={64}
-            placeholder={`At least ${minPasswordLength} characters`}
-            required
+            placeholder={`Enter Gallery password  `}
           />
         </label>
         <label>
@@ -611,7 +610,7 @@ function CreateClientModal({
             onChange={(e) => setDownloadPassword(e.target.value)}
             minLength={minPasswordLength}
             maxLength={64}
-            placeholder={`Required before they can download files (at least ${minPasswordLength} characters)`}
+            placeholder={`Required before they can download files`}
           />
         </label>
         <div className="modal-actions">

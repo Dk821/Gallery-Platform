@@ -14,7 +14,11 @@ class Client(Base, IdMixin, TimestampMixin):
     # This is the unpredictable gallery id used in /gallery/<client_uuid>
     client_uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, index=True)
     client_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Argon2 hash of the gallery password. NULL when the gallery has NO
+    # password (admins may create clients without one) - such galleries let
+    # clients straight in without a password prompt. When non-NULL, clients
+    # must verify it before a session is created.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Admin-viewable copy of the login password, encrypted with Fernet (see
     # app/security/encryption.py). NULL for clients created before this was
     # added - never used for authentication, only for the admin "view

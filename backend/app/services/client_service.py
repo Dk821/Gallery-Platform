@@ -31,7 +31,8 @@ def _check_password_policy(db: DbSession, password: str | None) -> None:
 
 
 def create_client(db: DbSession, payload: ClientCreateRequest, storage: StorageService) -> Client:
-    _check_password_policy(db, payload.password)
+    password = payload.password or None
+    _check_password_policy(db, password)
     _check_password_policy(db, payload.download_password)
     client_uuid = str(uuid.uuid4())
     folder_uid = generate_folder_uid()
@@ -46,8 +47,8 @@ def create_client(db: DbSession, payload: ClientCreateRequest, storage: StorageS
     client = Client(
         client_uuid=client_uuid,
         client_name=payload.client_name,
-        password_hash=hash_password(payload.password),
-        password_encrypted=encrypt_password(payload.password),
+        password_hash=hash_password(password) if password else None,
+        password_encrypted=encrypt_password(password) if password else None,
         download_password_hash=hash_password(payload.download_password) if payload.download_password else None,
         download_password_encrypted=encrypt_password(payload.download_password)
         if payload.download_password

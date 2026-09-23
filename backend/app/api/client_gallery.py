@@ -8,6 +8,7 @@ from app.models.client import Client
 from app.models.session import ClientSession
 from app.api.media_streaming import stream_client_cover, stream_media_file, stream_media_thumbnail
 from app.api.presenters import album_to_response, media_to_response
+from app.schemas.errors import not_found
 from app.schemas.pagination import build_page
 from app.services.album_service import get_album_for_client_or_403, list_albums_for_client
 from app.services.media_service import (
@@ -20,6 +21,30 @@ from app.services.storage_service import StorageService
 from app.services.wishlist_service import get_wishlisted_media_ids
 
 router = APIRouter(prefix="/api/client", tags=["client-gallery"])
+
+
+@router.get("/gallery/access/{gallery_id}")
+def get_gallery_access(
+    gallery_id: str,
+    db: DbSession = Depends(get_db),
+):
+    # PUBLIC "is there a door here?" check for the gallery landing flow.
+    # Returns whether the gallery (identified by its unguessable link id)
+    # requires a password before entrance. Security-neutral: it only ever
+    # answers yes/no for a UUID the visitor already holds, never any other
+    # client data. The frontend uses it to decide between showing the
+    # password page and opening the gallery directly. Galleries without a
+    # password (password_hash NULL) are opened straight away.
+    client = db.query(Client).filter(Client.client_uuid == gallery_id).first()
+    if client is None:
+        raise not_found("Gallery not found.", code="GALLERY_NOT_FOUND")
+    return {
+        "success": True,
+        "data": {
+            "requires_password": client.password_hash is not None,
+            "client_name": client.client_name,
+        },
+    }
 
 
 @router.get("/gallery")

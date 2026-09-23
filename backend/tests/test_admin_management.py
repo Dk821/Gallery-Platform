@@ -19,6 +19,51 @@ def test_admin_create_and_list_client(client, seeded_admin):
     assert any(item["client_name"] == "New Client" for item in items)
 
 
+def test_admin_create_client_without_password(client, seeded_admin):
+    login_as_admin(client, seeded_admin)
+
+    # No gallery password -> allowed, gallery opens directly.
+    create_resp = client.post(
+        "/api/admin/clients", json={"client_name": "Open Gallery Client"}
+    )
+    assert create_resp.status_code == 200
+    body = create_resp.json()["data"]
+    assert body["client_name"] == "Open Gallery Client"
+
+    client_id = body["id"]
+
+    # Admin sees no viewable gallery password.
+    passwords = client.get(f"/api/admin/clients/{client_id}/passwords")
+    assert passwords.status_code == 200
+    assert passwords.json()["data"]["gallery_password"] is None
+
+    # Gallery access reports no password required.
+    access = client.get(f"/api/client/gallery/access/{body['client_uuid']}")
+    assert access.status_code == 200
+    assert access.json()["data"]["requires_password"] is False
+
+    # Client can enter the gallery without a password.
+    login = client.post(
+        "/api/auth/client/login", json={"gallery_id": body["client_uuid"], "password": ""}
+    )
+    assert login.status_code == 200
+    assert "client_session" in login.cookies
+
+
+def test_admin_create_client_empty_password_is_passwordless(client, seeded_admin):
+    login_as_admin(client, seeded_admin)
+
+    create_resp = client.post(
+        "/api/admin/clients", json={"client_name": "Blank Password", "password": ""}
+    )
+    assert create_resp.status_code == 200
+    body = create_resp.json()["data"]
+
+    access = client.get(f"/api/client/gallery/access/{body['client_uuid']}")
+    assert access.status_code == 200
+    assert access.json()["data"]["requires_password"] is False
+
+
 def test_admin_set_and_change_download_password(client, seeded_admin, seeded_client):
     login_as_admin(client, seeded_admin)
 

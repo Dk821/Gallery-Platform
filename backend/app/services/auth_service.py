@@ -23,15 +23,23 @@ def authenticate_admin(db: DbSession, email: str, password: str) -> Admin:
     return admin
 
 
-def authenticate_client(db: DbSession, gallery_id: str, password: str) -> tuple[Client, str]:
+def authenticate_client(db: DbSession, gallery_id: str, password: str | None) -> tuple[Client, str]:
     """
-    Verifies the gallery password and creates a new server-side session.
-    Returns (client, raw_session_token). The raw token is only ever
-    returned here - callers must put it straight into an HttpOnly cookie
-    and never log or persist it as-is.
+    Verifies the gallery password (when the gallery has one) and creates a
+    new server-side session. Returns (client, raw_session_token). The raw
+    token is only ever returned here - callers must put it straight into an
+    HttpOnly cookie and never log or persist it as-is.
+
+    Galleries created WITHOUT a password (password_hash is NULL) skip the
+    password check entirely and create a session directly. A password-
+    protected gallery always rejects a missing/wrong password - existing
+    protection is never bypassed.
     """
     client = db.query(Client).filter(Client.client_uuid == gallery_id).first()
-    if client is None or client.status != "active" or not verify_password(password, client.password_hash):
+    if client is None or client.status != "active":
+        raise unauthorized("Invalid gallery link or password.", code="INVALID_CREDENTIALS")
+
+    if client.password_hash is not None and not verify_password(password or "", client.password_hash):
         raise unauthorized("Invalid gallery link or password.", code="INVALID_CREDENTIALS")
 
     client.last_login_at = datetime.datetime.utcnow()

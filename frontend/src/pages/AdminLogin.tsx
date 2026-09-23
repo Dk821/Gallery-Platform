@@ -1,8 +1,21 @@
 import { CSSProperties, FormEvent, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { authService } from "../services/auth";
 
 type FloatStyle = CSSProperties & Record<`--${string}`, string | number>;
+
+// Only ever navigate back to an in-app path from the ?redirect= param that
+// api.ts's session-expired handler writes. Anything that isn't a simple
+// same-origin path (e.g. "//evil.com", "https://...", backslash tricks) is
+// rejected so a crafted /admin/login?redirect=... URL can't double as an
+// open redirect to an external site.
+function safeRedirectTarget(raw: string | null): string | null {
+  if (!raw) return null;
+  if (!raw.startsWith("/") || raw.startsWith("//") || raw.startsWith("/%5c") || raw.startsWith("/\\")) {
+    return null;
+  }
+  return raw;
+}
 
 // Quiet, fixed set of "bokeh" circles - a photographer's own lens
 // language - drifting slowly behind the sign-in card. Deliberately fewer
@@ -23,6 +36,14 @@ export default function AdminLogin() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  // When the session expired mid-use, api.ts redirects here with a
+  // ?redirect= target so the admin can pick up where they left off after
+  // signing back in. Its presence also tells us to explain WHY they're
+  // back on the login screen (expired, not logged out on purpose).
+  const redirectTo = safeRedirectTarget(searchParams.get("redirect"));
+  const sessionExpired = redirectTo !== null;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -30,7 +51,7 @@ export default function AdminLogin() {
     setLoading(true);
     try {
       await authService.adminLogin(email, password);
-      navigate("/admin/dashboard");
+      navigate(redirectTo ?? "/admin/dashboard", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed.");
     } finally {
@@ -73,6 +94,12 @@ export default function AdminLogin() {
         <p className="auth-subtitle" style={{ textAlign: "center", margin: "0 0 0.5rem" }}>
           Manage client galleries, uploads, and downloads from one dashboard.
         </p>
+
+        {sessionExpired && (
+          <p className="auth-note auth-note--warn" role="status">
+            Your session has expired. Please sign in again to continue where you left off.
+          </p>
+        )}
 
         {error && (
           <p className="auth-error" role="alert">

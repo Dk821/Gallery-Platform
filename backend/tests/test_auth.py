@@ -62,6 +62,90 @@ def test_client_login_disabled_account_rejected(client, seeded_client, db_sessio
     assert resp.status_code == 401
 
 
+# ---------------------------------------------------------------------------
+# Optional gallery password - galleries without a password open directly
+# ---------------------------------------------------------------------------
+
+
+def _make_passwordless_client(db_session):
+    from app.models.client import Client
+
+    c = Client(
+        client_uuid="33333333-3333-3333-3333-333333333333",
+        client_name="Open Wedding",
+        password_hash=None,
+        status="active",
+        drive_folder_id="folder-test-client-open",
+    )
+    db_session.add(c)
+    db_session.commit()
+    db_session.refresh(c)
+    return c
+
+
+def test_gallery_access_password_protected_requires_password(client, seeded_client):
+    resp = client.get(f"/api/client/gallery/access/{seeded_client.client_uuid}")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["requires_password"] is True
+    assert data["client_name"] == seeded_client.client_name
+
+
+def test_gallery_access_passwordless_opens_directly(client, db_session):
+    c = _make_passwordless_client(db_session)
+    resp = client.get(f"/api/client/gallery/access/{c.client_uuid}")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["requires_password"] is False
+
+
+def test_gallery_access_unknown_gallery_not_found(client):
+    resp = client.get("/api/client/gallery/access/99999999-9999-9999-9999-999999999999")
+    assert resp.status_code == 404
+
+
+def test_password_protected_gallery_rejects_passwordless_login(client, seeded_client):
+    # A gallery WITH a password must never be entered without a password.
+    resp = client.post(
+        "/api/auth/client/login",
+        json={"gallery_id": seeded_client.client_uuid, "password": ""},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "INVALID_CREDENTIALS"
+
+
+def test_password_protected_gallery_rejects_wrong_password_client(client, seeded_client):
+    resp = client.post(
+        "/api/auth/client/login",
+        json={"gallery_id": seeded_client.client_uuid, "password": "nope-wrong"},
+    )
+    assert resp.status_code == 401
+
+
+def test_passwordless_gallery_login_and_gallery_access(client, db_session):
+    c = _make_passwordless_client(db_session)
+
+    # No password supplied -> still gets a session.
+    login = client.post(
+        "/api/auth/client/login",
+        json={"gallery_id": c.client_uuid, "password": ""},
+    )
+    assert login.status_code == 200
+    assert "client_session" in login.cookies
+
+    # And can reach the gallery endpoint (session still required).
+    gallery = client.get("/api/client/gallery")
+    assert gallery.status_code == 200
+    assert gallery.json()["data"]["client_uuid"] == c.client_uuid
+
+
+def test_passwordless_gallery_login_without_password_key(client, db_session):
+    c = _make_passwordless_client(db_session)
+    login = client.post("/api/auth/client/login", json={"gallery_id": c.client_uuid})
+    assert login.status_code == 200
+    assert "client_session" in login.cookies
+
+
 def test_logout_clears_session(client, seeded_client):
     client.post(
         "/api/auth/client/login",

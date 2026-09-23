@@ -5,11 +5,13 @@ from pydantic import BaseModel, Field, field_validator
 
 class ClientCreateRequest(BaseModel):
     client_name: str = Field(min_length=1, max_length=255)
-    # Floor of 4 matches the security policy's own floor (see
-    # SecurityPolicyUpdateRequest) - the actual, possibly higher, minimum
-    # is enforced in client_service.py against the studio's configured
-    # min_client_password_length, which Pydantic has no DB access to check.
-    password: str = Field(min_length=4, max_length=64)
+    # OPTIONAL gallery password. When empty/None the gallery is created
+    # without password protection and clients open it directly. When set,
+    # the minimum (and policy-enforced) length check below applies - the
+    # actual, possibly higher, minimum is enforced in client_service.py
+    # against the studio's configured min_client_password_length, which
+    # Pydantic has no DB access to check.
+    password: str | None = Field(default=None, min_length=1, max_length=64)
     download_password: str | None = Field(default=None, min_length=4, max_length=64)
 
     @field_validator("client_name")
@@ -18,6 +20,14 @@ class ClientCreateRequest(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("client_name cannot be blank")
+        return v
+
+    @field_validator("password", mode="before")
+    @classmethod
+    def password_empty_to_none(cls, v):
+        # An empty/missing password means "no gallery password".
+        if v is None or v == "":
+            return None
         return v
 
 

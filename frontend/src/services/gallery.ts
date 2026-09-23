@@ -35,6 +35,15 @@ export interface SelectionSummary {
 }
 
 export const galleryService = {
+  // Public pre-login check: does THIS gallery (link id) require a password?
+  // Returns client_name too, so a passwordless gallery can go straight to
+  // its entrance without keeping the caller waiting on extra round-trips.
+  // 404 => unknown gallery link.
+  checkGalleryAccess: (galleryId: string) =>
+    api.get<{ requires_password: boolean; client_name: string }>(
+      `/client/gallery/access/${galleryId}`
+    ),
+
   getGallery: () => api.get<GalleryInfo>("/client/gallery"),
 
   // The automatic cover of the signed-in client's own gallery. No id in the

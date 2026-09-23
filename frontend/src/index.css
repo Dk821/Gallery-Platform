@@ -284,8 +284,169 @@ select:focus-visible,
   margin: 0;
 }
 
+/* Neutral, non-error feedback on the login card - e.g. "your session
+   expired", which is an explanation, not a failed action. Uses the gold
+   accent-soft wash so it never competes with the red .auth-error. */
+.auth-note {
+  padding: 0.6rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.auth-note--warn {
+  background: var(--accent-soft, rgba(180, 133, 59, 0.12));
+  color: var(--text-muted, #6f665b);
+  border: 1px solid rgba(180, 133, 59, 0.3);
+}
+
 .page-placeholder {
   padding: 2rem;
   color: #475569;
   font-family: system-ui, sans-serif;
+}
+
+/* ---------- 404 / Page not found ---------- */
+
+.notfound-page {
+  position: relative;
+  overflow: hidden;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background:
+    radial-gradient(1000px 500px at 80% -10%, rgba(180, 133, 59, 0.08), transparent 60%),
+    var(--bg, #f5f3ef);
+}
+
+.notfound-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 480px;
+  background: var(--panel, #ffffff);
+  border: 1px solid var(--hairline, #e0dbd5);
+  border-radius: 12px;
+  padding: 2.5rem 2.25rem 2.25rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.9rem;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+  animation: login-card-in 0.4s ease both;
+}
+
+/* Same thin precise gold edge as the sign-in cards, so the page stays
+   recognizably the studio's, not a generic error. */
+.notfound-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent, #b4853b), var(--accent-hover, #9b702e));
+}
+
+.notfound-code {
+  margin: 0.15rem 0 0;
+  font-family: var(--font-display, serif);
+  font-weight: 300;
+  font-size: clamp(4rem, 16vw, 6rem);
+  line-height: 1;
+  letter-spacing: 0.06em;
+  color: var(--accent, #b4853b);
+}
+
+.notfound-card h1 {
+  margin: 0;
+  font-family: var(--font-display, serif);
+  font-weight: 500;
+  font-size: 1.5rem;
+  color: var(--text, #1f1b16);
+}
+
+.notfound-message {
+  margin: 0;
+  color: var(--text-muted, #6f665b);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.notfound-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: center;
+  margin-top: 0.75rem;
+}
+
+.notfound-btn {
+  padding: 0.65rem 1.3rem;
+  border-radius: 8px;
+  font-family: var(--font-ui, 'Montserrat', sans-serif);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+/* Dark "primary action" per the app convention - gold stays reserved for
+   accents and highlights, never the primary CTA. */
+.notfound-btn--primary {
+  background: var(--btn-dark, #1a1917);
+  color: #ffffff;
+  border: 1px solid var(--btn-dark, #1a1917);
+}
+
+.notfound-btn--primary:hover {
+  background: var(--btn-dark-hover, #2e2a25);
+  border-color: var(--btn-dark-hover, #2e2a25);
+}
+
+.notfound-btn--ghost {
+  background: transparent;
+  color: var(--text, #1f1b16);
+  border: 1px solid var(--hairline-dark, #d8d0c6);
+}
+
+.notfound-btn--ghost:hover {
+  border-color: var(--accent, #b4853b);
+  color: var(--accent, #b4853b);
+  background: var(--accent-soft, rgba(180, 133, 59, 0.12));
+}
+
+/* Small-phones: stack the actions so the card never overflows. */
+@media (max-width: 420px) {
+  .notfound-card {
+    padding: 2rem 1.5rem 1.75rem;
+    border-radius: 10px;
+  }
+
+  .login-brand__script {
+    font-size: 2.2rem;
+  }
+
+  .notfound-code {
+    font-size: clamp(3.5rem, 22vw, 5rem);
+  }
+
+  .notfound-message {
+    font-size: 0.9rem;
+  }
+
+  .notfound-actions {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .notfound-btn {
+    width: 100%;
+  }
 }
