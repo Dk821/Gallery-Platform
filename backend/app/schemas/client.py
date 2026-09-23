@@ -36,7 +36,9 @@ class ClientUpdateRequest(BaseModel):
 
 
 class ClientChangePasswordRequest(BaseModel):
-    password: str = Field(min_length=4, max_length=64)
+    # None = remove the gallery password entirely (gallery becomes
+    # passwordless), mirroring ClientChangeDownloadPasswordRequest.
+    password: str | None = Field(default=None, min_length=4, max_length=64)
 
 
 class ClientChangeDownloadPasswordRequest(BaseModel):
@@ -48,6 +50,7 @@ class ClientResponse(BaseModel):
     client_uuid: str
     client_name: str
     status: str
+    has_password: bool
     has_download_password: bool
     created_at: datetime.datetime
     last_login_at: datetime.datetime | None
@@ -61,6 +64,7 @@ class ClientListItem(BaseModel):
     client_uuid: str
     client_name: str
     status: str
+    has_password: bool
     has_download_password: bool
     created_at: datetime.datetime
     album_count: int

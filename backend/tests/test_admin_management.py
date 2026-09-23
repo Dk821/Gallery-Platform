@@ -99,6 +99,38 @@ def test_admin_clear_download_password(client, seeded_admin, seeded_client):
     assert clear_resp.json()["data"]["has_download_password"] is False
 
 
+def test_admin_clear_gallery_password(client, seeded_admin, seeded_client):
+    login_as_admin(client, seeded_admin)
+
+    assert seeded_client.password_hash is not None
+    assert seeded_client.client_uuid is not None
+
+    clear_resp = client.post(
+        f"/api/admin/clients/{seeded_client.id}/change-password",
+        json={"password": None},
+    )
+    assert clear_resp.status_code == 200
+    assert clear_resp.json()["data"]["has_password"] is False
+
+    # Viewable copy is cleared along with the hash.
+    view = client.get(f"/api/admin/clients/{seeded_client.id}/passwords")
+    assert view.status_code == 200
+    assert view.json()["data"]["gallery_password"] is None
+
+    # Gallery access now reports no password required.
+    access = client.get(f"/api/client/gallery/access/{seeded_client.client_uuid}")
+    assert access.status_code == 200
+    assert access.json()["data"]["requires_password"] is False
+
+    # Client can enter the gallery without a password.
+    login = client.post(
+        "/api/auth/client/login",
+        json={"gallery_id": seeded_client.client_uuid, "password": ""},
+    )
+    assert login.status_code == 200
+    assert "client_session" in login.cookies
+
+
 def test_admin_disable_then_client_login_fails(client, seeded_admin, seeded_client):
     login_as_admin(client, seeded_admin)
 

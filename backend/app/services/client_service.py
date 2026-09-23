@@ -122,6 +122,7 @@ def list_clients(db: DbSession, page: int, limit: int):
                 "client_uuid": client.client_uuid,
                 "client_name": client.client_name,
                 "status": client.status,
+                "has_password": bool(client.password_hash),
                 "has_download_password": bool(client.download_password_hash),
                 "created_at": client.created_at,
                 "album_count": album_count,
@@ -175,10 +176,12 @@ def update_client(
     return client
 
 
-def change_client_password(db: DbSession, client: Client, new_password: str) -> Client:
+def change_client_password(db: DbSession, client: Client, new_password: str | None) -> Client:
+    # None removes the gallery password entirely - password_hash/encrypted go
+    # back to NULL and the gallery becomes passwordless again.
     _check_password_policy(db, new_password)
-    client.password_hash = hash_password(new_password)
-    client.password_encrypted = encrypt_password(new_password)
+    client.password_hash = hash_password(new_password) if new_password else None
+    client.password_encrypted = encrypt_password(new_password) if new_password else None
     db.commit()
     db.refresh(client)
     return client

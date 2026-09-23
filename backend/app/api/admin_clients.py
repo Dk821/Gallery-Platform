@@ -53,6 +53,7 @@ def _to_response(client) -> ClientResponse:
         client_uuid=client.client_uuid,
         client_name=client.client_name,
         status=client.status,
+        has_password=bool(client.password_hash),
         has_download_password=bool(client.download_password_hash),
         created_at=client.created_at,
         last_login_at=client.last_login_at,
@@ -168,7 +169,7 @@ def change_password_route(
 ):
     client = get_client_or_404(db, client_id)
     client = change_client_password(db, client, payload.password)
-    _log(db, admin.id, "client_password_changed", client.id, request)
+    _log(db, admin.id, "client_password_removed" if payload.password is None else "client_password_changed", client.id, request)
     return {"success": True, "data": _to_response(client)}
 
 
