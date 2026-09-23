@@ -5,6 +5,7 @@ export interface ClientListItem {
   client_uuid: string;
   client_name: string;
   status: "active" | "disabled";
+  has_password: boolean;
   has_download_password: boolean;
   created_at: string;
   album_count: number;
@@ -16,6 +17,7 @@ export interface ClientDetail {
   client_uuid: string;
   client_name: string;
   status: "active" | "disabled";
+  has_password: boolean;
   has_download_password: boolean;
   created_at: string;
   last_login_at: string | null;
@@ -173,7 +175,9 @@ export const adminService = {
       ...(downloadPassword ? { download_password: downloadPassword } : {}),
     }),
 
-  changePassword: (clientId: number, password: string) =>
+  // password: null removes the gallery password entirely (gallery becomes
+  // passwordless), mirroring changeDownloadPassword.
+  changePassword: (clientId: number, password: string | null) =>
     api.post<ClientDetail>(`/admin/clients/${clientId}/change-password`, { password }),
 
   changeDownloadPassword: (clientId: number, password: string | null) =>

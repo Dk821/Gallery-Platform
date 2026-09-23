@@ -213,9 +213,10 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
   and no password prompt. `POST /auth/client/login` accepts an empty/missing `password`
   and creates a normal server-side session, so every authenticated client page works
   unchanged. A gallery *with* a password always rejects a missing or wrong password
-  (`INVALID_CREDENTIALS`) — blanking a set password is not possible via the admin UI
-  (the change-password endpoint requires a non-empty value; only the download password
-  is clearable).
+  (`INVALID_CREDENTIALS`) — an admin can remove a set password entirely via
+  `POST /api/admin/clients/{id}/change-password` with `password: null`, which
+  returns it to the passwordless state (mirrors the nullable download-password
+  endpoint).
 - **Pre-login probe**: `GET /api/client/gallery/access/{gallery_id}` (public, no auth)
   tells the landing page whether that gallery requires a password and returns the client
   name, so a passwordless gallery can open directly without flashing a form first. It
@@ -375,7 +376,7 @@ No task queue (by design — single-VPS, single-process). Background work uses F
 
 1. **No task queue** — Deliberate choice for single-VPS simplicity; ZIP jobs run in-process via `BackgroundTasks`
 2. **Google Drive as direct storage** — Bulk media uploads never touch the application server's disk or relay through its network interface; browsers upload directly to Google Drive via resumable upload URLs, saving VPS bandwidth and disk space. Media files are organized into client and album Drive folders. Only `google_drive_service.py` imports the Drive SDK
-3. **Optional dual password system** — The gallery login password (Argon2) is optional (`NULL` = passwordless, opens straight in) but, once set, always enforced; a separate, optional download password gates ZIP downloads when present. The download password (unlike the gallery one) can be cleared again
+3. **Optional dual password system** — The gallery login password (Argon2) is optional (`NULL` = passwordless, opens straight in) and can be set, changed, or removed by an admin later; a separate, optional download password gates ZIP downloads when present. Both passwords can be cleared again via a nullable `password: null` on their respective change endpoints
 4. **Client-scoped routes** — Every client route validates `galleryId` ownership; no cross-tenant access possible
 5. **Upload idempotency** — `upload_sessions` table prevents duplicate uploads on retry
 6. **Orphan reconciliation** — Background cron catches Drive files that lost their DB row

@@ -185,10 +185,10 @@ left blank (or omitting it) produces a **passwordless gallery**: the client
 landing page probes `GET /api/client/gallery/access/{gallery_id}`, skips the
 password prompt when none is required, logs the visitor straight in with an
 empty-password login, and opens the gallery. A password-protected gallery
-always rejects a missing or wrong password. Admins can always set or change a
-gallery password later (once set, it can't be blanked again — only the
-download password can be cleared); `password_hash IS NULL` is the
-passwordless state.
+always rejects a missing or wrong password. Admins can set, change, or remove
+a gallery password later — removal (`password: null` on the change-password
+endpoint) clears it and the gallery becomes passwordless again; `password_hash
+IS NULL` is the passwordless state.
 
 ### Pre-Deploy Sanity Check
 

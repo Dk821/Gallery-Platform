@@ -903,6 +903,7 @@ function PasswordManagementModal({
   const [showDownload, setShowDownload] = useState(false);
   const [galleryPassword, setGalleryPassword] = useState("");
   const [downloadPassword, setDownloadPassword] = useState("");
+  const [removeGallery, setRemoveGallery] = useState(false);
   const [removeDownload, setRemoveDownload] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -932,8 +933,10 @@ function PasswordManagementModal({
     setError(null);
     setSubmitting(true);
     try {
-      if (galleryPassword.trim()) {
-        await adminService.changePassword(client.id, galleryPassword);
+      if (removeGallery) {
+        await adminService.changePassword(client.id, null);
+      } else if (galleryPassword.trim()) {
+        await adminService.changePassword(client.id, galleryPassword.trim());
       }
       if (removeDownload) {
         await adminService.changeDownloadPassword(client.id, null);
@@ -967,6 +970,11 @@ return (
                 <span className="status-dot status-dot--disabled" />
                 Loading…
               </span>
+            ) : !client.has_password ? (
+              <span className="status-pill">
+                <span className="status-dot status-dot--disabled" />
+                Not set
+              </span>
             ) : current.gallery_password != null ? (
               <span className="status-pill">
                 <span className="status-dot" />
@@ -998,28 +1006,60 @@ return (
               placeholder={
                 current?.gallery_password != null
                   ? "Current gallery password"
-                  : "No viewable copy on file"
+                  : client.has_password
+                    ? "No viewable copy on file"
+                    : "Not set"
               }
             />
           </label>
-          {current != null && current.gallery_password == null && (
-            <p className="pw-hint">
-              This client was created before password viewing was available, so
-              the old password can't be recovered. Enter a new password below
-              to enable viewing it again.
-            </p>
-          )}
+          {current != null &&
+            current.gallery_password == null &&
+            client.has_password && (
+              <p className="pw-hint">
+                This client was created before password viewing was available,
+                so the old password can't be recovered. Enter a new password
+                below to enable viewing it again.
+              </p>
+            )}
           <label>
             New gallery password
             <input
               type="password"
               value={galleryPassword}
-              onChange={(e) => setGalleryPassword(e.target.value)}
+              onChange={(e) => {
+                setGalleryPassword(e.target.value);
+                if (e.target.value) setRemoveGallery(false);
+              }}
               minLength={minPasswordLength}
               maxLength={64}
-              placeholder={`Leave blank to keep current (at least ${minPasswordLength} characters)`}
+              disabled={removeGallery}
+              placeholder={
+                client.has_password
+                  ? "Leave blank to keep current"
+                  : `Required before entrance is protected (at least ${minPasswordLength} characters)`
+              }
             />
           </label>
+          {client.has_password && !removeGallery && (
+            <button
+              type="button"
+              className="btn-text btn-text--danger"
+              onClick={() => setRemoveGallery(true)}
+              style={{ marginTop: "0.25rem" }}
+            >
+              Remove gallery password
+            </button>
+          )}
+          {removeGallery && (
+            <button
+              type="button"
+              className="btn-text"
+              onClick={() => setRemoveGallery(false)}
+              style={{ marginTop: "0.25rem" }}
+            >
+              Cancel removal
+            </button>
+          )}
         </div>
 
         <div className="pw-section">
