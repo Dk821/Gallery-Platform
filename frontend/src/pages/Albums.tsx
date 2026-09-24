@@ -13,6 +13,7 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import AdminLayout from "../components/AdminLayout";
 import DownloadJobModal from "../components/DownloadJobModal";
+import MenuIcon from "../components/MenuIcon";
 import Modal from "../components/Modal";
 import { adminService, AlbumItem, ClientListItem } from "../services/admin";
 import { getExpiryInfo } from "../utils/format";
@@ -567,8 +568,7 @@ export default function Albums() {
 
                       {/* More Options (⋯) Button */}
                       <button
-                        className="btn-text"
-                        style={{ padding: "0.25rem 0.5rem", fontSize: "1.1rem", lineHeight: 1 }}
+                        className="row-actions__trigger"
                         ref={openMenuId === a.id ? menuAnchorRef : undefined}
                         aria-haspopup="menu"
                         aria-expanded={openMenuId === a.id}
@@ -577,8 +577,9 @@ export default function Albums() {
                           openMenu(a.id);
                         }}
                         title="More options"
+                        aria-label="More options"
                       >
-                        ⋯
+                        <MenuIcon name="more" size={18} />
                       </button>
                     </div>
                   </td>
@@ -608,13 +609,8 @@ export default function Albums() {
 
                 {/* More Options Button */}
                 <button
-                  className="btn-text"
-                  style={{
-                    padding: "0.25rem 0.5rem",
-                    fontSize: "1.1rem",
-                    lineHeight: 1,
-                    marginLeft: "auto",
-                  }}
+                  className="row-actions__trigger"
+                  style={{ marginLeft: "auto" }}
                   ref={openMenuId === a.id ? menuAnchorRef : undefined}
                   aria-haspopup="menu"
                   aria-expanded={openMenuId === a.id}
@@ -623,8 +619,9 @@ export default function Albums() {
                     openMenu(a.id);
                   }}
                   title="More options"
+                  aria-label="More options"
                 >
-                  ⋯
+                  <MenuIcon name="more" size={18} />
                 </button>
               </div>
 
@@ -682,7 +679,8 @@ export default function Albums() {
                   navigate(`/admin/albums/${activeAlbum.id}`);
                 }}
               >
-                📷 View media files
+                <MenuIcon name="image" />
+                View media files
               </button>
 
               <button
@@ -693,18 +691,8 @@ export default function Albums() {
                   setEditingAlbum(activeAlbum);
                 }}
               >
-                ✏️ Edit album details
-              </button>
-
-              <button
-                className="row-actions__item"
-                role="menuitem"
-                onClick={() => {
-                  closeMenu();
-                  navigate(`/admin/uploads?albumId=${activeAlbum.id}`);
-                }}
-              >
-                📤 Upload media
+                <MenuIcon name="pencil" />
+                Edit album details
               </button>
 
               <button
@@ -712,7 +700,8 @@ export default function Albums() {
                 role="menuitem"
                 onClick={() => handleCopyGalleryLink(activeAlbum)}
               >
-                🔗 Copy gallery link
+                <MenuIcon name="link" />
+                Copy gallery link
               </button>
 
               <button
@@ -723,8 +712,11 @@ export default function Albums() {
                   setDownloadJobAlbum(activeAlbum);
                 }}
               >
-                ⬇️ Download album as ZIP
+                <MenuIcon name="download" />
+                Download album as ZIP
               </button>
+
+              <div className="row-actions__separator" role="separator" />
 
               <button
                 className="row-actions__item row-actions__item--danger"
@@ -734,7 +726,8 @@ export default function Albums() {
                   setConfirmDelete(activeAlbum);
                 }}
               >
-                🗑️ Delete album
+                <MenuIcon name="trash" />
+                Delete album
               </button>
             </RowActionsMenu>
           );

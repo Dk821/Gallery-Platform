@@ -10,6 +10,7 @@ import {
 import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import AdminLayout from "../components/AdminLayout";
+import MenuIcon from "../components/MenuIcon";
 import Modal from "../components/Modal";
 import DownloadJobModal from "../components/DownloadJobModal";
 import MediaLightbox from "../components/MediaLightbox";
@@ -496,7 +497,8 @@ export default function AlbumMedia() {
                 <span className="row-actions media-row__actions">
                   <button
                     type="button"
-                    className="media-row__menu-btn"
+                    className="row-actions__trigger"
+                    aria-label="More actions"
                     ref={openMenuId === item.id ? menuAnchorRef : undefined}
                     aria-haspopup="menu"
                     aria-expanded={openMenuId === item.id}
@@ -505,7 +507,7 @@ export default function AlbumMedia() {
                       setOpenMenuId((curr) => (curr === item.id ? null : item.id));
                     }}
                   >
-                    ⋯
+                    <MenuIcon name="more" size={18} />
                   </button>
                   {openMenuId === item.id && (
                     <RowActionsMenu anchorRef={menuAnchorRef} menuRef={menuRef}>
@@ -517,6 +519,7 @@ export default function AlbumMedia() {
                           setModal({ kind: "edit", media: item });
                         }}
                       >
+                        <MenuIcon name="pencil" />
                         Edit
                       </button>
                       <button
@@ -527,8 +530,10 @@ export default function AlbumMedia() {
                           setModal({ kind: "move", media: item });
                         }}
                       >
+                        <MenuIcon name="folder" />
                         Move
                       </button>
+                      <div className="row-actions__separator" role="separator" />
                       <button
                         className="row-actions__item row-actions__item--danger"
                         role="menuitem"
@@ -537,6 +542,7 @@ export default function AlbumMedia() {
                           setModal({ kind: "confirm-delete", media: item });
                         }}
                       >
+                        <MenuIcon name="trash" />
                         Delete
                       </button>
                     </RowActionsMenu>

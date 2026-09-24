@@ -11,6 +11,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import AdminLayout from "../components/AdminLayout";
+import MenuIcon from "../components/MenuIcon";
 import Modal from "../components/Modal";
 import { adminService, ClientDetail, ClientListItem } from "../services/admin";
 
@@ -300,16 +301,17 @@ export default function Clients() {
                             Copy link
                           </button>
                           <button
-                            className="btn-text"
+                            className="row-actions__trigger"
                             ref={openMenuId === c.id ? menuAnchorRef : undefined}
                             aria-haspopup="menu"
                             aria-expanded={openMenuId === c.id}
+                            aria-label="More actions"
                             onClick={(e) => {
                               e.stopPropagation();
                               openMenu(c.id);
                             }}
                           >
-                            ⋯
+                            <MenuIcon name="more" size={18} />
                           </button>
                           {openMenuId === c.id && (
                             <RowActionsMenu anchorRef={menuAnchorRef} menuRef={menuRef}>
@@ -321,6 +323,7 @@ export default function Clients() {
                                   setModal({ kind: "view-client", client: c });
                                 }}
                               >
+                                <MenuIcon name="eye" />
                                 View client
                               </button>
                               <button
@@ -334,6 +337,7 @@ export default function Clients() {
                                   );
                                 }}
                               >
+                                <MenuIcon name="external" />
                                 View gallery
                               </button>
                               <button
@@ -347,6 +351,7 @@ export default function Clients() {
                                   });
                                 }}
                               >
+                                <MenuIcon name="key" />
                                 Manage passwords
                               </button>
                               <button
@@ -357,6 +362,7 @@ export default function Clients() {
                                   setModal({ kind: "edit-client", client: c });
                                 }}
                               >
+                                <MenuIcon name="pencil" />
                                 Edit client
                               </button>
                               <button
@@ -364,6 +370,11 @@ export default function Clients() {
                                 role="menuitem"
                                 onClick={() => handleToggleStatus(c)}
                               >
+                                <MenuIcon
+                                  name={
+                                    c.status === "active" ? "user-x" : "user-check"
+                                  }
+                                />
                                 {c.status === "active"
                                   ? "Disable client"
                                   : "Enable client"}
@@ -379,6 +390,7 @@ export default function Clients() {
                                   });
                                 }}
                               >
+                                <MenuIcon name="trash" />
                                 Delete client
                               </button>
                             </RowActionsMenu>
