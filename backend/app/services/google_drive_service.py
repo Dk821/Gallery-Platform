@@ -565,6 +565,60 @@ class GoogleDriveStorage(StorageService):
         )
         return location
 
+    def _download_range(
+        self,
+        http: AuthorizedHttp,
+        uri: str,
+        start: int,
+        end: int | None,
+    ) -> Iterator[bytes]:
+        """
+        Yields bytes [start, end] (inclusive; end=None means "to EOF") using
+        plain HTTP Range requests of at most DOWNLOAD_CHUNK_SIZE_BYTES each.
+        Never reads past `end`, so a 4 KB header check costs one ~4 KB request
+        no matter how big the file is.
+        """
+        pos = start
+        while end is None or pos <= end:
+            stop = pos + DOWNLOAD_CHUNK_SIZE_BYTES - 1
+            if end is not None:
+                stop = min(stop, end)
+            wanted = stop - pos + 1
+
+            def _do(pos=pos, stop=stop):
+                resp, content = http.request(uri, "GET", headers={"Range": f"bytes={pos}-{stop}"})
+                status = int(resp.status)
+                if status in (200, 206, 416):
+                    return resp, content
+                raise HttpError(resp, content, uri=uri)
+
+            try:
+                resp, content = self._retry(_do)
+            except HttpError as exc:
+                raise _translate_http_error(exc) from exc
+            except RefreshError as exc:
+                raise StorageError(f"Google Drive authentication failed: {exc}") from exc
+
+            status = int(resp.status)
+            if status == 416:  # start is at/after EOF (e.g. empty file)
+                return
+            if status == 200:
+                # Server ignored Range and sent the whole body: slice it.
+                yield content[pos : (end + 1) if end is not None else None]
+                return
+            if not content:
+                return
+            yield content
+            pos += len(content)
+
+            content_range = resp.get("content-range", "")
+            if "/" in content_range:
+                total = content_range.rsplit("/", 1)[1]
+                if total.isdigit() and pos >= int(total):
+                    return  # reached EOF
+            if len(content) < wanted:
+                return  # short read == EOF
+
     def download(
         self,
         provider_file_id: str,
@@ -591,14 +645,23 @@ class GoogleDriveStorage(StorageService):
             # client instead of the shared service one.
             request.http = download_http
 
-            # Drive honors a standard HTTP Range header on the media-download
-            # request itself - this is what lets a video seek/scrub without us
-            # ever pulling the whole (possibly multi-GB) file server-side just
-            # to serve a 10-second clip of it.
+            # RANGED READ. Deliberately NOT done through MediaIoBaseDownload:
+            # that class overwrites any Range header we set with its own
+            # "bytes=<progress>-<progress+chunk>" and keeps looping until it
+            # has fetched the file's ENTIRE size (taken from Content-Range's
+            # total). So download(range_start=0, range_end=4095) used to pull
+            # the whole 200 MB+ video from Drive into this server - that is
+            # what made /upload-complete (the "Finalizing" step) take so long
+            # on big videos. This path issues plain Range requests and stops
+            # at range_end.
             if range_start is not None or range_end is not None:
-                start = range_start if range_start is not None else 0
-                end_part = str(range_end) if range_end is not None else ""
-                request.headers["Range"] = f"bytes={start}-{end_part}"
+                yield from self._download_range(
+                    download_http,
+                    request.uri,
+                    range_start if range_start is not None else 0,
+                    range_end,
+                )
+                return
 
             buffer = io.BytesIO()
             downloader = MediaIoBaseDownload(buffer, request, chunksize=DOWNLOAD_CHUNK_SIZE_BYTES)

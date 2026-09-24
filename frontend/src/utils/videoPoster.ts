@@ -35,6 +35,18 @@ const CANDIDATE_FRACTIONS = [0.25, 0.5, 0.75];
 
 const VIDEO_EXTENSION = /\.(mp4|mov|webm)$/i;
 
+// Console-only diagnostics. Extraction failing is by design silent to the
+// user (the video just gets a placeholder tile), which makes "why is there no
+// poster for THIS file?" impossible to answer - so every "no poster" exit
+// leaves one line in the browser console (F12 -> Console) saying why.
+function posterLog(reason: string, detail?: unknown): void {
+  try {
+    console.warn(`[video-poster] no poster: ${reason}`, detail ?? "");
+  } catch {
+    /* no-op */
+  }
+}
+
 export function isVideoFile(file: File): boolean {
   return file.type.startsWith("video/") || VIDEO_EXTENSION.test(file.name);
 }
@@ -55,7 +67,8 @@ function waitFor(video: HTMLVideoElement, events: string[], deadline: number): P
     };
     const onError = () => {
       cleanup();
-      reject(new Error("video could not be decoded"));
+      const code = video.error ? ` (media error ${video.error.code}: ${video.error.message || "no detail"})` : "";
+      reject(new Error(`video could not be decoded${code}`));
     };
     function cleanup() {
       clearTimeout(timer);
@@ -263,10 +276,13 @@ export async function extractVideoPoster(file: File): Promise<Blob | null> {
     // A black poster is worse than none. If the first frame is (still) dark -
     // faded in from black, or the decoder hasn't handed over a real frame -
     // scan a few spot-checks further in and keep the BRIGHTEST real frame.
-    for (const fraction of CANDIDATE_FRACTIONS) {
+    // When the container doesn't report a usable duration (some WebM/MKV
+    // files report Infinity/NaN), fractions of it are meaningless - fall back
+    // to a few fixed offsets instead of giving up after one frame.
+    const candidateTimes = duration > 0 ? CANDIDATE_FRACTIONS.map((f) => duration * f) : [3, 8, 15];
+    for (const time of candidateTimes) {
       if (best && best.luma >= DARK_LUMA_THRESHOLD) break; // good enough already
       if (Date.now() > deadline) break;
-      const time = duration * fraction;
       if (time <= 0 || Math.abs(time - primaryTime) < 0.05) continue;
       const attempt = await captureAt(time);
       if (attempt && (!best || attempt.luma > best.luma)) best = attempt;
@@ -276,10 +292,24 @@ export async function extractVideoPoster(file: File): Promise<Blob | null> {
     // store it. Everything drawable failed or was still blank => no poster,
     // the gallery shows its placeholder tile. A merely-dark-but-real frame
     // (night footage) is still stored.
-    if (!best || best.luma <= SOLID_BLACK_LUMA) return null;
+    if (!best) {
+      posterLog("no frame could be captured (video track not decoded, or every seek failed)", {
+        videoWidth: video.videoWidth,
+        videoHeight: video.videoHeight,
+        duration: video.duration,
+        readyState: video.readyState,
+        fileType: file.type,
+      });
+      return null;
+    }
+    if (best.luma <= SOLID_BLACK_LUMA) {
+      posterLog("every captured frame was solid black", { luma: best.luma, duration: video.duration });
+      return null;
+    }
 
     return await toImageBlob(best.canvas);
-  } catch {
+  } catch (err) {
+    posterLog("extraction failed", err instanceof Error ? err.message : err);
     return null;
   } finally {
     // Release the decoder and the blob URL promptly - up to several of these
