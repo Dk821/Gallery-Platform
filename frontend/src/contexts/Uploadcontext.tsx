@@ -170,7 +170,7 @@ const MAX_CONCURRENT_UPLOADS = 4;
 // previews, revoke-on-close of blob URLs, etc.) is real pressure. Retry/
 // add-files still lets a huge shoot through in chunks - a single mount of
 // more than this is almost always an accidental select-all.
-const MAX_FILES_PER_SELECTION = 200;
+const MAX_FILES_PER_SELECTION = 2000;
 
 export interface UploadSummary {
   total: number;
