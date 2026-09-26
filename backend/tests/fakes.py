@@ -3,6 +3,7 @@ import uuid
 from typing import BinaryIO, Iterator
 
 from app.services.storage_service import (
+    FOLDER_MIME_TYPE,
     StorageError,
     StorageNotFoundError,
     StorageService,
@@ -79,6 +80,13 @@ class FakeStorageService(StorageService):
             self.fail_next_upload_timeout = False
             raise StorageTimeoutError("simulated upload timeout")
 
+        # Drive rejects an upload whose parent folder no longer exists with
+        # 404 notFound / location fileId (the PARENT), and the app relies on
+        # that to self-heal a stale recorded folder id - so the fake has to
+        # reproduce it rather than silently accepting the upload.
+        if parent_folder_id is not None and parent_folder_id not in self.folders:
+            raise StorageNotFoundError(f"File not found: {parent_folder_id}")
+
         self.uploads_in_flight += 1
         self.max_uploads_in_flight_seen = max(self.max_uploads_in_flight_seen, self.uploads_in_flight)
         try:
@@ -131,7 +139,19 @@ class FakeStorageService(StorageService):
     def get_file(self, provider_file_id: str) -> StoredFile:
         record = self.files.get(provider_file_id)
         if record is None:
-            raise StorageNotFoundError(provider_file_id)
+            # A folder is a Drive file too, and Drive's files.get() happily
+            # returns its metadata - callers that only need a folder's display
+            # name (e.g. the legacy-imagery-folder migration) must not have to
+            # treat one as missing.
+            folder = self.folders.get(provider_file_id)
+            if folder is None:
+                raise StorageNotFoundError(provider_file_id)
+            return StoredFile(
+                provider_file_id=provider_file_id,
+                name=folder["name"] or "",
+                size=0,
+                mime_type=FOLDER_MIME_TYPE,
+            )
         return StoredFile(
             provider_file_id=provider_file_id,
             name=record["name"],
@@ -155,9 +175,32 @@ class FakeStorageService(StorageService):
             raise StorageNotFoundError(provider_file_id)
         record["parent_folder_id"] = new_parent_folder_id
 
+    def list_folder_contents(self, folder_id: str) -> list[StoredFile]:
+        if folder_id not in self.folders:
+            raise StorageNotFoundError(folder_id)
+        children = [
+            StoredFile(
+                provider_file_id=fid,
+                name=record["name"],
+                size=len(record["content"]),
+                mime_type=record["mime_type"],
+            )
+            for fid, record in self.files.items()
+            if record["parent_folder_id"] == folder_id
+        ]
+        # Real Drive lists a folder's sub-folders alongside its files, and the
+        # legacy-folder cleanup asserts on the full listing.
+        children.extend(
+            StoredFile(provider_file_id=fid, name=record["name"], size=0, mime_type=FOLDER_MIME_TYPE)
+            for fid, record in self.folders.items()
+            if fid != folder_id and record["parent_folder_id"] == folder_id
+        )
+        return children
+
     def get_metadata(self) -> dict:
         total = sum(len(f["content"]) for f in self.files.values())
         return {"available": True, "usage_bytes": total, "limit_bytes": None}
+
 
     def create_resumable_session(
         self,

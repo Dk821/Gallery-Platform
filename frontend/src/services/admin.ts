@@ -106,6 +106,12 @@ export interface AlbumItem {
   expires_at: string | null;
   created_at: string;
   media_count: number;
+  // Aggregated server-side alongside media_count (see album_service
+  // .list_albums_for_admin) - the client gallery page renders these instead
+  // of counting the media rows it happened to load.
+  photo_count: number;
+  video_count: number;
+  total_bytes: number;
 }
 
 // Re-exported so existing call sites (e.g. Uploads.tsx) that import
@@ -313,7 +319,7 @@ export const adminService = {
   // already-completed upload (media_id will be set instead - nothing left
   // to send).
   createUploadSession: (albumId: number, uploadId: string, filename: string, fileSize: number) =>
-    api.post<UploadSessionStatus & { upload_url: string | null; cover_needed: boolean }>("/admin/media/upload-session", {
+    api.post<UploadSessionStatus & { upload_url: string | null }>("/admin/media/upload-session", {
       album_id: albumId,
       upload_id: uploadId,
       filename,
@@ -382,23 +388,6 @@ export const adminService = {
     form.append("file", thumbnail, "thumb.webp");
     return api.postForm<{ upload_id: string; has_thumbnail: boolean }>(
       `/admin/media/upload-session/${uploadId}/thumbnail`,
-      form
-    );
-  },
-
-  // Automatic client cover - sent AFTER completeUpload() has succeeded, and
-  // only when createUploadSession() said `cover_needed`. The browser builds a
-  // <= 1600px WebP from the photo it just uploaded (photoThumbnail.ts); the
-  // backend stores it under the client's "Cover Images" folder. There is no
-  // client/album/media id here on purpose - the server derives the client
-  // from this completed upload session. Callers MUST treat any failure as
-  // non-fatal: the upload is already saved, and the next eligible upload
-  // simply tries again.
-  uploadCover: (uploadId: string, cover: Blob) => {
-    const form = new FormData();
-    form.append("file", cover, "cover.webp");
-    return api.postForm<{ upload_id: string; cover_created: boolean }>(
-      `/admin/media/upload-session/${uploadId}/cover`,
       form
     );
   },

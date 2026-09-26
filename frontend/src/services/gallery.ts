@@ -4,11 +4,12 @@ export interface GalleryInfo {
   client_name: string;
   client_uuid: string;
   has_download_password: boolean;
-  // Whether this gallery has an automatic cover yet. False for galleries that
-  // haven't had an eligible photo uploaded since covers existed - the landing
-  // page then keeps its default hero instead of requesting an image that
-  // would 404.
-  has_cover: boolean;
+  // Whole-gallery totals, counted in SQL by the backend - the landing page
+  // header renders these rather than adding up whatever it has loaded.
+  total_files: number;
+  total_photos: number;
+  total_videos: number;
+  total_bytes: number;
 }
 
 export interface GalleryAlbum {
@@ -21,6 +22,9 @@ export interface GalleryAlbum {
   expires_at: string | null;
   created_at: string;
   media_count: number;
+  photo_count: number;
+  video_count: number;
+  total_bytes: number;
 }
 
 // Same shape as MediaItem (both are served by the backend's shared
@@ -45,11 +49,6 @@ export const galleryService = {
     ),
 
   getGallery: () => api.get<GalleryInfo>("/client/gallery"),
-
-  // The automatic cover of the signed-in client's own gallery. No id in the
-  // URL: the server resolves the client from the session cookie, so there is
-  // nothing to tamper with. Read-only - covers have no manual management.
-  coverUrl: () => `${API_BASE_URL}/api/client/gallery/cover`,
 
   listAlbums: (page = 1, limit = 50) =>
     api.get<Page<GalleryAlbum>>(`/client/albums?page=${page}&limit=${limit}`),

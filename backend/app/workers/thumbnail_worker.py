@@ -53,11 +53,6 @@ VIDEO_POSTER_MAX_DIMENSION = 720
 # to decode just to be shrunk).
 BROWSER_THUMBNAIL_MAX_SOURCE_PIXELS = 16_000_000
 BROWSER_THUMBNAIL_ALLOWED_FORMATS = {"JPEG", "WEBP", "PNG"}
-# Automatic client cover (hero image on the gallery landing page). Much larger
-# than a grid thumbnail, but deliberately NOT original-resolution: it is a
-# single image shown once per gallery visit, so it must load fast.
-COVER_MAX_DIMENSION = 1600
-COVER_WEBP_QUALITY = 84
 FFMPEG_TIMEOUT_SECONDS = 30
 FFMPEG_POSTER_TIMESTAMP_SECONDS = 1.0
 
@@ -121,7 +116,7 @@ def generate_image_thumbnail(
 def _is_acceptable_browser_image(data: bytes) -> bool:
     """
     Cheap header probe shared by every browser-generated image we accept
-    (thumbnails, posters, covers): checks the format and the declared
+    (thumbnails, posters): checks the format and the declared
     dimensions WITHOUT decoding the pixels, so an oversized/decompression-bomb
     image is rejected before it is ever loaded into memory.
     """
@@ -162,24 +157,6 @@ def normalize_browser_thumbnail(data: bytes) -> bytes | None:
     if not _is_acceptable_browser_image(data):
         return None
     return generate_image_thumbnail(BytesIO(data), max_dimension=VIDEO_POSTER_MAX_DIMENSION)
-
-
-def normalize_browser_cover(data: bytes) -> bytes | None:
-    """
-    Same job as normalize_browser_thumbnail, for the automatic client cover:
-    validates the small image the BROWSER produced from the photo it just
-    uploaded and re-encodes it as WebP capped at COVER_MAX_DIMENSION px (so a
-    client that ignored the size guidance can't store an original-resolution
-    "cover"), stripping metadata and guaranteeing the stored bytes really are
-    WebP - the cover streaming route always serves them as image/webp.
-
-    This is NOT where the cover is generated - the browser does that, from the
-    file the admin selected. This only sanitises what the browser sent; the
-    server never downloads the original photo to build a cover.
-    """
-    if not _is_acceptable_browser_image(data):
-        return None
-    return generate_image_thumbnail(BytesIO(data), max_dimension=COVER_MAX_DIMENSION, quality=COVER_WEBP_QUALITY)
 
 
 def generate_video_poster(file_obj: BinaryIO, filename_hint: str) -> bytes | None:

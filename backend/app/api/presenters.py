@@ -13,7 +13,13 @@ from app.schemas.media import (
 )
 
 
-def album_to_response(album: Album, media_count: int = 0) -> AlbumResponse:
+def album_to_response(
+    album: Album,
+    media_count: int = 0,
+    photo_count: int = 0,
+    video_count: int = 0,
+    total_bytes: int = 0,
+) -> AlbumResponse:
     return AlbumResponse(
         id=album.id,
         album_uuid=album.album_uuid,
@@ -24,6 +30,9 @@ def album_to_response(album: Album, media_count: int = 0) -> AlbumResponse:
         expires_at=album.expires_at,
         created_at=album.created_at,
         media_count=media_count,
+        photo_count=photo_count,
+        video_count=video_count,
+        total_bytes=total_bytes,
     )
 
 
@@ -85,7 +94,7 @@ def upload_session_to_response(session: UploadSession) -> UploadStatusResponse:
 
 
 def upload_session_start_response(
-    session: UploadSession, upload_url: str | None, cover_needed: bool = False
+    session: UploadSession, upload_url: str | None
 ) -> DirectUploadSessionResponse:
     """
     upload_url is passed in separately rather than read off the session -
@@ -96,7 +105,7 @@ def upload_session_start_response(
     path, where there's nothing left to upload).
     """
     base = upload_session_to_response(session)
-    return DirectUploadSessionResponse(upload_url=upload_url, cover_needed=cover_needed, **base.model_dump())
+    return DirectUploadSessionResponse(upload_url=upload_url, **base.model_dump())
 
 
 def upload_session_list_item(

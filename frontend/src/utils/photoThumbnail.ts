@@ -16,12 +16,6 @@
 
 const MAX_DIMENSION = 400; // long side, px. Matches THUMBNAIL_MAX_DIMENSION on the backend.
 const WEBP_QUALITY = 0.82;
-// The automatic client cover (the gallery landing hero) is produced by the
-// SAME pipeline below, just bigger: large enough to fill a hero, but nowhere
-// near original resolution so it loads fast. Matches COVER_MAX_DIMENSION on
-// the backend, which re-caps whatever arrives.
-const COVER_MAX_DIMENSION = 1600;
-const COVER_WEBP_QUALITY = 0.85;
 // Decode guard: a legitimate thumbnail source is a normal photo, so anything
 // decoding larger than this is treated as a hostile/accidental resource hog
 // and skipped rather than pushed through Image + canvas.
@@ -59,10 +53,6 @@ function toBlobWithFallback(canvas: HTMLCanvasElement, quality: number): Promise
 interface RenderOptions {
   maxDimension: number;
   quality: number;
-  // Downscaling a multi-thousand-pixel photo to a hero in one bilinear step
-  // aliases visibly; "high" makes the browser resample properly. Left off for
-  // the 400px grid thumbnail, whose behaviour is unchanged.
-  highQualitySmoothing?: boolean;
   what: string; // for the timeout error message only
 }
 
@@ -101,10 +91,6 @@ async function renderPhotoToBlob(file: File, options: RenderOptions): Promise<Bl
     canvas.height = Math.max(1, Math.round(ih * scale));
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
-    if (options.highQualitySmoothing) {
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = "high";
-    }
     // Browsers apply EXIF orientation to <img> decoding by default, so a
     // phone photo drawn here comes out the right way up, same as the
     // backend's ImageOps.exif_transpose used to guarantee server-side.
@@ -123,23 +109,4 @@ async function renderPhotoToBlob(file: File, options: RenderOptions): Promise<Bl
 // Grid/lightbox thumbnail (<= 400px). Behaviour unchanged by the refactor.
 export function extractPhotoThumbnail(file: File): Promise<Blob | null> {
   return renderPhotoToBlob(file, { maxDimension: MAX_DIMENSION, quality: WEBP_QUALITY, what: "thumbnail" });
-}
-
-// The automatic client cover (<= 1600px). Only ever called when the server
-// says this client still has no cover (see Uploadcontext.tsx), and only for
-// still photos - the caller guards on isCoverEligibleFile().
-export function extractPhotoCover(file: File): Promise<Blob | null> {
-  return renderPhotoToBlob(file, {
-    maxDimension: COVER_MAX_DIMENSION,
-    quality: COVER_WEBP_QUALITY,
-    highQualitySmoothing: true,
-    what: "cover",
-  });
-}
-
-// Mirrors the backend's cover_service.is_cover_eligible_filename: a still
-// photo (not a video, and not a GIF, which is animated/palette-limited and
-// makes a poor hero). The server re-checks; this only avoids wasted work.
-export function isCoverEligibleFile(file: File): boolean {
-  return isImageFile(file) && !/\.gif$/i.test(file.name) && file.type !== "image/gif";
 }

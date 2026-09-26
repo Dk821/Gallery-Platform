@@ -12,6 +12,7 @@ from app.schemas.errors import ApiError, forbidden, not_found
 from app.schemas.pagination import paginate_params
 from app.services.client_service import get_client_or_404
 from app.services.folder_naming import build_album_folder_name, generate_folder_uid
+from app.services.media_aggregates import photo_count_column, total_bytes_column, video_count_column
 from app.services.storage_service import StorageError, StorageService
 
 logger = logging.getLogger("gallery.albums")
@@ -100,8 +101,31 @@ def get_album_or_404(db: DbSession, album_id: int) -> Album:
     return album
 
 
-def get_album_media_count(db: DbSession, album_id: int) -> int:
-    return db.query(Media).filter(Media.album_id == album_id).count()
+def get_album_media_stats(db: DbSession, album_id: int) -> dict:
+    """
+    The album card's numbers (total files, the photo/video split, total
+    bytes) straight from the database, in one pass.
+
+    Same reason as list_albums_for_admin's aggregate: the client gallery
+    page used to invent these by counting a single page of loaded media
+    rows, which undercounts any album bigger than that page.
+    """
+    row = (
+        db.query(
+            func.count(Media.id),
+            photo_count_column(),
+            video_count_column(),
+            total_bytes_column(),
+        )
+        .filter(Media.album_id == album_id)
+        .one()
+    )
+    return {
+        "media_count": row[0] or 0,
+        "photo_count": int(row[1] or 0),
+        "video_count": int(row[2] or 0),
+        "total_bytes": int(row[3] or 0),
+    }
 
 
 def get_album_for_client_or_403(db: DbSession, album_id: int, client_id: int) -> Album:
@@ -125,13 +149,30 @@ def get_album_for_client_or_403(db: DbSession, album_id: int, client_id: int) ->
 def list_albums_for_admin(db: DbSession, client_id: int | None, page: int, limit: int):
     page, limit = paginate_params(page, limit)
 
-    media_counts = (
-        db.query(Media.album_id, func.count(Media.id).label("cnt")).group_by(Media.album_id).subquery()
+    # One grouped pass over Media for the whole page of albums, carrying the
+    # count, the photo/video split and the byte total together - the album
+    # cards need all four, and asking per album would be an N+1 (Section 13).
+    # The count/split/sum expressions come from media_aggregates so they stay
+    # valid on MySQL, which has no FILTER (WHERE ...) clause.
+    media_stats = (
+        db.query(
+            Media.album_id,
+            func.count(Media.id).label("cnt"),
+            photo_count_column().label("photo_cnt"),
+            video_count_column().label("video_cnt"),
+            total_bytes_column().label("total_bytes"),
+        )
+        .group_by(Media.album_id)
+        .subquery()
     )
 
-    query = db.query(Album, func.coalesce(media_counts.c.cnt, 0).label("media_count")).outerjoin(
-        media_counts, media_counts.c.album_id == Album.id
-    )
+    query = db.query(
+        Album,
+        func.coalesce(media_stats.c.cnt, 0).label("media_count"),
+        func.coalesce(media_stats.c.photo_cnt, 0).label("photo_count"),
+        func.coalesce(media_stats.c.video_cnt, 0).label("video_count"),
+        func.coalesce(media_stats.c.total_bytes, 0).label("total_bytes"),
+    ).outerjoin(media_stats, media_stats.c.album_id == Album.id)
     if client_id is not None:
         query = query.filter(Album.client_id == client_id)
     query = query.order_by(Album.created_at.desc())
@@ -140,7 +181,7 @@ def list_albums_for_admin(db: DbSession, client_id: int | None, page: int, limit
     rows = query.offset((page - 1) * limit).limit(limit).all()
 
     items = []
-    for album, media_count in rows:
+    for album, media_count, photo_count, video_count, total_bytes in rows:
         items.append(
             {
                 "id": album.id,
@@ -152,6 +193,9 @@ def list_albums_for_admin(db: DbSession, client_id: int | None, page: int, limit
                 "expires_at": album.expires_at,
                 "created_at": album.created_at,
                 "media_count": media_count,
+                "photo_count": photo_count,
+                "video_count": video_count,
+                "total_bytes": total_bytes,
             }
         )
     return items, total, page, limit

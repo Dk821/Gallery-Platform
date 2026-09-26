@@ -26,7 +26,6 @@ from app.schemas.media import (
 )
 from app.services.album_service import get_album_or_404
 from app.services.wishlist_service import get_wishlisted_media_ids
-from app.services.cover_service import attach_cover_from_upload, client_needs_cover, is_cover_eligible_filename
 from app.services.media_service import (
     abandon_direct_upload,
     attach_direct_upload_thumbnail,
@@ -131,11 +130,7 @@ def start_direct_upload_route(
         # to send, the frontend should treat this as done.
         return {"success": True, "data": upload_session_start_response(session, None)}
 
-    # Tells the browser whether to also build a cover from this file (see
-    # services/cover_service.py). Pure read of two facts - nothing here can
-    # affect the upload itself, which proceeds identically either way.
-    cover_needed = client_needs_cover(album.client) and is_cover_eligible_filename(settings, payload.filename)
-    return {"success": True, "data": upload_session_start_response(session, upload_url, cover_needed)}
+    return {"success": True, "data": upload_session_start_response(session, upload_url)}
 
 
 @router.post("/upload-complete")
@@ -201,40 +196,6 @@ def attach_direct_upload_thumbnail_route(
         "success": True,
         "data": {"upload_id": session.upload_id, "has_thumbnail": bool(session.thumbnail_drive_file_id)},
     }
-
-
-@router.post("/upload-session/{upload_id}/cover")
-def attach_client_cover_route(
-    upload_id: str,
-    request: Request,
-    file: UploadFile = File(...),
-    db: DbSession = Depends(get_db),
-    admin: Admin = Depends(get_current_admin),
-    storage: StorageService = Depends(get_storage_service),
-    settings: Settings = Depends(get_settings),
-):
-    # Automatic client cover - the one step added to the direct-upload flow.
-    # The browser builds a <= 1600px WebP from the photo it just uploaded and
-    # sends it here AFTER POST /upload-complete has succeeded (only when
-    # POST /upload-session said `cover_needed`). Because the media is already
-    # committed by then, nothing that happens here can fail or roll back the
-    # upload; the browser ignores any error from this route.
-    #
-    # There is deliberately no client/album/media id in this request: the
-    # client is derived server-side from this admin's own completed upload
-    # session (see cover_service.attach_cover_from_upload), and a client that
-    # already has a cover is a no-op - a cover is never replaced. There is no
-    # GET/PUT/DELETE counterpart for admins: the cover is fully automatic.
-    #
-    # Size cap enforced twice, exactly like the thumbnail route: cheaply up
-    # front from Content-Length, then authoritatively on the bytes read.
-    max_bytes = settings.cover_upload_max_bytes
-    declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > max_bytes + 64 * 1024:  # + multipart framing
-        raise bad_request("Cover image is too large.", code="COVER_INVALID")
-    image_bytes = file.file.read(max_bytes + 1)
-    created = attach_cover_from_upload(db, storage, settings, admin.id, upload_id, image_bytes)
-    return {"success": True, "data": {"upload_id": upload_id, "cover_created": created}}
 
 
 @router.post("/upload-session/{upload_id}/abandon")

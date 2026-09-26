@@ -104,14 +104,6 @@ class Settings(BaseSettings):
     # server buffer and forward to Drive.
     video_thumbnail_upload_max_kb: int = 2048
 
-    # --- Automatic client cover image ----------------------------------------
-    # The browser generates ONE cover.webp (<= ~1600px long side, see
-    # frontend/src/utils/photoThumbnail.ts) and sends it after the photo it
-    # came from has finished uploading (POST /upload-session/{id}/cover). A
-    # 1600px WebP is typically 100-400 KB; this caps what a single request can
-    # make this server buffer, normalise and forward to Drive.
-    cover_upload_max_kb: int = 4096
-
     environment: str = "development"
 
     @property
@@ -157,10 +149,6 @@ class Settings(BaseSettings):
     @property
     def video_thumbnail_upload_max_bytes(self) -> int:
         return self.video_thumbnail_upload_max_kb * 1024
-
-    @property
-    def cover_upload_max_bytes(self) -> int:
-        return self.cover_upload_max_kb * 1024
 
     @property
     def effective_max_upload_bytes(self) -> int:

@@ -23,14 +23,32 @@ import uuid
 CLIENT_FOLDER_SEPARATOR = "_C_"
 ALBUM_FOLDER_SEPARATOR = "_A_"
 
-# Fixed (not per-record) names for the client's cover images: a single
-# "Cover Images" folder sits directly under the client folder, as a sibling of
-# the album folders - never inside one - and holds the one cover.webp along
-# with every item thumbnail (video poster / photo thumb; see
-# media_service._thumbnail_storage_folder). All cover-like images belong to
-# the client, not to any album.
-COVER_FOLDER_NAME = "Cover Images"
-COVER_FILE_NAME = "cover.webp"
+# Fixed (not per-record) names for the client's imagery: a single
+# "Thumbnails" folder sits directly under the client folder, as a sibling of
+# the album folders - never inside one - and holds every item thumbnail
+# (video poster / photo thumb; see media_service._thumbnail_storage_folder).
+# All thumbnails belong to the client, not to any album.
+THUMBNAIL_FOLDER_NAME = "Thumbnails"
+
+# What that same folder used to be called, back when it also held the client's
+# single automatic cover (clients.cover_folder_id, since renamed to
+# thumbnail_folder_id - see alembic a5c7e3b1d9f8). A folder created before that
+# rename is still named this in Drive, so the schema migration deliberately
+# kept its id rather than orphaning every existing thumbnail in a folder
+# nothing tracked. The name itself needs a Drive write to fix, which is what
+# app/thumbnail_folder_migration.py does - one run, then these are dead.
+#
+# Nothing in the request-serving path may branch on these: a client whose
+# folder is still called "Cover Images" behaves identically to one called
+# "Thumbnails", because the folder is addressed by the id on
+# Client.thumbnail_folder_id, never by name.
+LEGACY_COVER_FOLDER_NAME = "Cover Images"
+
+# The removed automatic cover's fixed filename, left behind in each of those
+# legacy folders. Item thumbnails are always thumb_{uuid}.webp, so this exact
+# name can only ever be the orphan. Not referenced by any column since
+# clients.cover_drive_file_id was dropped.
+LEGACY_COVER_FILE_NAME = "cover.webp"
 
 # Generous but bounded - keeps the final folder name well under Drive's
 # (very high) folder name length limit without truncating any name a real

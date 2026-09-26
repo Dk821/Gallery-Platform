@@ -1,7 +1,7 @@
 import { ReactNode, createContext, startTransition, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { adminService, UploadSessionListItem } from "../services/admin";
 import { ApiRequestError } from "../services/api";
-import { extractPhotoCover, extractPhotoThumbnail, isCoverEligibleFile } from "../utils/photoThumbnail";
+import { extractPhotoThumbnail } from "../utils/photoThumbnail";
 import { extractVideoPoster, isVideoFile } from "../utils/videoPoster";
 
 // Generates a short, DB-safe unique id for an upload attempt. Deliberately
@@ -69,38 +69,6 @@ async function uploadThumbnailBestEffort(uploadId: string, thumbnail: Promise<Bl
     return await Promise.race([work, timeout]);
   } finally {
     if (timer) clearTimeout(timer);
-  }
-}
-
-// Sends the automatic client cover (see utils/photoThumbnail.ts ->
-// extractPhotoCover, and services/admin.ts -> uploadCover) and NEVER throws.
-//
-// It is called only AFTER completeUpload() has succeeded - the photo is
-// already saved and shown as "done" - and it is deliberately not awaited by
-// the upload flow, so it can't hold an upload slot, delay the next file, or
-// change the outcome of the upload it rode along with. If it fails for any
-// reason (couldn't render, server said no, network blip) nothing is shown and
-// nothing is retried later: the client simply still has no cover, and the
-// server will ask for one again on the next eligible upload.
-//
-// One retry, and only for failures that could be transient. A 4xx (a session
-// that isn't accepting a cover, an invalid image, a cover that already
-// exists) won't improve on a second try.
-async function uploadCoverBestEffort(uploadId: string, cover: Promise<Blob | null>): Promise<void> {
-  try {
-    const blob = await cover;
-    if (!blob) return; // the browser couldn't render one
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        await adminService.uploadCover(uploadId, blob);
-        return;
-      } catch (err) {
-        const permanent = err instanceof ApiRequestError && err.status >= 400 && err.status < 500;
-        if (permanent) return;
-      }
-    }
-  } catch {
-    // Best-effort by design - see above.
   }
 }
 
@@ -304,7 +272,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   // item that already has a resumable upload_url in hand - shared by
   // startUpload (fresh uploads) and retryItem's "just retry the
   // confirmation" path (an item that already has a cached driveFileId).
-  async function runDirectUpload(item: UploadItem, uploadUrl: string, coverNeeded = false) {
+  async function runDirectUpload(item: UploadItem, uploadUrl: string) {
     const uploadId = item.id;
     if (!item.file) return;
 
@@ -320,13 +288,6 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     const thumbnailPromise = isVideoFile(item.file)
       ? extractVideoPoster(item.file)
       : extractPhotoThumbnail(item.file);
-
-    // Automatic client cover. Only when the server said this client has no
-    // cover yet (coverNeeded, from POST /upload-session) and this is an
-    // eligible still photo. Built from the same local file, in parallel with
-    // the upload, exactly like the thumbnail above - but SENT only after the
-    // upload has been confirmed (see below), so it can never affect it.
-    const coverPromise = coverNeeded && isCoverEligibleFile(item.file) ? extractPhotoCover(item.file) : null;
 
     let lastReportedPercent = -1;
     const { promise, cancel } = adminService.uploadToDrive(uploadUrl, item.file, (percent) => {
@@ -413,9 +374,6 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       setItems((prev) =>
         prev.map((i) => (i.id === item.id ? withReleasedFile({ ...i, status: "done", progress: 100 }) : i))
       );
-      // The photo is saved and marked done. NOW hand over the cover, if one
-      // was asked for - fire-and-forget (see uploadCoverBestEffort).
-      if (coverPromise) void uploadCoverBestEffort(uploadId, coverPromise);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not confirm the upload.";
       // driveFileId (set above) stays on the item - the file is already
@@ -468,7 +426,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
 
       // 2 & 3. PUT the bytes straight to Drive, then confirm with the
       // backend so it can create the Media record.
-      await runDirectUpload(item, session.upload_url, session.cover_needed);
+      await runDirectUpload(item, session.upload_url);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Upload failed.";
       const wasCancelled = message === "Upload cancelled." || cancelledEarly;

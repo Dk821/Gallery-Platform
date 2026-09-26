@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import ClientNav from "../components/ClientNav";
 import { GalleryAlbum, GalleryInfo, galleryService } from "../services/gallery";
-import { getExpiryInfo } from "../utils/format";
+import { formatBytes, getExpiryInfo } from "../utils/format";
 
 const DEFAULT_COVERS = [
   "https://images.unsplash.com/photo-1583939003579-730e3918a45a?auto=format&fit=crop&w=1000&q=80",
@@ -10,8 +10,7 @@ const DEFAULT_COVERS = [
   "https://images.unsplash.com/photo-1511285560929-80b456fea0bc?auto=format&fit=crop&w=1000&q=80",
 ];
 
-// What the landing page shows behind the header until a gallery has its own
-// automatic cover (or if that cover can't be loaded). Local album-bg artwork.
+// The landing page's fixed backdrop behind the header. Local album-bg artwork.
 const DEFAULT_LANDING_BACKDROP = "/images/album-bg.webp";
 
 function getScriptTitle(name: string, index: number): string {
@@ -45,7 +44,10 @@ const DEMO_ALBUMS: GalleryAlbum[] = [
     status: "active",
     expires_at: null,
     created_at: "2026-02-12T10:00:00Z",
-    media_count: 428,
+    media_count: 446,
+    photo_count: 428,
+    video_count: 18,
+    total_bytes: 1480000000,
   },
   {
     id: 2,
@@ -56,7 +58,10 @@ const DEMO_ALBUMS: GalleryAlbum[] = [
     status: "active",
     expires_at: null,
     created_at: "2026-02-14T18:00:00Z",
-    media_count: 312,
+    media_count: 322,
+    photo_count: 312,
+    video_count: 10,
+    total_bytes: 920000000,
   },
   {
     id: 3,
@@ -67,7 +72,10 @@ const DEMO_ALBUMS: GalleryAlbum[] = [
     status: "active",
     expires_at: null,
     created_at: "2026-01-05T15:30:00Z",
-    media_count: 196,
+    media_count: 204,
+    photo_count: 196,
+    video_count: 8,
+    total_bytes: 610000000,
   },
 ];
 
@@ -77,7 +85,6 @@ export default function Gallery() {
   const [info, setInfo] = useState<GalleryInfo | null>(null);
   const [albums, setAlbums] = useState<GalleryAlbum[]>([]);
   const [covers, setCovers] = useState<Record<number, string | null>>({});
-  const [mediaStats, setMediaStats] = useState<Record<number, { photos: number; videos: number }>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -87,25 +94,17 @@ export default function Gallery() {
         setInfo(galleryInfo);
         setAlbums(albumPage.items);
 
+        // Photo/video counts and the byte totals come from the album list
+        // itself (aggregated in SQL), so the only thing still worth a request
+        // per album is the cover image - and it only needs the first item.
         albumPage.items.forEach((album) => {
           galleryService
-            .listMedia(album.id, 1, 50)
+            .listMedia(album.id, 1, 1)
             .then((page) => {
               const first = page.items[0];
               setCovers((prev) => ({
                 ...prev,
                 [album.id]: first?.has_thumbnail ? galleryService.thumbnailUrl(first.id) : null,
-              }));
-
-              const photos = page.items.filter((m) => m.file_type === "photo").length;
-              const videos = page.items.filter((m) => m.file_type === "video").length;
-
-              setMediaStats((prev) => ({
-                ...prev,
-                [album.id]: {
-                  photos: page.total > page.items.length && album.media_count > 0 ? album.media_count - videos : photos,
-                  videos,
-                },
               }));
             })
             .catch(() => {
@@ -116,13 +115,16 @@ export default function Gallery() {
       .catch(() => {
         if (galleryId === "test-uuid" || galleryId === "preview" || galleryId === "demo" || !info) {
           // Provide demo preview albums matching Reference Image 2
-          setInfo({ client_name: "Sam & Priya", client_uuid: galleryId, has_download_password: false, has_cover: false });
-          setAlbums(DEMO_ALBUMS);
-          setMediaStats({
-            1: { photos: 428, videos: 18 },
-            2: { photos: 312, videos: 10 },
-            3: { photos: 196, videos: 8 },
+          setInfo({
+            client_name: "Sam & Priya",
+            client_uuid: galleryId,
+            has_download_password: false,
+            total_files: 972,
+            total_photos: 936,
+            total_videos: 36,
+            total_bytes: 3010000000,
           });
+          setAlbums(DEMO_ALBUMS);
           setCovers({
             1: DEFAULT_COVERS[0],
             2: DEFAULT_COVERS[1],
@@ -166,6 +168,15 @@ export default function Gallery() {
               ♡
             </div>
             <p className="wedding-landing__sub">Your memories are here</p>
+            {info && info.total_files > 0 && (
+              <p className="wedding-landing__totals">
+                {info.total_files} {info.total_files === 1 ? "File" : "Files"}
+                <span className="wedding-landing__totals-divider" aria-hidden="true">
+                  &middot;
+                </span>
+                {formatBytes(info.total_bytes)}
+              </p>
+            )}
             <p className="wedding-landing__prompt">Select an album to continue</p>
           </section>
 
@@ -179,10 +190,6 @@ export default function Gallery() {
                 const cover = covers[album.id] || DEFAULT_COVERS[idx % DEFAULT_COVERS.length];
                 const scriptTitle = getScriptTitle(album.album_name, idx);
                 const albumDate = formatAlbumDate(album.created_at);
-                const stats = mediaStats[album.id] || {
-                  photos: album.media_count || 0,
-                  videos: 0,
-                };
                 const expiry = getExpiryInfo(album.expires_at);
 
                 return (
@@ -224,7 +231,7 @@ export default function Gallery() {
                             <circle cx="8.5" cy="8.5" r="1.5" />
                             <polyline points="21 15 16 10 5 21" />
                           </svg>
-                          <span>{stats.photos} Photos</span>
+                          <span>{album.photo_count} Photos</span>
                         </span>
 
                         <span className="wedding-album-card__meta-divider">|</span>
@@ -234,7 +241,7 @@ export default function Gallery() {
                             <polygon points="23 7 16 12 23 17 23 7" />
                             <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
                           </svg>
-                          <span>{stats.videos} Videos</span>
+                          <span>{album.video_count} Videos</span>
                         </span>
                       </div>
 

@@ -39,5 +39,11 @@ class AlbumResponse(BaseModel):
     expires_at: datetime.datetime | None
     created_at: datetime.datetime
     media_count: int = 0
+    # The album card's photo/video split and total size, aggregated in the
+    # database - the gallery page renders these instead of counting the rows
+    # it happened to load, which undercounts anything past the page size.
+    photo_count: int = 0
+    video_count: int = 0
+    total_bytes: int = 0
 
     model_config = {"from_attributes": True}

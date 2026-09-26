@@ -146,6 +146,11 @@ export default function Albums() {
   const stats = useMemo(() => {
     const totalAlbums = albums.length;
     const totalMedia = albums.reduce((acc, a) => acc + (a.media_count || 0), 0);
+    // Each album arrives with its own photo/video split (aggregated in SQL by
+    // the album list endpoint), so the media card can show the breakdown
+    // without a second request - and without guessing from media_count.
+    const totalPhotos = albums.reduce((acc, a) => acc + (a.photo_count || 0), 0);
+    const totalVideos = albums.reduce((acc, a) => acc + (a.video_count || 0), 0);
     const uniqueClientIds = new Set(albums.map((a) => a.client_id));
     const expiringOrExpired = albums.filter((a) => {
       const expiry = getExpiryInfo(a.expires_at);
@@ -155,6 +160,8 @@ export default function Albums() {
     return {
       totalAlbums,
       totalMedia,
+      totalPhotos,
+      totalVideos,
       activeClients: uniqueClientIds.size,
       expiringOrExpired,
     };
@@ -310,7 +317,11 @@ export default function Albums() {
             <div className="admin-kpi-content">
               <div className="admin-kpi-value">{loading ? "…" : stats.totalMedia.toLocaleString()}</div>
               <div className="admin-kpi-label">Total Media Files</div>
-              <div className="admin-kpi-subtext">Photos & video assets</div>
+              <div className="admin-kpi-subtext">
+                {loading
+                  ? "Photos & video assets"
+                  : `${stats.totalPhotos.toLocaleString()} photos · ${stats.totalVideos.toLocaleString()} videos`}
+              </div>
             </div>
           </div>
         </div>

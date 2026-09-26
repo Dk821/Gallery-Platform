@@ -6,12 +6,17 @@ from app.api.deps import get_current_client, get_current_client_session
 from app.database.connection import get_db
 from app.models.client import Client
 from app.models.session import ClientSession
-from app.api.media_streaming import stream_client_cover, stream_media_file, stream_media_thumbnail
+from app.api.media_streaming import stream_media_file, stream_media_thumbnail
 from app.api.presenters import album_to_response, media_to_response
 from app.schemas.errors import not_found
 from app.schemas.pagination import build_page
-from app.services.album_service import get_album_for_client_or_403, list_albums_for_client
+from app.services.album_service import (
+    get_album_for_client_or_403,
+    get_album_media_stats,
+    list_albums_for_client,
+)
 from app.services.media_service import (
+    get_client_media_totals,
     get_media_for_client_or_403,
     get_media_selection_summary,
     list_media_for_client,
@@ -52,34 +57,20 @@ def get_gallery(
     db: DbSession = Depends(get_db),
     client: Client = Depends(get_current_client),
 ):
-    # High-level gallery info for the header of the client view. Deliberately
-    # thin - album/media detail come from their own endpoints below.
+    # High-level gallery info for the header of the client view. Still thin -
+    # album/media detail come from their own endpoints below - but the totals
+    # are here because they belong to the whole gallery, and they are counted
+    # in SQL (one aggregate over the client's own rows) so the header can never
+    # show a figure derived from a partially loaded page of media.
     return {
         "success": True,
         "data": {
             "client_name": client.client_name,
             "client_uuid": client.client_uuid,
             "has_download_password": bool(client.download_password_hash),
-            # Boolean only - never the Drive file id. The landing page uses it
-            # to decide whether to request /gallery/cover or keep its default
-            # hero, without firing a request that would just 404.
-            "has_cover": bool(client.cover_drive_file_id),
+            **get_client_media_totals(db, client.id),
         },
     }
-
-
-@router.get("/gallery/cover")
-def get_gallery_cover(
-    request: Request,
-    client: Client = Depends(get_current_client),
-    storage: StorageService = Depends(get_storage_service),
-):
-    # The automatic cover of THE AUTHENTICATED client's gallery. No client or
-    # gallery id is accepted anywhere in this request - the client is the one
-    # the session cookie resolves to (get_current_client), so there is nothing
-    # to tamper with and no way to ask for another client's cover. Read-only:
-    # covers are generated automatically and have no manual management.
-    return stream_client_cover(client, storage, request.headers.get("if-none-match"))
 
 
 @router.get("/albums")
@@ -105,7 +96,7 @@ def get_album(
     # This 403-on-mismatch check is the load-bearing line for the platform's
     # core promise: "Client A cannot access Client B's album."
     album = get_album_for_client_or_403(db, album_id, client.id)
-    return {"success": True, "data": album_to_response(album)}
+    return {"success": True, "data": album_to_response(album, **get_album_media_stats(db, album.id))}
 
 
 @router.get("/media")

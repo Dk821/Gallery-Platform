@@ -18,13 +18,14 @@ from app.schemas.errors import ApiError, bad_request, forbidden, not_found
 from app.schemas.media import MediaUpdateRequest
 from app.schemas.pagination import paginate_params
 from app.services.album_service import album_not_expired_clause, check_album_not_expired
-from app.services.cover_service import ensure_cover_folder
+from app.services.folder_naming import THUMBNAIL_FOLDER_NAME
+from app.services.media_aggregates import photo_count_column, total_bytes_column, video_count_column
 from app.services.media_validation import (
     guess_mime_type,
     validate_upload,
     validate_upload_intent,
 )
-from app.services.storage_service import StorageError, StorageNotFoundError, StorageService
+from app.services.storage_service import StorageError, StorageNotFoundError, StorageService, StoredFile
 from app.services.upload_logging import log_event
 from app.services.wishlist_service import WISHLIST_FILTER_ALL, apply_wishlist_filter
 from app.workers.thumbnail_worker import generate_image_thumbnail, normalize_browser_thumbnail
@@ -111,6 +112,38 @@ def get_media_selection_summary(
     ids = [r[0] for r in rows]
     total_bytes = sum(r[1] for r in rows)
     return {"ids": ids, "total_count": len(ids), "total_bytes": total_bytes}
+
+
+def get_client_media_totals(db: DbSession, client_id: int) -> dict:
+    """
+    Whole-gallery totals for the client landing page: how many files the
+    client has been given, and how many bytes they add up to.
+
+    A single grouped COUNT/SUM in the database rather than anything the
+    frontend could work out for itself - the page used to derive its counts
+    from one 50-row page of media per album, which silently undercounts any
+    album larger than the page it had loaded (Section 13: no N+1s, and never
+    report a number that isn't the real one).
+
+    Scoped to the client's own rows only, never joined to anything the
+    caller supplies, so it cannot widen past the authenticated client.
+    """
+    row = (
+        db.query(
+            func.count(Media.id),
+            photo_count_column(),
+            video_count_column(),
+            total_bytes_column(),
+        )
+        .filter(Media.client_id == client_id)
+        .one()
+    )
+    return {
+        "total_files": row[0] or 0,
+        "total_photos": int(row[1] or 0),
+        "total_videos": int(row[2] or 0),
+        "total_bytes": int(row[3] or 0),
+    }
 
 
 def list_media_for_album_admin(
@@ -211,7 +244,7 @@ def move_media_to_album(db: DbSession, storage: StorageService, media: Media, ta
     old_folder_id = old_album.drive_folder_id if old_album else None
 
     # Only the ORIGINAL file moves with the media. The thumbnail does NOT:
-    # thumbnails live in the client's Cover Images folder (see
+    # thumbnails live in the client's Thumbnails folder (see
     # _thumbnail_storage_folder), which is per-client and shared across the
     # client's albums, so it must not be dragged from one album folder to
     # another.
@@ -638,21 +671,171 @@ def list_recent_upload_sessions(
         for s in sessions
     ]
 
+
+def _best_effort_delete_folder(storage: StorageService, folder_id: str, *, client_id: int) -> None:
+    try:
+        storage.delete_folder(folder_id)
+    except Exception:  # noqa: BLE001
+        log_event(logger, "thumbnail.cleanup_failed", logging.WARNING, client_id=client_id, folder_id=folder_id)
+
+
+def _ensure_thumbnail_folder(db: DbSession, storage: StorageService, client: Client) -> str:
+    """
+    The client's ONE "Thumbnails" folder, created on first use and remembered in
+    Client.thumbnail_folder_id so a retry after a failed thumbnail upload reuses
+    it rather than creating a second folder. Concurrent first-thumbnail requests
+    may each create a folder, but only one wins the compare-and-set; the losers
+    delete theirs and use the winner's.
+
+    A single atomic UPDATE ... WHERE col IS NULL (no row lock held across the
+    Drive round trip), so it is race-safe on MySQL and SQLite alike.
+    """
+    if client.thumbnail_folder_id:
+        return client.thumbnail_folder_id
+
+    try:
+        created_folder_id = storage.create_folder(THUMBNAIL_FOLDER_NAME, parent_folder_id=client.drive_folder_id)
+    except StorageError as exc:
+        # The underlying cause is logged HERE, and deliberately not left to the
+        # caller: this ApiError subclasses HTTPException, NOT StorageError, so
+        # it passes straight through the `except StorageError` handler in
+        # attach_direct_upload_thumbnail - meaning that handler's "Browser
+        # thumbnail upload to storage failed" warning never runs for a folder
+        # -creation failure. Without this line a Drive-side problem (403
+        # insufficientFilePermissions on the client folder, 429 quota, a
+        # revoked token) reached the client as a bare 502 in the access log
+        # with nothing at all in the application log explaining it.
+        log_event(
+            logger,
+            "thumbnail_folder.create_failed",
+            logging.ERROR,
+            client_id=client.id,
+            parent_folder_id=client.drive_folder_id,
+            error=str(exc),
+        )
+        # A distinct code from the upload failure below, so "couldn't create
+        # the folder" is distinguishable from "couldn't store the file in it".
+        raise ApiError(502, "THUMBNAIL_FOLDER_FAILED", "Could not prepare the thumbnail folder.") from exc
+
+    updated = (
+        db.query(Client)
+        .filter(Client.id == client.id, Client.thumbnail_folder_id.is_(None))
+        .update({Client.thumbnail_folder_id: created_folder_id}, synchronize_session=False)
+    )
+    db.commit()
+
+    if updated == 1:
+        db.refresh(client)
+        return created_folder_id
+
+    # Lost the race - somebody else recorded their folder first.
+    _best_effort_delete_folder(storage, created_folder_id, client_id=client.id)
+    db.refresh(client)
+    if not client.thumbnail_folder_id:  # pragma: no cover - defensive, the winner just set it
+        log_event(
+            logger,
+            "thumbnail_folder.create_failed",
+            logging.ERROR,
+            client_id=client.id,
+            note="lost_race_and_winner_unreadable",
+        )
+        raise ApiError(502, "THUMBNAIL_FOLDER_FAILED", "Could not prepare the thumbnail folder.")
+    return client.thumbnail_folder_id
+
+
 def _thumbnail_storage_folder(db: DbSession, storage: StorageService, album: Album) -> str:
     """
-    The folder every item thumbnail (video poster or photo thumb) is stored
-    in: the client's ONE "Cover Images" folder - the same folder that holds
-    the automatic cover.webp (see cover_service.ensure_cover_folder). All
-    cover-like images belong to the CLIENT, not to an album, so thumbnails
-    stay put when media moves between albums and each client has exactly one
-    folder holding covers. Falls back to the album folder only if the client
-    has no Drive folder at all (shouldn't happen - albums are provisioned
+    The folder every item thumbnail (video poster or photo thumb) is stored in:
+    the client's ONE "Thumbnails" folder. Thumbnails belong to the CLIENT, not to
+    an album, so they stay put when media moves between albums and each client
+    has exactly one imagery folder. Falls back to the album folder only if the
+    client has no Drive folder at all (shouldn't happen - albums are provisioned
     inside the client's folder).
     """
     client = db.query(Client).filter(Client.id == album.client_id).first()
     if client is None or not client.drive_folder_id:
         return album.drive_folder_id
-    return ensure_cover_folder(db, storage, client)
+    return _ensure_thumbnail_folder(db, storage, client)
+
+
+def _forget_thumbnail_folder(db: DbSession, client_id: int, folder_id: str) -> bool:
+    """
+    Drop a recorded imagery-folder id that Drive says no longer exists, so the
+    next _ensure_thumbnail_folder() call creates a fresh, correctly-named one
+    instead of handing back the same dead id forever.
+
+    Compare-and-set on the id we actually tried, so a concurrent request that
+    already recorded a NEW folder isn't clobbered by our stale-id cleanup.
+    """
+    updated = (
+        db.query(Client)
+        .filter(Client.id == client_id, Client.thumbnail_folder_id == folder_id)
+        .update({Client.thumbnail_folder_id: None}, synchronize_session=False)
+    )
+    db.commit()
+    return updated == 1
+
+
+def _upload_thumbnail_to_client_folder(
+    db: DbSession, storage: StorageService, album: Album, thumb_bytes: bytes, upload_id: str
+) -> StoredFile:
+    """
+    Stores a thumbnail in the client's imagery folder, SELF-HEALING the one
+    failure that would otherwise be permanent.
+
+    Client.thumbnail_folder_id is a recorded id, never re-validated against
+    Drive, and _ensure_thumbnail_folder() returns it without an existence
+    check. So if that folder is ever deleted or trashed in Drive - by hand, by
+    a Drive-side cleanup, or because it was created under a client folder that
+    has since gone - every subsequent thumbnail upload 404s with
+    "File not found: <id>" (reason notFound, location fileId, i.e. the PARENT
+    folder) and can never recover on its own. The client is left permanently
+    unable to store a thumbnail: no imagery folder in Drive, every item falling
+    back to a placeholder tile, and a 502 on every attempt no matter how many
+    times it is retried.
+
+    So on a not-found, forget the dead id and retry once against a freshly
+    created folder. This is the same self-healing the album-folder guard
+    already does for a stale Album.drive_folder_id (see start_direct_upload's
+    ALBUM_STORAGE_NOT_PROVISIONED check).
+
+    A genuine permission/quota failure is a different exception and is NOT
+    retried or swallowed here - it propagates to the caller.
+    """
+    for attempt in (1, 2):
+        folder_id = _thumbnail_storage_folder(db, storage, album)
+        try:
+            return storage.upload(
+                io.BytesIO(thumb_bytes),
+                f"thumb_{uuid.uuid4()}.webp",
+                "image/webp",
+                folder_id,
+                upload_id=upload_id,
+            )
+        except StorageNotFoundError:
+            if attempt == 2:
+                # A folder we created ourselves is already gone - something
+                # far more serious than a stale id. Give up and let the caller
+                # report it rather than looping.
+                log_event(
+                    logger,
+                    "thumbnail_folder.still_missing_after_recreate",
+                    logging.ERROR,
+                    album_id=album.id,
+                    client_id=album.client_id,
+                    folder_id=folder_id,
+                )
+                raise
+            if _forget_thumbnail_folder(db, album.client_id, folder_id):
+                log_event(
+                    logger,
+                    "thumbnail_folder.stale_id_cleared",
+                    logging.WARNING,
+                    album_id=album.id,
+                    client_id=album.client_id,
+                    folder_id=folder_id,
+                    note="recreating",
+                )
 
 
 def _generate_thumbnail_from_storage(
@@ -709,8 +892,8 @@ def attach_direct_upload_thumbnail(
     file (a <video>+<canvas> poster frame, or a <img>+<canvas> downscale) -
     this server never sees, and never needs to download from Drive, the
     original file to make it. It is validated, normalized to WebP, stored in
-    the CLIENT's "Cover Images" folder (see _thumbnail_storage_folder) - the
-    same folder the automatic cover uses - and its Drive id is recorded on
+    the CLIENT's "Thumbnails" folder (see _thumbnail_storage_folder), and its
+    Drive id is recorded on
     UploadSession.thumbnail_drive_file_id - a server-side ledger, so the id
     is never taken from the browser and complete_direct_upload needs no new
     request fields to find it.
@@ -748,13 +931,7 @@ def attach_direct_upload_thumbnail(
         raise not_found("Album not found.", code="ALBUM_NOT_FOUND")
 
     try:
-        stored = storage.upload(
-            io.BytesIO(thumb_bytes),
-            f"thumb_{uuid.uuid4()}.webp",
-            "image/webp",
-            _thumbnail_storage_folder(db, storage, album),
-            upload_id=upload_id,
-        )
+        stored = _upload_thumbnail_to_client_folder(db, storage, album, thumb_bytes, upload_id)
     except StorageError as exc:
         logger.warning("Browser thumbnail upload to storage failed for upload_id=%s: %s", upload_id, exc)
         raise ApiError(502, "THUMBNAIL_STORAGE_FAILED", "Could not store the thumbnail.")
@@ -957,30 +1134,39 @@ def complete_direct_upload(
     file_uuid = str(uuid.uuid4())
     if file_type in ("video", "photo"):
         # Already stored by attach_direct_upload_thumbnail (server-side
-        # ledger, not a browser-supplied id). For a photo the browser sent
-        # its downscaled thumb during upload, so the whole read-back serves
-        # nothing; without one we fall back to generating it server-side.
-        session_thumbnail = session.thumbnail_drive_file_id
-        thumbnail_file_id = session_thumbnail or None
-        if not thumbnail_file_id:
-            log_event(logger, "thumbnail_missing", upload_id=upload_id, note="placeholder_will_be_used")
-    else:
+        # ledger, not a browser-supplied id).
+        thumbnail_file_id = session.thumbnail_drive_file_id or None
+
+    # FALLBACK, PHOTOS ONLY. The browser decodes the file locally and gives up
+    # SILENTLY whenever it can't - a HEIC the platform won't decode into a
+    # canvas, a tainted canvas, a source over photoThumbnail's
+    # MAX_SOURCE_PIXELS guard, or the 15s overall deadline - in which case no
+    # thumbnail request is ever sent. Without this branch such an upload ended
+    # with no thumbnail at all, because the browser path was the ONLY caller of
+    # _thumbnail_storage_folder(): the client's "Thumbnails" folder was never
+    # created in Drive for a client whose every photo defeated the browser.
+    #
+    # Videos deliberately never come through here: reading a multi-GB video
+    # back from Drive to grab one frame is exactly the slow "finalizing" step
+    # the browser-generated poster replaced. A video with no poster keeps its
+    # placeholder tile. Non-media types have no visual to show either.
+    if not thumbnail_file_id and file_type == "photo":
         try:
             thumb_bytes = _generate_thumbnail_from_storage(
                 storage, settings, drive_file_id, file_type, file_size, session.filename
             )
             if thumb_bytes:
-                thumb_stream = io.BytesIO(thumb_bytes)
-                thumb_stored = storage.upload(
-                    thumb_stream, f"thumb_{file_uuid}.webp", "image/webp", _thumbnail_storage_folder(db, storage, album),
-                    upload_id=upload_id
-                )
-                thumbnail_file_id = thumb_stored.provider_file_id
+                thumbnail_file_id = _upload_thumbnail_to_client_folder(
+                    db, storage, album, thumb_bytes, upload_id
+                ).provider_file_id
                 session.thumbnail_drive_file_id = thumbnail_file_id
                 db.commit()
         except Exception as exc:  # noqa: BLE001 - thumbnail failures must never fail the upload
             logger.warning("Thumbnail generation/upload failed for album %s: %s", album.id, exc)
             thumbnail_file_id = None
+
+    if not thumbnail_file_id:
+        log_event(logger, "thumbnail_missing", upload_id=upload_id, note="placeholder_will_be_used")
 
     try:
         media = Media(

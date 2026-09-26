@@ -25,6 +25,7 @@ from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from app.config.settings import Settings
 from app.services.retry import RETRYABLE_HTTP_STATUSES, retry_with_backoff
 from app.services.storage_service import (
+    FOLDER_MIME_TYPE,
     ProgressCallback,
     StorageError,
     StorageNotFoundError,
@@ -39,8 +40,6 @@ from app.services.upload_concurrency import get_upload_limiter
 from app.services.upload_logging import log_event
 
 logger = logging.getLogger("gallery.storage.google_drive")
-
-FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 
 # Same upload endpoint upload()'s MediaIoBaseUpload talks to under the
 # hood - called directly here (raw HTTP, not through the discovery client)
@@ -830,6 +829,59 @@ class GoogleDriveStorage(StorageService):
             size=int(result.get("size", 0) or 0),
             mime_type=result.get("mimeType", ""),
         )
+
+    def list_folder_contents(self, folder_id: str) -> list[StoredFile]:
+        """
+        Every immediate child of `folder_id`, paged fully - Drive caps a
+        single files().list() response, so a naive single call would
+        silently truncate the listing of any folder big enough to matter
+        (which is exactly the failure mode that would leave a stale file
+        behind and make this cleanup look like it "worked" while missing
+        half the folder).
+        """
+
+        def _fetch_page(page_token: str | None) -> dict:
+            return (
+                self._service.files()
+                .list(
+                    q=f"'{folder_id}' in parents and trashed = false",
+                    fields="nextPageToken, files(id,name,size,mimeType)",
+                    pageSize=1000,
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                    corpora="allDrives",
+                )
+                .execute()
+            )
+
+        results: list[StoredFile] = []
+        page_token: str | None = None
+        # Drive's nextPageToken is only ever a non-empty string when another
+        # page exists, and terminates by returning None - so `is not None`
+        # alone would spin one extra time on the empty final page. Checking
+        # the string itself is the cheaper, more obvious loop condition.
+        while True:
+            try:
+                page = self._retry(lambda: _fetch_page(page_token))
+            except HttpError as exc:
+                raise _translate_http_error(exc) from exc
+            except RefreshError as exc:
+                raise StorageError(f"Google Drive authentication failed: {exc}") from exc
+
+            for entry in page.get("files", []) or []:
+                results.append(
+                    StoredFile(
+                        provider_file_id=entry["id"],
+                        name=entry.get("name", ""),
+                        size=int(entry.get("size", 0) or 0),
+                        mime_type=entry.get("mimeType", ""),
+                    )
+                )
+
+            page_token = page.get("nextPageToken")
+            if not page_token:
+                return results
 
     def move_file(
         self,

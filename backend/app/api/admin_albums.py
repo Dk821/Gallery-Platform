@@ -11,7 +11,7 @@ from app.schemas.pagination import build_page
 from app.services.album_service import (
     create_album,
     delete_album,
-    get_album_media_count,
+    get_album_media_stats,
     get_album_or_404,
     list_albums_for_admin,
     update_album,
@@ -64,8 +64,7 @@ def get_album_route(
     admin: Admin = Depends(get_current_admin),
 ):
     album = get_album_or_404(db, album_id)
-    media_count = get_album_media_count(db, album_id)
-    return {"success": True, "data": album_to_response(album, media_count)}
+    return {"success": True, "data": album_to_response(album, **get_album_media_stats(db, album.id))}
 
 
 @router.get("/{album_id}/media")

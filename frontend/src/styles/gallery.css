@@ -231,6 +231,21 @@
   margin: 0 0 0.35rem;
 }
 
+.wedding-landing__totals {
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  letter-spacing: 0.18em;
+  font-weight: 500;
+  text-transform: uppercase;
+  color: #6b5f52;
+  margin: 0 0 0.4rem;
+}
+
+.wedding-landing__totals-divider {
+  margin: 0 0.5rem;
+  color: #a2937f;
+}
+
 .wedding-landing__prompt {
   font-family: var(--font-display);
   font-style: italic;
@@ -1707,6 +1722,12 @@
     font-size: 0.65rem;
     letter-spacing: 0.18em;
     margin-bottom: 0.2rem;
+  }
+
+  .wedding-landing__totals {
+    font-size: 0.68rem;
+    letter-spacing: 0.14em;
+    margin-bottom: 0.25rem;
   }
 
   .wedding-landing__prompt {

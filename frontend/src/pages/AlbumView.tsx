@@ -305,6 +305,9 @@ export default function AlbumView() {
           expires_at: null,
           created_at: "2026-02-14T10:00:00Z",
           media_count: 260,
+          photo_count: 242,
+          video_count: 18,
+          total_bytes: 1480000000,
         });
         setItems(DEMO_MEDIA_ITEMS);
         setTotalAlbumBytes(1480000000);
@@ -397,12 +400,26 @@ export default function AlbumView() {
     return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   });
 
-  // Photo & video breakdown
+  // Photo & video breakdown.
+  //
+  // These describe the ALBUM, so they must come from the server's aggregate
+  // (GalleryAlbum.photo_count / video_count, computed in SQL by
+  // media_aggregates) - exactly what the admin album list and the client
+  // gallery cards already read.
+  //
+  // The page-derived fallbacks below are ONLY correct for the demo path, and
+  // they used to be preferred for real albums, which made this view disagree
+  // with the admin view of the same album: `items` is just the pages loaded
+  // so far (PAGE_SIZE to begin with, more only via loadMore), so
+  // `media_count - videoCount` subtracted one page's worth of videos from the
+  // album's true total, and `videoCount` on its own reported only the loaded
+  // page - the two didn't even sum to media_count. Applying a search made it
+  // drift again, since it narrows `items` to the matches.
   const photoCount = items.filter((i) => i.file_type === "photo").length;
   const videoCount = items.filter((i) => i.file_type === "video").length;
 
-  const totalPhotos = album && album.media_count > items.length ? album.media_count - videoCount : photoCount;
-  const totalVideos = videoCount;
+  const totalPhotos = album?.photo_count ?? photoCount;
+  const totalVideos = album?.video_count ?? videoCount;
 
   const selectedBytes =
     selectAllBytesOverride ?? items.filter((i) => selectedIds.has(i.id)).reduce((sum, i) => sum + i.file_size, 0);

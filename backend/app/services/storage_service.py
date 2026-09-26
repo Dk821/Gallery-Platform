@@ -15,6 +15,13 @@ from typing import BinaryIO, Callable, Iterator
 # bytes_uploaded >= total_bytes until the upload has actually finished.
 ProgressCallback = Callable[[int, int], None]
 
+# Every provider that models folders the way Drive does (Google Drive, and
+# every cloud object store's console-facing equivalent) labels one with a
+# distinct mime type. It lives here, on the seam, rather than on the Drive
+# implementation so a test double or a second provider can name a folder
+# without importing a provider SDK - see storage_service's module docstring.
+FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+
 
 @dataclass
 class StoredFile:
@@ -169,6 +176,22 @@ class StorageService(ABC):
     @abstractmethod
     def get_file(self, provider_file_id: str) -> StoredFile:
         """Fetches metadata for a single file."""
+
+    @abstractmethod
+    def list_folder_contents(self, folder_id: str) -> list[StoredFile]:
+        """
+        Lists the immediate non-trashed children of a folder, files and
+        sub-folders alike. Implementations must page through the whole
+        listing rather than returning the provider's first page, and must
+        exclude anything in the trash - a trashed child is already gone as
+        far as this app is concerned.
+
+        Only used by the legacy-imagery-folder cleanup ops pass (see
+        app/services/thumbnail_folder_migration.py) to locate a file whose
+        id this database no longer records. It is deliberately NOT on the
+        request-serving hot path: the gallery resolves a thumbnail by the id
+        on the Media row, so it never needs to enumerate a folder.
+        """
 
     @abstractmethod
     def move_file(
