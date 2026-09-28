@@ -12,4 +12,4 @@ Disallow: /.git/*
 Disallow: /.env*
 
 # Sitemap location
-Sitemap: https://lovestory.madgen.space/sitemap.xml
+Sitemap: http://lovestoryphotography.in/sitemap.xml

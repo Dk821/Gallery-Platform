@@ -8,7 +8,7 @@ A private gallery platform for wedding photographers to manage clients, albums, 
 
 | Layer | Technology |
 |---|---|
-| Frontend | React 18, TypeScript, Vite 5, React Router 6 |
+| Frontend | React 18, TypeScript, Vite 8, React Router 7 |
 | Backend | Python 3.12, FastAPI 0.115, Uvicorn |
 | Database | MySQL 8 (via SQLAlchemy 2 + PyMySQL) |
 | Migrations | Alembic |
@@ -55,7 +55,7 @@ final v2/
 │   │   ├── api/              # Route handlers (admin, client, auth, media streaming)
 │   │   ├── config/           # pydantic-settings (.env loader)
 │   │   ├── database/         # SQLAlchemy engine, session, Base
-│   │   ├── models/           # 11 ORM models
+│   │   ├── models/           # 11 ORM models + shared mixins
 │   │   ├── schemas/          # Pydantic request/response models
 │   │   ├── security/         # Password hashing, sessions, encryption
 │   │   ├── services/         # Business logic layer (storage, direct upload, validation, etc.)
@@ -63,7 +63,8 @@ final v2/
 │   │   ├── main.py           # App factory, lifespan, middleware
 │   │   ├── create_admin.py   # First admin bootstrap
 │   │   ├── reconcile_orphans.py      # Cron: Drive orphan cleanup
-│   │   └── cleanup_download_jobs.py  # Cron: expired ZIP cleanup
+│   │   ├── cleanup_download_jobs.py  # Cron: expired ZIP cleanup
+│   │   └── migrate_thumbnail_folders.py  # Ops: "Cover Images" -> "Thumbnails" rename
 │   ├── scripts/              # check_env.py, generate_drive_refresh_token.py
 │   ├── alembic/              # Database migrations
 │   ├── tests/                # pytest test files + conftest/fakes
@@ -73,12 +74,18 @@ final v2/
 │   ├── src/
 │   │   ├── components/       # Shared UI (AdminLayout, Sidebar, Lightbox, GlobalUploadBadge)
 │   │   ├── contexts/         # React Contexts (UploadContext - persistent background queue)
+│   │   ├── hooks/            # useWishlist (optimistic wishlist state)
 │   │   ├── pages/            # Admin + Client pages
 │   │   ├── services/         # Typed API client (auth, admin, gallery)
 │   │   ├── styles/           # Plain CSS (index.css, admin.css, gallery.css)
 │   │   ├── utils/            # format.ts, photoThumbnail.ts, videoPoster.ts
 │   │   ├── App.tsx           # Route definitions
 │   │   └── main.tsx          # Entry point
+│   ├── public/               # Copied verbatim to dist/ (ls-logo.png, favicon.svg,
+│   │   │                     #   images/, robots.txt, sitemap.xml)
+│   ├── index.html            # SPA entry (<head>, favicon -> /ls-logo.png, #root mount)
+│   ├── vite.config.ts        # React plugin + /api dev proxy
+│   ├── vercel.json           # SPA rewrite, /api proxy, security headers
 │   ├── .env.example          # Frontend config template
 │   └── package.json
 ├── ARCHITECTURE.md
@@ -218,7 +225,6 @@ Verifies DB connectivity, Drive token, writable ZIP temp dir, and FFmpeg availab
 | `ZIP_TEMP_DIR` | Temp directory for ZIP jobs | `/tmp/gallery_zip_jobs` |
 | `ZIP_JOB_TTL_HOURS` | ZIP download link TTL | `24` |
 | `UPLOAD_MAX_CONCURRENT` | Max simultaneous Drive uploads | `3` |
-| `COVER_UPLOAD_MAX_KB` | Max size of the browser-generated automatic cover image a single request may send | `4096` |
 | `ENVIRONMENT` | `development` or `production` | `development` |
 
 See `backend/.env.example` for the full list with descriptions. Note that for direct-to-Drive uploads, your frontend origin (e.g. `http://localhost:5173`) must be present in `CORS_ORIGINS` so the backend can authorize the browser's origin with Google Drive when opening resumable upload sessions.
@@ -253,25 +259,30 @@ cd backend
 pytest
 ```
 
-18 test files covering auth (including the optional gallery-password flow),
+21 test files covering auth (including the optional gallery-password flow),
 authorization & cross-client isolation, client search & selection summaries,
 admin/client/album management, album expiry, media management (search,
-pagination, metadata edits, move, delete), bulk operations, ZIP download jobs
-& analytics, upload hardening (idempotency, disk reservations, concurrency
-limits, stale-session recovery, orphan reconciliation), thumbnails & streaming
-(range requests, 416s, concurrency), the dashboard, storage integration (Drive
-folder provisioning, storage overview), Drive folder naming, direct resumable
-uploads, FFmpeg availability, the httplib2 cleanup-bug regression, and studio
-settings/security policy (incl. self-service admin password change).
+pagination, metadata edits, move, delete), bulk operations, gallery totals,
+ZIP download jobs & analytics, upload hardening (idempotency, disk reservations,
+concurrency limits, stale-session recovery, orphan reconciliation), thumbnails &
+streaming (range requests, 416s, concurrency), the server-side thumbnail
+fallback, the thumbnail-folder migration, the dashboard, storage integration
+(Drive folder provisioning, storage overview), Drive folder naming, direct
+resumable uploads, FFmpeg availability, the httplib2 cleanup-bug regression, and
+studio settings/security policy (incl. self-service admin password change).
 
 Tests use an in-memory SQLite database and `FakeStorageService` — no real Drive calls.
 
-> **Suite status:** a large part of the suite still drives the retired
+> **Suite status:** 174 pass, 107 fail (281 total). A large part of the suite still drives the retired
 > byte-relay `POST /api/admin/media/upload` route, which no longer exists in
-> the direct-to-Drive app, so those tests currently fail (~145 pass, ~107
-> fail). The original upload path under the current architecture is covered at
+> the direct-to-Drive app, so those tests currently fail. The original upload path under the current architecture is covered at
 > the storage layer (`test_drive_resumable_upload.py`) and the session/ledger
 > layer (`test_upload_hardening.py`).
+>
+> Caveat: the suite runs on SQLite, so it will happily compile SQL that MySQL 8
+> rejects. `count(...) FILTER (WHERE ...)` passes here and returns a 1064 in
+> production — which is why `media_aggregates.py` exists. A green run is not
+> proof a query works on the real database.
 
 ---
 
@@ -289,6 +300,21 @@ npm run build    # outputs to dist/
 ```
 
 Serve the frontend static files from the same origin as the backend (via reverse proxy like Nginx) or from a separate host (set `CROSS_SITE_FRONTEND=true` and `CORS_ORIGINS`).
+
+### Production origins
+
+| | Origin |
+|---|---|
+| Frontend | `http://lovestoryphotography.in` |
+| Backend | `https://api.madgen.space` |
+
+They are on different origins, so `CROSS_SITE_FRONTEND=true` and the backend's `CORS_ORIGINS` must contain the frontend origin — that same allowlist is what authorizes the browser's direct PUTs to Google Drive during upload.
+
+`vercel.json` hosts the frontend (SPA rewrite, `/api` proxy to the backend, security headers). The frontend domain also appears in `public/sitemap.xml` and `public/robots.txt`; update all three together when it changes. Serve it over `https://` — sitemap `<loc>` and `robots.txt` `Sitemap:` entries are conventionally `https`, and search engines flag `http://` there.
+
+### Branding
+
+`frontend/public/ls-logo.png` is the single studio logo. It is the favicon (`index.html`), the admin header avatar (`AdminDashboard.tsx`, replacing a hard-coded `L` initial), and the Home landing-page mark (`Home.tsx`) — referenced by absolute URL from `public/` rather than imported, so it isn't hashed or duplicated into the JS bundle.
 
 ---
 

@@ -10,7 +10,7 @@ A private gallery platform for wedding photographers to manage clients, albums, 
 
 | Layer | Technology |
 |---|---|
-| Frontend | React 18, TypeScript, Vite 5, React Router 6 |
+| Frontend | React 18, TypeScript, Vite 8, React Router 7 |
 | Backend | Python 3.12, FastAPI 0.115, Uvicorn |
 | Database | MySQL 8 (via SQLAlchemy 2 + PyMySQL) |
 | Migrations | Alembic |
@@ -34,27 +34,40 @@ final v2/
 │   │   │   ├── presenters.py
 │   │   │   ├── media_streaming.py
 │   │   │   ├── admin_*.py    # Admin endpoints (clients, albums, media, dashboard, activity, storage, downloads, settings)
-│   │   │   └── client_*.py   # Client endpoints (gallery + cover, download jobs, wishlist)
+│   │   │   └── client_*.py   # Client endpoints (gallery, download jobs, wishlist)
 │   │   ├── config/           # pydantic-settings (.env loader)
 │   │   ├── database/         # SQLAlchemy engine, session, Base
 │   │   ├── models/           # 11 ORM models + mixins
 │   │   ├── schemas/          # Pydantic request/response models (auth, client, album, media, download_job, studio_settings, errors, pagination)
 │   │   ├── security/         # Password hashing (Argon2), session tokens, reversible encryption (Fernet)
-│   │   ├── services/         # Business logic layer (circuit_breaker, storage_provider, folder_naming, retry, timeouts, upload_concurrency, upload_logging, media_validation, disk_service, cover_service, wishlist_service)
+│   │   ├── services/         # Business logic layer (circuit_breaker, storage_provider, storage_service, google_drive_service, folder_naming, retry, timeouts, upload_concurrency, upload_logging, media_validation, media_aggregates, disk_service, admin_service, client_service, album_service, media_service, download_job_service, download_analytics_service, storage_analytics_service, dashboard_service, activity_service, orphan_reconciliation, thumbnail_folder_migration, studio_settings_service, wishlist_service)
 │   │   ├── workers/          # Thumbnail generation (PIL + FFmpeg)
 │   │   ├── main.py           # App factory, lifespan, middleware, error envelope
 │   │   ├── create_admin.py   # First admin bootstrap (python -m app.create_admin)
 │   │   ├── reconcile_orphans.py      # Cron: dry-run/--apply Drive orphan cleanup
-│   │   └── cleanup_download_jobs.py  # Cron: expired ZIP cleanup
+│   │   ├── cleanup_download_jobs.py  # Cron: expired ZIP cleanup
+│   │   └── migrate_thumbnail_folders.py  # Ops: dry-run/--apply "Cover Images" → "Thumbnails" rename + orphan cover purge
 │   ├── scripts/              # check_env.py (env sanity gate), generate_drive_refresh_token.py
 │   ├── alembic/              # Database migrations
 │   ├── .env                  # Backend config (secrets - not committed)
 │   ├── .env.example          # Config template (committed)
-│   └── tests/                # 18 pytest test files + conftest/fakes
+│   └── tests/                # 21 pytest test files + conftest/fakes
 ├── frontend/
 │   ├── .env.example          # VITE_API_BASE_URL - only needed when frontend/backend
 │   │                         # are on different origins (mirrors CROSS_SITE_FRONTEND)
 │   ├── .env                  # Local override (not committed)
+│   ├── index.html            # SPA entry: <head> (title, description, favicon -> /ls-logo.png,
+│   │                         #   Google Fonts) + #root mount + the /src/main.tsx module script
+│   ├── vite.config.ts        # React plugin + /api dev proxy to VITE_API_URL
+│   ├── vercel.json           # Hosting config: SPA rewrite, /api proxy, security headers,
+│   │                         #   robots.txt/sitemap.xml content-type + cache headers
+│   ├── public/               # Copied verbatim to dist/ (never hashed, never bundled)
+│   │   ├── ls-logo.png       # The studio logo — favicon, admin avatar, and home mark
+│   │   ├── light-ls-logo.png # Light-background variant of the logo
+│   │   ├── favicon.svg       # Legacy heart-and-lens mark (superseded by ls-logo.png)
+│   │   ├── images/           # album-bg.webp, album-hero.webp (landing-page backdrops)
+│   │   ├── robots.txt        # Allows /, blocks /admin, /api, /.git, /.env*
+│   │   └── sitemap.xml       # Canonical public URLs (the site root + /gallery)
 │   └── src/
 │       ├── components/       # Shared UI (AdminLayout, Sidebar, Lightbox, Modals, GlobalUploadBadge, WishlistHeart)
 │       ├── contexts/         # React Contexts (UploadContext - global persistent upload queue)
@@ -140,7 +153,7 @@ include session token hashes and encrypted password blobs.
 | Table | Purpose |
 |---|---|
 | `admins` | Admin/staff users (email, Argon2 password hash, status) |
-| `clients` | Client accounts with `client_uuid` (public galleryId), Drive folder ID, encrypted password copies, and the automatic cover (`cover_drive_file_id` = the one `cover.webp`, `cover_folder_id` = its "Cover Images" Drive folder, shared with the client's video posters / photo thumbnails; both nullable - see *Automatic Client Cover*). `password_hash` is **nullable**: a `NULL` gallery password means the gallery has no password prompt (see *Client Auth*) |
+| `clients` | Client accounts with `client_uuid` (public galleryId), Drive folder ID, a random `folder_uid` folder-name suffix, encrypted password copies, and `thumbnail_folder_id` (the client's dedicated `Thumbnails` Drive folder - a sibling of the album folders, never inside one - holding every item thumbnail; nullable, created lazily, never exposed by any API). `password_hash` is **nullable**: a `NULL` gallery password means the gallery has no password prompt (see *Client Auth*) |
 | `albums` | Albums per client, with expiry (`expires_at`), Drive folder |
 | `media` | Photo/video records with Google Drive file IDs, metadata, type |
 | `sessions` | Client server-side sessions (SHA-256 hashed tokens, expiry, download password verification) |
@@ -170,7 +183,7 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 |---|---|
 | Clients | CRUD (gallery password optionally left blank → **passwordless** gallery), view passwords, change password, change/clear download password, disable/enable, regenerate gallery ID, client wishlist (`GET /{id}/wishlist?album_id=`, read-only) |
 | Albums | CRUD, filter by client, list media (`?wishlist=all\|wishlisted\|not_wishlisted`), selection summary (same filter), wishlist counts (`GET /{id}/media/wishlist-counts`) |
-| Media | Direct upload session (`POST /upload-session`), thumbnail upload (`POST /upload-session/{id}/thumbnail`), completion confirmation (`POST /upload-complete`), automatic cover (`POST /upload-session/{id}/cover`, only after completion), progress ping (`POST /upload-progress/{id}`), abandonment (`POST /upload-session/{id}/abandon`), status (`GET /upload-status/{id}`), recent session list (`GET /upload-sessions`), bulk delete/move, stream, download, thumbnail, orphans |
+| Media | Direct upload session (`POST /upload-session`), thumbnail upload (`POST /upload-session/{id}/thumbnail`), completion confirmation (`POST /upload-complete`), progress ping (`POST /upload-progress/{id}`), abandonment (`POST /upload-session/{id}/abandon`), status (`GET /upload-status/{id}`), recent session list (`GET /upload-sessions`), bulk delete/move, stream, download, thumbnail, orphans |
 | Dashboard | Stats summary |
 | Activity | Audit log feed |
 | Storage | Google Drive quota |
@@ -185,7 +198,7 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 ### Client (`/api/client/*`) — Cookie auth + galleryId scoping
 | Area | Endpoints |
 |---|---|
-| Gallery | Gallery info (incl. `has_cover`), the automatic cover (`GET /gallery/cover`), album listing, album detail |
+| Gallery | Gallery info (incl. aggregated photo/video/byte totals), album listing, album detail |
 | Media | List, detail (both carry `is_wishlisted`), stream, thumbnail, download |
 | Wishlist | `GET /wishlist` (paginated, optional `album_id`), `POST /wishlist/{media_id}`, `DELETE /wishlist/{media_id}` - both idempotent |
 | Downloads | ZIP job creation, password verification, file download |
@@ -228,8 +241,9 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 ### Upload Hardening (Direct-to-Drive Architecture)
 - **Direct-to-Drive transfers**: The browser transfers bytes directly to Google Drive via resumable session URLs (`adminService.uploadToDrive`). Large media payloads (up to 10 GB) never touch the application server's disk or relay through its network interface.
 - **CORS Origin forwarding**: During session creation (`POST /api/admin/media/upload-session`), the server validates the incoming browser `Origin` against `settings.effective_cors_origins` and forwards it to Google Drive's resumable session initiator, enabling Google Drive to issue standard CORS headers to subsequent browser PUTs.
-- **Client-Side WebP thumbnails**: Video poster frames (`videoPoster.ts`) and photo thumbnails (`photoThumbnail.ts`) are generated directly in the browser using HTML5 Canvas and WebP compression, then uploaded as small images to `POST /upload-session/{id}/thumbnail`. This eliminates heavy server-side video downloads and makes server-side FFmpeg optional. Both are stored in the client's shared `Cover Images` Drive folder (see *Automatic Client Cover*) - never inside an album folder.
-- **Automatic client cover**: when `POST /upload-session` reports `cover_needed` (client has no cover yet and the file is a still photo), the browser builds a ≤1600px WebP from the same local file (`extractPhotoCover` in `photoThumbnail.ts`) and sends it to `POST /upload-session/{id}/cover` **after** `/upload-complete` has succeeded - fire-and-forget, so a cover problem can never affect the upload. See *Automatic Client Cover* below and `Upload-Pipeline.md` §4.7.
+- **Client-Side WebP thumbnails**: Video poster frames (`videoPoster.ts`) and photo thumbnails (`photoThumbnail.ts`) are generated directly in the browser using HTML5 Canvas and WebP compression, then uploaded as small images to `POST /upload-session/{id}/thumbnail`. This eliminates heavy server-side video downloads and makes server-side FFmpeg optional. Both are stored in the client's dedicated `Thumbnails` Drive folder — a sibling of the album folders, never inside one (see *Album Covers*).
+- **One thumbnail folder per client**: `media_service._ensure_thumbnail_folder` lazily creates (or reuses, via `clients.thumbnail_folder_id`) a single `Thumbnails` folder per client, so every video poster and photo thumbnail of that client lives in exactly one place. Clients created before the rename still have their folder called `Cover Images` in Drive; `migrate_thumbnail_folders.py` renames it and purges the removed cover's leftover `cover.webp`.
+- **Portable aggregates**: `media_aggregates.py` builds the photo/video count and byte-total expressions as `SUM(CASE WHEN ...)` rather than `count(...) FILTER (WHERE ...)`, because MySQL 8 has no `FILTER` clause — the `FILTER` spelling compiles and passes on the SQLite test suite, then dies with a 1064 on the real database.
 - **Ranged-read signature validation**: Upon completion (`POST /api/admin/media/upload-complete`), the server verifies the file with Drive and reads only the initial header bytes (range 0..511 bytes) to perform magic-byte and ISO-BMFF box-walk checks (`app/services/media_validation.py`) without downloading the bulk file.
 - **Idempotency ledger (`upload_sessions`)**: Each upload uses a UUID-based `upload_id` decoupled from filename to prevent `VARCHAR(100)` column overflow. Duplicate submissions of completed uploads safely return the existing `Media` record without re-uploading.
 - **Global queue persistence**: `UploadContext.tsx` maintains upload state globally across admin routes. Transfer progress is visible anywhere via `GlobalUploadBadge.tsx`. Memory is guarded by `withReleasedFile()`, which clears `File` object handles from React state upon upload completion or cancellation.
@@ -239,14 +253,13 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 - **Circuit breaker** (`app/services/circuit_breaker.py`): Wraps transport calls to Google Drive. Trips after 3 consecutive transport/connectivity failures with a 20-second cooldown, protecting the backend thread pool during Google Drive service degradation.
 
 
-### Automatic Client Cover
-Every client gets exactly **one** cover image, generated automatically - there is deliberately no upload / change / replace / select / delete for it anywhere in the API or UI.
-- **Storage**: `Client folder / Cover Images / cover.webp` - a sibling of the album folders, never inside one. The original photo is never copied. The same `Cover Images` folder also holds every video poster and photo thumbnail of the client, so a client has exactly one imagery folder. The folder id and file id are recorded on the client (`cover_folder_id`, `cover_drive_file_id`); neither is ever returned by any API (only a `has_cover` boolean).
-- **Source rule**: the first eligible photo (jpg/jpeg/png/webp - not video, not GIF) to finish uploading while the client has no cover. Once set it is never replaced, so the gallery hero can't change under the client. Existing clients simply have `NULL` and get one on their next eligible upload (no backfill job; the landing page keeps its default backdrop meanwhile).
-- **Generated in the browser**, not on the VPS: the server never downloads the original, and only re-encodes the small blob it receives (`normalize_browser_cover`: WebP, ≤1600px, metadata stripped).
-- **Sent after `/upload-complete`**, so it is derived only from a stored, validated, committed photo, and a failed cover (logged, `COVER_STORAGE_FAILED`) can never fail or roll back an upload. The next eligible upload retries.
-- **Race-safe**: the cover slot and the folder are claimed with atomic compare-and-set `UPDATE ... WHERE col IS NULL`, so concurrent uploads of a new client can create only one cover and one folder; a loser deletes its own stray file. It is stored without an `upload_id`, so orphan reconciliation never mistakes it for an abandoned upload.
-- **Served by** `GET /api/client/gallery/cover`: no id in the request - the session cookie decides whose cover it is. The URL is identical for every client, so it is sent `Cache-Control: private, no-cache` with an `ETag` and `Vary: Cookie` (a repeat visit is a 304 answered from the database) rather than the long cache thumbnails use.
+### Album Covers
+There is no stored cover image anywhere in the system, and nothing to manage: no cover column, no cover upload route, no cover in any API response.
+
+- **Derived per album, at read time**: the gallery album grid fetches `GET /api/client/albums/{id}/media?page=1&limit=1` and uses the first item's `has_thumbnail` flag — if set, that item's thumbnail URL becomes the album cover; if not, the card falls back to one of the bundled gradient placeholders in `Gallery.tsx` (`DEFAULT_COVERS`).
+- **One request per album, deliberately**: photo/video counts and byte totals already ride on the album list (aggregated in SQL), so the first media page is the only extra fetch the grid makes — and it asks for a single item.
+- **Replacing a removed feature**: an earlier design gave each *client* one automatic cover, built by the browser from the first eligible photo and stored as `cover.webp` beside the album folders. It was removed (Alembic `a5c7e3b1d9f8`) along with the `cover_folder_id` / `cover_drive_file_id` columns, `cover_service.py`, and the `POST /upload-session/{id}/cover` + `GET /gallery/cover` endpoints. Album art now comes from the album's own first thumbnail, so there is no cover that can go stale or need reconciling.
+- **Legacy bytes**: `migrate_thumbnail_folders.py` (dry-run by default, `--apply` to write) renames each legacy `Cover Images` folder to `Thumbnails` — metadata-only, so the folder id and every thumbnail inside it are untouched — then deletes the orphaned `cover.webp`, which is unambiguously identifiable because item thumbnails are always named `thumb_{uuid}.webp`. A file by that name is still skipped if any `Media` row references it, and a folder missing from Drive has its now-dangling `thumbnail_folder_id` cleared so the next upload recreates it.
 
 ### Client Wishlist
 A client can heart any photo or video; the state is one row in `media_wishlists`.
@@ -263,6 +276,7 @@ A client can heart any photo or video; the state is one row in `media_wishlists`
 ### Routing
 
 ```
+/                            → Home: studio logo + the two ways in (client gallery link, studio sign-in)
 /admin/login              → Admin login (accepts ?redirect=<in-app-path>)
 /admin/dashboard          → Dashboard with area chart
 /admin/activity           → Audit log feed
@@ -281,6 +295,13 @@ A client can heart any photo or video; the state is one row in `media_wishlists`
 ```
 
 Behavioral notes on the entrance routes:
+- `/` is the public front door and needs no auth: it shows the studio mark (the `/ls-logo.png`
+  logo image plus the shared `.login-brand` wordmark — the same wordmark `AdminLogin`,
+  `ClientLogin` and `NotFound` reuse) and the only two ways into the app.
+  The client card takes the link the photographer sent - a full `.../gallery/<id>` URL, a
+  trailing `/view` or query, or a bare id - and navigates client-side to `/gallery/<id>`; it
+  is not a server redirect and is not an open redirect, since only `/[A-Za-z0-9_-]+/` is ever
+  appended to the in-app path.
 - `/gallery/:galleryId` probes `GET /api/client/gallery/access/{id}` while rendering the
   entrance backdrop; a gallery with no password logs the visitor straight in (empty-password
   login) and navigates to `/view`, one with a password shows the password card, and an
@@ -301,7 +322,7 @@ Behavioral notes on the entrance routes:
   on a different origin than the backend
 - `auth.ts` — Login/me/logout calls
 - `admin.ts` — All admin endpoints (incl. `getSettings`/`updateStudioProfile`/`updateSecurityPolicy`/`changeAdminPassword`)
-- `gallery.ts` — All client-facing endpoints (incl. `checkGalleryAccess` on `/client/gallery/access/{id}`, `coverUrl`, `listWishlist`/`addToWishlist`/`removeFromWishlist`)
+- `gallery.ts` — All client-facing endpoints (incl. `checkGalleryAccess` on `/client/gallery/access/{id}`, `thumbnailUrl`, `listWishlist`/`addToWishlist`/`removeFromWishlist`)
 
 ### Key Components
 - `AdminLayout` + `Sidebar` — Admin shell
@@ -310,6 +331,8 @@ Behavioral notes on the entrance routes:
 - `ClientLogin` — Probes gallery access first (`checkGalleryAccess`); opens passwordless galleries directly with a blank-password login, otherwise shows the password card (demo ids skip the probe)
 - `AdminLogin` — Sign-in card that honors the `?redirect=` return target written by the session-expired handler (open-redirect guarded), showing an "expired" note when returning that way
 - `NotFound` — The themed 404 page for unknown routes
+- `Home` — The unauthenticated landing page at `/`: the studio logo lockup (`/ls-logo.png` + `.login-brand`), a hero, and the two
+  portal cards (paste-a-gallery-link, and the studio sign-in)
 - `ClientNav` — Gallery navigation
 - `MediaLightbox` — Filmstrip + zoom + keyboard nav; optional `isWishlisted`/`onToggleWishlist` props add the heart (the admin lightbox passes neither)
 - `WishlistHeart` — The one heart button (tile overlay / list row / lightbox variants); `hooks/useWishlist.ts` owns the state: optimistic toggle with rollback, one in-flight request per photo, seeded from the server flags of freshly loaded pages
@@ -350,6 +373,19 @@ No task queue (by design — single-VPS, single-process). Background work uses F
 
 ## Deployment
 
+### Origins
+
+| | Origin | Notes |
+|---|---|---|
+| Frontend | `http://lovestoryphotography.in` | Static Vite build; `public/sitemap.xml` and `robots.txt` carry the same origin. Should move to `https://` once TLS terminates on the domain — sitemap `<loc>` and `robots.txt` `Sitemap:` are conventionally `https`, and search engines flag `http://` there |
+| Backend | `https://api.madgen.space` | Must be in the backend's `CORS_ORIGINS`, **and** the frontend origin must be too — the same allowlist (`settings.effective_cors_origins`) is what authorizes the browser's direct PUTs to Google Drive (see *CORS Origin forwarding*) |
+
+The two are on different origins, so `CROSS_SITE_FRONTEND=true` and the Secure/SameSite=None session cookies apply. `main.py`'s boot check warns when `CROSS_SITE_FRONTEND=true` while `ENVIRONMENT=development`, because browsers silently reject those cookies over plain HTTP.
+
+`vercel.json` hosts the frontend: `/:path*` → `/index.html` (SPA rewrite), `/api/:path*` → `https://api.madgen.space/api/:path*`, security headers on every response, and explicit `Content-Type` + `Cache-Control: public, max-age=86400` for `robots.txt` and `sitemap.xml`.
+
+### Steps
+
 - **Backend**: `uvicorn app.main:app` with Alembic migrations (`alembic upgrade head`)
 - **Frontend**: `npm run build` → static files served from same origin
 - **First admin**: `python -m app.create_admin` (password must be exactly 8 chars)
@@ -357,17 +393,32 @@ No task queue (by design — single-VPS, single-process). Background work uses F
   folder, writable `ZIP_TEMP_DIR`, ffmpeg on PATH; exits nonzero on any FAIL)
 - **Drive token refresh**: `python scripts/generate_drive_refresh_token.py` (re-runs the OAuth consent
   flow after `invalid_grant: Token has been expired or revoked`)
+- **Ops pass, once**: `python -m app.migrate_thumbnail_folders --apply` (renames legacy `Cover Images`
+  folders to `Thumbnails` and purges the removed cover — see *Album Covers*); dry-run first
 - **Cron jobs**: `python -m app.cleanup_download_jobs`, `python -m app.reconcile_orphans --apply`
 - **Dev proxy**: Vite proxies `/api` → `http://localhost:8000`
+
+### Branding
+
+`frontend/public/ls-logo.png` is the single studio logo, referenced from three places and inlined
+rather than imported so Vite serves it from `public/` unhashed:
+
+| Where | How |
+|---|---|
+| Favicon / apple-touch-icon | `index.html` `<link rel="icon" | "alternate icon" | "apple-touch-icon">` all point at `/ls-logo.png` (`type="image/png"`). The older `favicon.svg` heart-and-lens mark is still in `public/` but no longer referenced by anything |
+| Admin header chip | `AdminDashboard.tsx` `.admin-profile-avatar` renders `<img src="/ls-logo.png">` (circular via `border-radius: 50%` + `overflow: hidden` on a 28px box), in place of the old hard-coded `L` initial |
+| Home landing page | `Home.tsx` `.home-mark` renders the same file at 72×72 above the `.login-brand` wordmark |
+
+`public/light-ls-logo.png` is a light-background variant, present but not yet referenced by any view.
 
 ---
 
 ## Testing
 
-- 18 pytest test files in `backend/tests/` (+ shared `conftest.py` / `fakes.py`)
+- 21 pytest test files in `backend/tests/` (+ shared `conftest.py` / `fakes.py`)
 - SQLite in-memory database + `FakeStorageService` (no real Drive calls)
-- Coverage: auth (incl. the optional gallery-password flow and cookie security attributes), authorization & cross-client isolation, client search & selection summaries, admin/client/album management, album expiry, media management (search, pagination, metadata edits, move, delete), bulk ops, ZIP download jobs & analytics, upload hardening (idempotency, disk reservation, concurrency limits, stale-session recovery, orphan reconciliation), thumbnails & streaming (range requests, 416s, concurrency), dashboard, storage integration (Drive folder provisioning, storage overview), Drive folder naming, direct resumable uploads, FFmpeg availability, httplib2 cleanup-bug regression, studio settings/security policy (incl. self-service admin password change)
-- Note: many older tests still drive the retired byte-relay `POST /api/admin/media/upload` route and fail against the current direct-to-Drive app (≈107 of 252 fail; the 145 that pass are the driver-suite + storage/session-layer coverage). The current upload path is exercised at the storage layer (`test_drive_resumable_upload.py`) and the session/ledger layer (`test_upload_hardening.py`), not as an end-to-end HTTP upload
+- Coverage: auth (incl. the optional gallery-password flow and cookie security attributes), authorization & cross-client isolation, client search & selection summaries, admin/client/album management, album expiry, media management (search, pagination, metadata edits, move, delete), bulk ops, gallery totals, ZIP download jobs & analytics, upload hardening (idempotency, disk reservation, concurrency limits, stale-session recovery, orphan reconciliation), thumbnails & streaming (range requests, 416s, concurrency), the server-side thumbnail fallback, the thumbnail-folder migration, dashboard, storage integration (Drive folder provisioning, storage overview), Drive folder naming, direct resumable uploads, FFmpeg availability, httplib2 cleanup-bug regression, studio settings/security policy (incl. self-service admin password change)
+- Suite status: **174 pass, 107 fail** (281 total). The failures are older tests that still drive the retired byte-relay `POST /api/admin/media/upload` route, which no longer exists in the direct-to-Drive app — a notable trap, because the SQLite-backed suite happily compiles queries (`count(...) FILTER (WHERE ...)`) that MySQL 8 rejects, so a green run is not proof a query works on the real database. The current upload path is exercised at the storage layer (`test_drive_resumable_upload.py`) and the session/ledger layer (`test_upload_hardening.py`), not as an end-to-end HTTP upload
 - No frontend tests
 
 ---
@@ -391,10 +442,16 @@ No task queue (by design — single-VPS, single-process). Background work uses F
 10. **Client-side WebP thumbnail generation** — Generating video poster frames and photo thumbnails
     in the browser via HTML5 Canvas and WebP compression avoids expensive server-side video re-downloads
     and renders server-side FFmpeg optional (retained only for backfill tooling)
-11. **Automatic cover, not a managed one** — One cover per client, made by the same browser pipeline as
-    thumbnails and attached only after the upload it came from is committed. Keeping it out of the
-    upload ledger, out of every album, and out of any management UI means there is nothing to
-    reconcile, replace or expose
+11. **No stored cover image** — Album art is the album's own first thumbnail, resolved at read
+    time, and a client with no cover-eligible photo just falls back to a bundled placeholder. The
+    earlier per-client automatic cover was removed outright: a second, parallel set of cover
+    bytes meant a second storage location, a second claim/compare-and-set race, two more columns,
+    two more endpoints, and a migration to reclaim the leftovers — all to produce an image that a
+    thumbnail already provided. Deriving it removes the whole surface, and nothing is left to
+    reconcile, replace, or go stale
 12. **Wishlist as a plain relationship** — Favourites are rows, not files: no Drive copies, no second
     gallery. Ownership is re-derived server-side from the session on every write
+13. **Logo served from `public/`, not bundled** — `ls-logo.png` is referenced by absolute URL from
+    `index.html` and two views, so one file is the favicon, the admin avatar and the home mark
+    without a build hash and without duplicating the binary into the JS bundle
 

@@ -1,4 +1,5 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Route, Routes } from "react-router-dom";
+import Home from "./pages/Home";
 import AdminLogin from "./pages/AdminLogin";
 import AdminDashboard from "./pages/AdminDashboard";
 import Activity from "./pages/Activity";
@@ -28,7 +29,10 @@ export default function App() {
     // close still ends any in-flight direct-to-Drive transfer).
     <UploadProvider>
       <Routes>
-        <Route path="/" element={<Navigate to="/admin/login" replace />} />
+        {/* The front door, and the only route a visitor lands on: it offers
+            the two ways in (a client gallery link, or the studio sign-in)
+            instead of guessing one of them for them. */}
+        <Route path="/" element={<Home />} />
 
         <Route path="/admin/login" element={<AdminLogin />} />
         <Route path="/admin/dashboard" element={<AdminDashboard />} />
