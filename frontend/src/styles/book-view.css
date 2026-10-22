@@ -452,6 +452,13 @@
   visibility: hidden;
 }
 
+/* Reveal the left page from the spine outward in sync with the hardcover.
+   Without this clip, the whole page appears while the case is still partly
+   closed and sticks out past the board during the opening animation. */
+.book-cover[data-phase="opening"] .book-page--left {
+  clip-path: inset(0 0 0 calc(100% * (1 - var(--reveal))));
+}
+
 /* The open-album lean: the whole book tips back (rotateX) inside the
    perspective above. */
 .flipbook {
