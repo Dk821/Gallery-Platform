@@ -283,7 +283,9 @@ export default function BookView() {
   const bookRef = useRef<HTMLDivElement>(null);
   const flipLock = useRef(false);
   const touchStartX = useRef<number | null>(null);
-  const preloadedIds = useRef<Set<number>>(new Set());
+  // Keep the actual load/decode promise, so a turn can wait for the exact
+  // target image instead of merely assuming that a preload has finished.
+  const imageReady = useRef<Map<number, Promise<void>>>(new Map());
 
   // ---- Phone view state ---------------------------------------------------
   const shellRef = useRef<HTMLDivElement>(null);
@@ -486,11 +488,17 @@ export default function BookView() {
       .filter((i) => i >= 0 && i < items.length)
       .forEach((i) => {
         const item = items[i];
-        if (!item || preloadedIds.current.has(item.id)) return;
-        preloadedIds.current.add(item.id);
+        if (!item || imageReady.current.has(item.id)) return;
         const img = new Image();
         // Videos turn as their poster, so that is what needs to be warm.
         img.src = item.file_type === "photo" ? galleryService.viewUrl(item.id) : galleryService.thumbnailUrl(item.id);
+        const ready = typeof img.decode === "function"
+          ? img.decode().then(() => undefined, () => undefined)
+          : new Promise<void>((resolve) => {
+              img.onload = () => resolve();
+              img.onerror = () => resolve();
+            });
+        imageReady.current.set(item.id, ready);
       });
   }, [currentIndex, items]);
 
@@ -587,11 +595,27 @@ export default function BookView() {
   }, [phase]);
 
   // ---- Flip mechanics ----------------------------------------------------
-  const startFlip = useCallback((direction: FlipDirection, to: number) => {
+  const startFlip = useCallback(async (direction: FlipDirection, to: number) => {
     if (flipLock.current) return;
     flipLock.current = true;
+    const item = items[to];
+    if (item) {
+      let ready = imageReady.current.get(item.id);
+      if (!ready) {
+        const img = new Image();
+        img.src = item.file_type === "photo" ? galleryService.viewUrl(item.id) : galleryService.thumbnailUrl(item.id);
+        ready = typeof img.decode === "function"
+          ? img.decode().then(() => undefined, () => undefined)
+          : new Promise<void>((resolve) => {
+              img.onload = () => resolve();
+              img.onerror = () => resolve();
+            });
+        imageReady.current.set(item.id, ready);
+      }
+      await ready;
+    }
     setFlip({ direction, to });
-  }, []);
+  }, [items]);
 
   const goNext = useCallback(() => {
     if (phase === "closed") {
