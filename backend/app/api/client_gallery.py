@@ -15,6 +15,7 @@ from app.services.album_service import (
     get_album_media_stats,
     list_albums_for_client,
 )
+from app.services.comment_service import get_album_comment_count
 from app.services.media_service import (
     get_client_media_totals,
     get_media_for_client_or_403,
@@ -96,7 +97,15 @@ def get_album(
     # This 403-on-mismatch check is the load-bearing line for the platform's
     # core promise: "Client A cannot access Client B's album."
     album = get_album_for_client_or_403(db, album_id, client.id)
-    return {"success": True, "data": album_to_response(album, **get_album_media_stats(db, album.id))}
+    return {
+        "success": True,
+        "data": album_to_response(
+            album,
+            **get_album_media_stats(db, album.id),
+            # Only the client's OWN notes are counted for a client.
+            comment_count=get_album_comment_count(db, album.id, client.id),
+        ),
+    }
 
 
 @router.get("/media")

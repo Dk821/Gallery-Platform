@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Enum, ForeignKey, String, Text
+from sqlalchemy import BigInteger, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.connection import Base
@@ -48,5 +48,12 @@ class Media(Base, IdMixin, TimestampMixin):
         default="processing",
         nullable=False,
     )
+
+    # The studio's manual order for this item inside its album: 1-based,
+    # contiguous after a reorder, and the order the Book View and the client's
+    # gallery read in. Uploads and items moved in from another album append
+    # at the end; ties (concurrent uploads) fall back to id, so the result is
+    # always deterministic.
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     album: Mapped["Album"] = relationship(back_populates="media_items")

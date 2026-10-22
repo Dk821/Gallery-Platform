@@ -1,5 +1,6 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { authService } from "../services/auth";
+import PoweredBy from "./PoweredBy";
 
 interface NavItem {
   id: string;
@@ -263,6 +264,9 @@ export default function Sidebar({ open, onNavigate }: SidebarProps) {
           </svg>
           <span>Logout</span>
         </button>
+        <div className="admin-sidebar__powered">
+          <PoweredBy />
+        </div>
       </div>
     </aside>
   );

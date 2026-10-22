@@ -47,6 +47,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.api.admin_albums import router as admin_albums_router
 from app.api.admin_activity import router as admin_activity_router
 from app.api.admin_clients import router as admin_clients_router
+from app.api.admin_comments import router as admin_comments_router
 from app.api.admin_dashboard import router as admin_dashboard_router
 from app.api.admin_download_jobs import router as admin_download_jobs_router
 from app.api.admin_downloads import router as admin_downloads_router
@@ -54,6 +55,7 @@ from app.api.admin_media import router as admin_media_router
 from app.api.admin_settings import router as admin_settings_router
 from app.api.admin_storage import router as admin_storage_router
 from app.api.auth import router as auth_router
+from app.api.client_comments import router as client_comments_router
 from app.api.client_download_jobs import router as client_download_jobs_router
 from app.api.client_gallery import router as client_gallery_router
 from app.api.client_wishlist import router as client_wishlist_router
@@ -275,6 +277,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 app.include_router(auth_router)
 app.include_router(admin_clients_router)
 app.include_router(admin_albums_router)
+app.include_router(admin_comments_router)
 app.include_router(admin_dashboard_router)
 app.include_router(admin_activity_router)
 app.include_router(admin_media_router)
@@ -283,6 +286,7 @@ app.include_router(admin_settings_router)
 app.include_router(admin_download_jobs_router)
 app.include_router(admin_downloads_router)
 app.include_router(client_gallery_router)
+app.include_router(client_comments_router)
 app.include_router(client_download_jobs_router)
 app.include_router(client_wishlist_router)
 # app.include_router(client_media_router)  # <-- uncomment once confirmed/added

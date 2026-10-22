@@ -1,5 +1,6 @@
 import { CSSProperties, FormEvent, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import PoweredBy from "../components/PoweredBy";
 
 type FloatStyle = CSSProperties & Record<`--${string}`, string | number>;
 
@@ -157,9 +158,7 @@ export default function Home() {
         </section>
 
         <footer className="home-footer">
-          <span>Love Story Photography</span>
-          <span className="home-footer__dot" aria-hidden="true" />
-          <span>Private galleries, delivered with care</span>
+          <PoweredBy />
         </footer>
       </main>
     </div>

@@ -6,6 +6,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session as DbSession
 
 from app.models.album import Album
+from app.models.album_comment import AlbumComment
 from app.models.media import Media
 from app.schemas.album import AlbumCreateRequest, AlbumUpdateRequest
 from app.schemas.errors import ApiError, forbidden, not_found
@@ -166,13 +167,28 @@ def list_albums_for_admin(db: DbSession, client_id: int | None, page: int, limit
         .subquery()
     )
 
+    # The same trick for the client page notes: one grouped pass over
+    # album_comments for the whole page of albums, so the album list can
+    # badge the albums that have feedback on them without a count per album.
+    comment_stats = (
+        db.query(
+            AlbumComment.album_id,
+            func.count(AlbumComment.id).label("cnt"),
+        )
+        .group_by(AlbumComment.album_id)
+        .subquery()
+    )
+
     query = db.query(
         Album,
         func.coalesce(media_stats.c.cnt, 0).label("media_count"),
         func.coalesce(media_stats.c.photo_cnt, 0).label("photo_count"),
         func.coalesce(media_stats.c.video_cnt, 0).label("video_count"),
         func.coalesce(media_stats.c.total_bytes, 0).label("total_bytes"),
-    ).outerjoin(media_stats, media_stats.c.album_id == Album.id)
+        func.coalesce(comment_stats.c.cnt, 0).label("comment_count"),
+    ).outerjoin(media_stats, media_stats.c.album_id == Album.id).outerjoin(
+        comment_stats, comment_stats.c.album_id == Album.id
+    )
     if client_id is not None:
         query = query.filter(Album.client_id == client_id)
     query = query.order_by(Album.created_at.desc())
@@ -181,7 +197,7 @@ def list_albums_for_admin(db: DbSession, client_id: int | None, page: int, limit
     rows = query.offset((page - 1) * limit).limit(limit).all()
 
     items = []
-    for album, media_count, photo_count, video_count, total_bytes in rows:
+    for album, media_count, photo_count, video_count, total_bytes, comment_count in rows:
         items.append(
             {
                 "id": album.id,
@@ -196,6 +212,9 @@ def list_albums_for_admin(db: DbSession, client_id: int | None, page: int, limit
                 "photo_count": photo_count,
                 "video_count": video_count,
                 "total_bytes": total_bytes,
+                "book_view_enabled": album.book_view_enabled,
+                "book_layout": album.book_layout,
+                "comment_count": comment_count,
             }
         )
     return items, total, page, limit
@@ -222,6 +241,10 @@ def update_album(
     # in the request body rather than treating None as "don't touch."
     if "expires_at" in payload.model_fields_set:
         album.expires_at = payload.expires_at
+    if payload.book_view_enabled is not None:
+        album.book_view_enabled = payload.book_view_enabled
+    if payload.book_layout is not None:
+        album.book_layout = payload.book_layout
 
     # Keep the Drive folder's readable name in sync with the album name.
     # Only the readable portion changes - folder_uid (and drive_folder_id,

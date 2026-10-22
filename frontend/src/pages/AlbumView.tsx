@@ -55,6 +55,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     status: "ready",
     created_at: "2026-02-14T10:15:00Z",
     is_wishlisted: false,
+    sort_order: 0,
   },
   {
     id: 102,
@@ -70,6 +71,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     status: "ready",
     created_at: "2026-02-14T10:20:00Z",
     is_wishlisted: false,
+    sort_order: 0,
   },
   {
     id: 103,
@@ -85,6 +87,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     status: "ready",
     created_at: "2026-02-14T10:25:00Z",
     is_wishlisted: false,
+    sort_order: 0,
   },
   {
     id: 104,
@@ -100,6 +103,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     status: "ready",
     created_at: "2026-02-14T10:30:00Z",
     is_wishlisted: false,
+    sort_order: 0,
   },
   {
     id: 105,
@@ -115,6 +119,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     status: "ready",
     created_at: "2026-02-14T10:35:00Z",
     is_wishlisted: false,
+    sort_order: 0,
   },
   {
     id: 106,
@@ -130,6 +135,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     status: "ready",
     created_at: "2026-02-14T10:40:00Z",
     is_wishlisted: false,
+    sort_order: 0,
   },
   {
     id: 107,
@@ -145,6 +151,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     status: "ready",
     created_at: "2026-02-14T10:45:00Z",
     is_wishlisted: false,
+    sort_order: 0,
   },
   {
     id: 108,
@@ -160,6 +167,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     status: "ready",
     created_at: "2026-02-14T10:50:00Z",
     is_wishlisted: false,
+    sort_order: 0,
   },
   {
     id: 109,
@@ -175,6 +183,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     status: "ready",
     created_at: "2026-02-14T10:55:00Z",
     is_wishlisted: false,
+    sort_order: 0,
   },
   {
     id: 110,
@@ -190,6 +199,7 @@ const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
     status: "ready",
     created_at: "2026-02-14T11:00:00Z",
     is_wishlisted: false,
+    sort_order: 0,
   },
 ];
 
@@ -233,7 +243,7 @@ export default function AlbumView() {
 
   // Filter & Sort & Layout state (Reference Image 1)
   const [mediaFilter, setMediaFilter] = useState<"all" | "photo" | "video">("all");
-  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "name">("newest");
+  const [sortBy, setSortBy] = useState<"book" | "newest" | "oldest" | "name">("book");
   const [layoutMode, setLayoutMode] = useState<"grid" | "list">("grid");
   const [totalAlbumBytes, setTotalAlbumBytes] = useState<number>(0);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
@@ -308,6 +318,9 @@ export default function AlbumView() {
           photo_count: 242,
           video_count: 18,
           total_bytes: 1480000000,
+          // On in the demo path so the "Open as Book" entry point can be
+          // previewed without an admin having to switch it on first.
+          book_view_enabled: true,
         });
         setItems(DEMO_MEDIA_ITEMS);
         setTotalAlbumBytes(1480000000);
@@ -396,6 +409,11 @@ export default function AlbumView() {
     }
     if (sortBy === "name") {
       return a.file_name.localeCompare(b.file_name);
+    }
+    if (sortBy === "book") {
+      // The studio's order, the same one the Book View reads. id only breaks
+      // ties left by uploads that raced for the same sort_order.
+      return a.sort_order - b.sort_order || a.id - b.id;
     }
     return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   });
@@ -540,6 +558,25 @@ export default function AlbumView() {
           </div>
 
           <div className="album-stat-bar__right" ref={moreMenuRef}>
+            {/* Book View - only offered when the studio switched it on for
+                this album. The flag comes from the same getAlbum response
+                BookView.tsx re-checks on entry, so the button and the page
+                can never disagree about whether the book is available. */}
+            {album?.book_view_enabled && (
+              <button
+                type="button"
+                className="album-book-view-btn"
+                onClick={() => navigate(`/gallery/${galleryId}/view/${albumId}/book`)}
+                aria-label={`Open ${album.album_name} as a book`}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+                  <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+                </svg>
+                <span>Open as Book</span>
+              </button>
+            )}
+
             {/* Download Album Button */}
             <button
               type="button"
@@ -714,10 +751,11 @@ export default function AlbumView() {
               <span>Sort by</span>
               <select
                 value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as "newest" | "oldest" | "name")}
+                onChange={(e) => setSortBy(e.target.value as "book" | "newest" | "oldest" | "name")}
                 className="gallery-sort-select"
                 aria-label="Sort media items"
               >
+                <option value="book">Book Order</option>
                 <option value="newest">Newest First</option>
                 <option value="oldest">Oldest First</option>
                 <option value="name">Name (A - Z)</option>

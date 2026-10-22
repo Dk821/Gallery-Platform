@@ -20,6 +20,10 @@ class MediaResponse(BaseModel):
     has_thumbnail: bool
     status: str
     created_at: datetime.datetime
+    # The studio's 1-based position of this item inside its album. Both the
+    # Book View and the client's "Book order" gallery sort read this, so a
+    # reorder in the admin media page is what the client sees next time.
+    sort_order: int = 0
     # Whether the OWNING client has wishlisted this item. Filled in by the
     # list/detail routes from one batched lookup per page (never a query per
     # item - see wishlist_service.get_wishlisted_media_ids). Defaults to False
@@ -55,6 +59,17 @@ class MediaUpdateRequest(BaseModel):
 
 class MediaMoveRequest(BaseModel):
     target_album_id: int
+
+
+class MediaOrderRequest(BaseModel):
+    """
+    The album's complete new book order: every media id in the album, exactly
+    once, in the order it should be read. A partial list is rejected rather
+    than treated as "move these to the front" - the admin UI always has the
+    full list on screen, so a missing/extra id means stale data.
+    """
+
+    media_ids: list[int] = Field(default_factory=list)
 
 
 class BulkDeleteRequest(BaseModel):

@@ -1,5 +1,6 @@
 from app.models.admin import Admin
 from app.models.album import Album
+from app.models.album_comment import AlbumComment
 from app.models.audit_log import AuditLog
 from app.models.client import Client
 from app.models.download_job import DownloadJob
@@ -14,6 +15,7 @@ __all__ = [
     "Admin",
     "Client",
     "Album",
+    "AlbumComment",
     "Media",
     "MediaWishlist",
     "ClientSession",

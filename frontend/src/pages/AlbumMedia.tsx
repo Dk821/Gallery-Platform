@@ -14,6 +14,7 @@ import MenuIcon from "../components/MenuIcon";
 import Modal from "../components/Modal";
 import DownloadJobModal from "../components/DownloadJobModal";
 import MediaLightbox from "../components/MediaLightbox";
+import MediaOrderModal from "../components/MediaOrderModal";
 import { AlbumItem, adminService, MediaItem, WishlistCounts, WishlistFilter } from "../services/admin";
 import { formatBytes, getExpiryInfo } from "../utils/format";
 
@@ -52,6 +53,7 @@ type ModalState =
   | { kind: "confirm-delete"; media: MediaItem }
   | { kind: "bulk-move" }
   | { kind: "bulk-confirm-delete" }
+  | { kind: "reorder" }
   | null;
 
 export default function AlbumMedia() {
@@ -349,6 +351,15 @@ export default function AlbumMedia() {
               Clear selection
             </button>
           )}
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setModal({ kind: "reorder" })}
+            disabled={!album}
+            title="Drag photos into the order they should appear in the book"
+          >
+            Reorder book
+          </button>
           {!search && wishlistFilter === "all" && (
             <button type="button" className="btn-secondary album-media-toolbar__zip-btn" onClick={() => setDownloadJobRequest("all")}>
               <span className="album-media-toolbar__zip-label-long">Download Album as ZIP</span>
@@ -665,6 +676,19 @@ export default function AlbumMedia() {
           title={`Move ${selectedCount} items`}
           onClose={() => setModal(null)}
           onConfirm={handleBulkMove}
+        />
+      )}
+
+      {modal?.kind === "reorder" && album && (
+        <MediaOrderModal
+          albumId={albumIdNum}
+          albumName={album.album_name}
+          onClose={() => setModal(null)}
+          onSaved={() => {
+            setModal(null);
+            loadAlbumAndMedia(search, wishlistFilter);
+            showToast("Book order saved.");
+          }}
         />
       )}
 

@@ -1,6 +1,7 @@
 import { CSSProperties, FormEvent, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { authService } from "../services/auth";
+import PoweredBy from "../components/PoweredBy";
 
 type FloatStyle = CSSProperties & Record<`--${string}`, string | number>;
 
@@ -133,6 +134,10 @@ export default function AdminLogin() {
           {loading ? "Signing in..." : "Sign in"}
         </button>
       </form>
+
+      <div className="login-powered-wrap">
+        <PoweredBy />
+      </div>
     </div>
   );
 }

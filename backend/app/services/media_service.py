@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from app.config.settings import Settings, get_settings
 from app.models.album import Album
+from app.models.album_comment import AlbumComment
 from app.models.client import Client
 from app.models.media import Media
 from app.models.media_wishlist import MediaWishlist
@@ -60,6 +61,18 @@ def get_media_or_404(db: DbSession, media_id: int) -> Media:
     return media
 
 
+def next_media_sort_order(db: DbSession, album_id: int) -> int:
+    """
+    The slot a brand-new item takes at the end of an album's book order.
+    MAX+1 rather than COUNT+1 so deletions leave gaps instead of silently
+    reusing a position an existing photo still occupies. Two uploads racing
+    for the same value is fine: ordering falls back to id, and the next
+    explicit reorder rewrites the album contiguously.
+    """
+    current = db.query(func.max(Media.sort_order)).filter(Media.album_id == album_id).scalar()
+    return int(current or 0) + 1
+
+
 def list_media_for_client(
     db: DbSession, client_id: int, album_id: int | None, page: int, limit: int, search: str | None = None
 ):
@@ -80,7 +93,13 @@ def list_media_for_client(
         # against stored metadata - never opens/downloads a file just to
         # check its name.
         query = query.filter(Media.file_name.ilike(f"%{search.strip()}%"))
-    query = query.order_by(Media.created_at.desc())
+    if album_id is not None:
+        # Inside one album the studio's book order is the order clients see.
+        query = query.order_by(Media.sort_order.asc(), Media.id.asc())
+    else:
+        # A cross-album search has no single book order; newest-first stays
+        # the useful default for "Find My Photos".
+        query = query.order_by(Media.created_at.desc(), Media.id.desc())
 
     total = query.count()
     rows = query.offset((page - 1) * limit).limit(limit).all()
@@ -172,7 +191,10 @@ def list_media_for_album_admin(
         # just Postgres-native ILIKE.
         query = query.filter(Media.file_name.ilike(f"%{search.strip()}%"))
     query = apply_wishlist_filter(query, wishlist_filter)
-    query = query.order_by(Media.created_at.desc())
+    # The admin grid shows the same order the client reads in the book, so
+    # "page 3" here means the same photo as page 3 of the Book View (and of
+    # the page notes popup).
+    query = query.order_by(Media.sort_order.asc(), Media.id.asc())
 
     total = query.count()
     rows = query.offset((page - 1) * limit).limit(limit).all()
@@ -217,6 +239,71 @@ def update_media_metadata(db: DbSession, media: Media, payload: MediaUpdateReque
     return media
 
 
+def reorder_album_media(db: DbSession, album_id: int, media_ids: list[int]) -> list[Media]:
+    """
+    Rewrites an album's book order in one go.
+
+    The request must name EVERY media item in the album exactly once - a
+    partial list would silently leave untouched items interleaved in
+    positions the admin never saw, so it is rejected instead.
+
+    Page notes store a page number, not a media id, so they are renumbered
+    too: each note keeps following the photo it was written about. The
+    unique constraint (client_id, album_id, page_number) means a swapped
+    note can temporarily collide with the note it is swapping with, hence
+    the two-phase negative-then-final update.
+    """
+    rows = db.query(Media).filter(Media.album_id == album_id).all()
+    by_id = {m.id: m for m in rows}
+
+    if len(media_ids) != len(set(media_ids)) or set(media_ids) != set(by_id):
+        raise bad_request(
+            "The new order must list every media item in this album exactly once.",
+            code="MEDIA_ORDER_INVALID",
+        )
+
+    ordered = [by_id[media_id] for media_id in media_ids]
+    page_by_media = {media.id: position for position, media in enumerate(ordered, start=1)}
+    for position, media in enumerate(ordered, start=1):
+        media.sort_order = position
+
+    _renumber_page_notes(db, album_id, page_by_media)
+
+    db.commit()
+    for media in ordered:
+        db.refresh(media)
+    return ordered
+
+
+def _renumber_page_notes(db: DbSession, album_id: int, page_by_media: dict[int, int]) -> None:
+    """
+    Keeps every page note attached to its photo after a reorder. Notes whose
+    photo has been deleted (media_id NULL) or moved to another album have no
+    position in the new order, so they keep their stored page number.
+    """
+    notes = db.query(AlbumComment).filter(AlbumComment.album_id == album_id).all()
+    if not notes:
+        return
+
+    original_pages = {note.id: note.page_number for note in notes}
+    for note in notes:
+        note.page_number = -note.page_number
+    db.flush()
+
+    # Only reachable for malformed rows (two notes from one client ending up
+    # about the same photo); parking the extra one past the end keeps the
+    # unique constraint happy without dropping feedback.
+    overflow = max([len(page_by_media), *original_pages.values()], default=0)
+    used: set[tuple[int, int]] = set()
+    for note in notes:
+        target = page_by_media.get(note.media_id, original_pages[note.id])
+        if (note.client_id, target) in used:
+            overflow += 1
+            target = overflow
+        note.page_number = target
+        used.add((note.client_id, target))
+
+
 def move_media_to_album(db: DbSession, storage: StorageService, media: Media, target_album: Album) -> Media:
     """
     Reassigns a media item to a different album belonging to the SAME
@@ -255,7 +342,12 @@ def move_media_to_album(db: DbSession, storage: StorageService, media: Media, ta
         raise ApiError(502, "STORAGE_MOVE_FAILED", "Could not move the file in storage. Please retry.")
 
     previous_album_id = media.album_id
+    # Land at the end of the target album's book order, not wherever its old
+    # position happened to be. Computed before reassigning album_id so its old
+    # slot can't be mistaken for an existing target position.
+    next_sort_order = next_media_sort_order(db, target_album.id)
     media.album_id = target_album.id
+    media.sort_order = next_sort_order
     try:
         db.commit()
         db.refresh(media)
@@ -1180,6 +1272,7 @@ def complete_direct_upload(
             google_drive_file_id=drive_file_id,
             thumbnail_reference=thumbnail_file_id,
             thumbnail_mime_type="image/webp" if thumbnail_file_id else None,
+            sort_order=next_media_sort_order(db, album.id),
             status="ready",
         )
         db.add(media)

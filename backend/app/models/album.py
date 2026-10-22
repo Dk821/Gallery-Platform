@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.connection import Base
@@ -37,6 +37,17 @@ class Album(Base, IdMixin, TimestampMixin):
     folder_uid: Mapped[str] = mapped_column(
         String(20), nullable=False, unique=True, default=generate_folder_uid
     )
+
+    # Per-album opt-in for the client-facing "Book View" (a page-turning
+    # digital photo book presentation of this album's media). Off by
+    # default for every existing and newly created album - an admin must
+    # explicitly switch it on per album. Purely a presentation toggle, not
+    # a security boundary: it does not change which media a client can
+    # access, only whether the book UI is offered/reachable for it.
+    book_view_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Book layout determines aspect ratio of book spreads (portrait/landscape/square)
+    book_layout: Mapped[str] = mapped_column(String(20), nullable=False, default="landscape")
 
     client: Mapped["Client"] = relationship(back_populates="albums")
     media_items: Mapped[list["Media"]] = relationship(

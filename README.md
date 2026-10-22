@@ -72,7 +72,8 @@ final v2/
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── components/       # Shared UI (AdminLayout, Sidebar, Lightbox, GlobalUploadBadge)
+│   │   ├── components/       # Shared UI (AdminLayout, Sidebar, Lightbox, GlobalUploadBadge,
+│   │   │                     #   PoweredBy credit line, RequireAdmin route guard)
 │   │   ├── contexts/         # React Contexts (UploadContext - persistent background queue)
 │   │   ├── hooks/            # useWishlist (optimistic wishlist state)
 │   │   ├── pages/            # Admin + Client pages
@@ -88,6 +89,7 @@ final v2/
 │   ├── vercel.json           # SPA rewrite, /api proxy, security headers
 │   ├── .env.example          # Frontend config template
 │   └── package.json
+├── model book view/         # Reference prototype of the Book View page-turn animation
 ├── ARCHITECTURE.md
 ├── Upload-Pipeline.md
 └── README.md
@@ -185,6 +187,15 @@ python -m app.create_admin
 ```
 Password must be exactly 8 characters.
 
+### Admin Route Protection
+
+Every `/admin/*` page except `/admin/login` is wrapped by a `RequireAdmin` route
+guard, which calls `GET /auth/me` first and only renders the page once the server
+confirms an admin session — otherwise it redirects to
+`/admin/login?redirect=<the page you wanted>`. This closes the gap where a
+client-side navigation (e.g. the 404 page's "Back to dashboard" button) could
+mount an admin page before its own API calls 401'd.
+
 ### Client Gallery Passwords (optional)
 
 Gallery passwords are optional. Creating a client with the gallery password
@@ -203,6 +214,88 @@ IS NULL` is the passwordless state.
 python scripts/check_env.py
 ```
 Verifies DB connectivity, Drive token, writable ZIP temp dir, and FFmpeg availability. Exits nonzero on any failure.
+
+---
+
+## Book View (page-turning photo book)
+
+A per-album, client-facing presentation mode: instead of the normal photo grid,
+the album opens as a 3D book with an animated page turn. Reachable at
+
+```
+/gallery/:galleryId/view/:albumId/book
+```
+
+**Turning it on (admin):** Edit Album → **Book View** toggle, plus an **Album
+layout** choice (`square`, `portrait`, `landscape`) that sets the aspect ratio
+of the spread. Both save with the normal "Save changes" button
+(`PUT /api/admin/albums/{id}`), and both ride on every album response
+(`book_view_enabled`, `book_layout`). Once on, the client sees an **Open as
+Book** button on that album and can also reach the reader at the URL above.
+
+**Storage:** two columns on `albums` — `book_view_enabled` (boolean, default
+`false` for every existing and new album) and `book_layout` (string, default
+`landscape`). Applied with:
+
+```bash
+alembic upgrade head
+```
+
+**Behaviour:**
+
+- Off by default — the studio must opt an album in; when off, the client only
+  ever sees the normal grid, and the `/book` route redirects back to the album.
+- Presentation only: it is not a security boundary. Book View calls the exact
+  same client endpoints (`GET /api/client/albums/{id}`,
+  `GET /api/client/media?album_id=`) the grid uses, so album ownership,
+  expiry, and every other access check apply unchanged.
+- One photo = one spread (left half on the left page, right half on the right
+  page); videos turn as their poster and play in an overlay across the spread.
+- Autoplay (5s per page, pausable), arrow keys / swipe / click zones, a page
+  scrubber, and preloading of the next/previous few pages.
+- Reads in the studio's saved book order (`media.sort_order`, id as tie-break);
+  the client gallery defaults to the same "Book Order" sort, with Newest /
+  Oldest / Name still available per visit.
+- Honours `prefers-reduced-motion` (the book starts open, turns are instant).
+- Loads the whole album up to a hard cap of 2000 items.
+
+The page-turn animation prototype lives in `model book view/`.
+
+### Book order (drag & drop)
+
+The studio controls the page order from **Album media → Reorder book**. The
+modal (`MediaOrderModal.tsx`) loads the whole album, reorders it by drag & drop
+(up/down buttons for touch and keyboard), and saves the complete list with
+
+```
+PUT /api/admin/albums/{id}/media/order
+```
+
+Every album's media carries a 1-based `sort_order`; uploads and moves append at
+the end. The same order drives the admin grid, the client gallery's default
+"Book Order" sort, and Book View. The request must list every item exactly once
+or it is rejected with `MEDIA_ORDER_INVALID`, and page notes are renumbered
+alongside their photo so feedback stays on the right page. Applied with
+`alembic upgrade head` (migration `d3a7c9e1b5f6`).
+
+### Page notes (client feedback)
+
+While reading in Book View, the client can leave one note on the page in front
+of them: a note button sits in the toolbar (a dot marks pages that already have
+one), and saving closes the sheet and turns to the next page.
+
+- **Client:** only the note's own author and the studio can see it. Notes are
+  tied to the signed-in client, the album, and a 1-based page number; a note is
+  at most 2000 characters and editing it reopens it for review.
+- **Admin:** the Albums list shows a note count per album. Open it (the small
+  note button, or the ⋯ menu → **Page notes**) to see notes grouped by page with
+  a thumbnail, filter by Open/Resolved, correct the text, mark resolved or
+  reopen, and delete. Reviews keep working after an album expires.
+- **Storage:** one `album_comments` table, with
+  `UNIQUE(client_id, album_id, page_number)` so re-saving a page edits the same
+  note. Deleting a photo leaves its note (without a thumbnail); deleting the
+  album or client removes the notes. Applied with `alembic upgrade head`
+  (migration `9b3f82e6a7c4`).
 
 ---
 
@@ -259,7 +352,7 @@ cd backend
 pytest
 ```
 
-21 test files covering auth (including the optional gallery-password flow),
+22 test files covering auth (including the optional gallery-password flow),
 authorization & cross-client isolation, client search & selection summaries,
 admin/client/album management, album expiry, media management (search,
 pagination, metadata edits, move, delete), bulk operations, gallery totals,
@@ -268,12 +361,16 @@ concurrency limits, stale-session recovery, orphan reconciliation), thumbnails &
 streaming (range requests, 416s, concurrency), the server-side thumbnail
 fallback, the thumbnail-folder migration, the dashboard, storage integration
 (Drive folder provisioning, storage overview), Drive folder naming, direct
-resumable uploads, FFmpeg availability, the httplib2 cleanup-bug regression, and
-studio settings/security policy (incl. self-service admin password change).
+resumable uploads, FFmpeg availability, the httplib2 cleanup-bug regression,
+studio settings/security policy (incl. self-service admin password change),
+page notes (`test_comments.py`: upsert, cross-client isolation, validation,
+expiry, admin review, album counts), and book order (`test_media_order.py`:
+reorder, client-side ordering, complete-list validation, note renumbering,?
+move-to-end, admin-only access).
 
 Tests use an in-memory SQLite database and `FakeStorageService` — no real Drive calls.
 
-> **Suite status:** 174 pass, 107 fail (281 total). A large part of the suite still drives the retired
+> **Suite status:** 192 pass, 107 fail (299 total). A large part of the suite still drives the retired
 > byte-relay `POST /api/admin/media/upload` route, which no longer exists in
 > the direct-to-Drive app, so those tests currently fail. The original upload path under the current architecture is covered at
 > the storage layer (`test_drive_resumable_upload.py`) and the session/ledger
@@ -315,6 +412,9 @@ They are on different origins, so `CROSS_SITE_FRONTEND=true` and the backend's `
 ### Branding
 
 `frontend/public/ls-logo.png` is the single studio logo. It is the favicon (`index.html`), the admin header avatar (`AdminDashboard.tsx`, replacing a hard-coded `L` initial), and the Home landing-page mark (`Home.tsx`) — referenced by absolute URL from `public/` rather than imported, so it isn't hashed or duplicated into the JS bundle.
+
+The shared `PoweredBy` component renders the `Powered by madgen` credit line (with the build's
+version and date) on the Home footer, both login cards, and the base of the admin sidebar.
 
 ---
 

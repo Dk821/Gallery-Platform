@@ -49,6 +49,10 @@ export interface MediaItem {
   has_thumbnail: boolean;
   status: string;
   created_at: string;
+  // The studio's 1-based position inside the album. The client gallery's
+  // "Book order" sort and the Book View both read this, so a drag-and-drop
+  // reorder in the admin media page is what clients see next.
+  sort_order: number;
   // Whether the album's client has wishlisted (hearted) this item. Comes back
   // with every media list/detail response, so the UI never needs a request
   // per photo to draw its heart.
@@ -56,6 +60,28 @@ export interface MediaItem {
 }
 
 export type DownloadJobStatus = "queued" | "preparing" | "processing" | "completed" | "failed" | "expired" | "cancelled";
+
+// Mirrors the backend's AlbumCommentResponse exactly (app/schemas/comment.py)
+// - a client's page note in the Book View. Shared by the client Book View and
+// the admin's per-album comments modal, since both sides are served by the
+// same album_comment_to_response() presenter.
+export interface AlbumComment {
+  id: number;
+  album_id: number;
+  client_id: number;
+  // The item the note is about. Null when that photo has since been
+  // deleted - the note survives, it just loses its picture.
+  media_id: number | null;
+  // 1-based page (spread) number in the book's front-to-back order.
+  page_number: number;
+  comment: string;
+  status: "open" | "resolved";
+  media_file_name: string | null;
+  media_file_type: string | null;
+  has_thumbnail: boolean;
+  created_at: string;
+  updated_at: string;
+}
 
 // Mirrors the backend's DownloadJobResponse exactly - shared by both the
 // admin and client ZIP-download UIs since they're served by the same
@@ -191,7 +217,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path, { method: "GET" }),
+  // GET responses here are per-user and can change at any moment (a media
+  // file renamed, a note resolved). "no-store" stops the browser - or any
+  // proxy in front of the API - from answering a later call with a stored
+  // copy, which is what makes an admin panel show yesterday's name.
+  get: <T>(path: string) => request<T>(path, { method: "GET", cache: "no-store" }),
   post: <T>(path: string, payload?: unknown) =>
     request<T>(path, { method: "POST", body: payload ? JSON.stringify(payload) : undefined }),
   // multipart/form-data upload (currently: the browser-generated video

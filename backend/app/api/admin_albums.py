@@ -7,6 +7,7 @@ from app.models.admin import Admin
 from app.models.audit_log import AuditLog
 from app.api.presenters import album_to_response, media_to_response
 from app.schemas.album import AlbumCreateRequest, AlbumResponse, AlbumUpdateRequest
+from app.schemas.media import MediaOrderRequest
 from app.schemas.pagination import build_page
 from app.services.album_service import (
     create_album,
@@ -16,7 +17,12 @@ from app.services.album_service import (
     list_albums_for_admin,
     update_album,
 )
-from app.services.media_service import get_album_media_selection_summary, list_media_for_album_admin
+from app.services.comment_service import get_album_comment_count
+from app.services.media_service import (
+    get_album_media_selection_summary,
+    list_media_for_album_admin,
+    reorder_album_media,
+)
 from app.services.storage_provider import get_storage_service
 from app.services.storage_service import StorageService
 from app.services.wishlist_service import (
@@ -64,7 +70,14 @@ def get_album_route(
     admin: Admin = Depends(get_current_admin),
 ):
     album = get_album_or_404(db, album_id)
-    return {"success": True, "data": album_to_response(album, **get_album_media_stats(db, album.id))}
+    return {
+        "success": True,
+        "data": album_to_response(
+            album,
+            **get_album_media_stats(db, album.id),
+            comment_count=get_album_comment_count(db, album.id),
+        ),
+    }
 
 
 @router.get("/{album_id}/media")
@@ -89,6 +102,24 @@ def list_album_media_route(
     wishlisted = get_wishlisted_media_ids(db, album.client_id, [m.id for m in rows])
     items = [media_to_response(m, is_wishlisted=m.id in wishlisted) for m in rows]
     return {"success": True, "data": build_page(items, page, limit, total)}
+
+
+@router.put("/{album_id}/media/order")
+def reorder_album_media_route(
+    album_id: int,
+    payload: MediaOrderRequest,
+    request: Request,
+    db: DbSession = Depends(get_db),
+    admin: Admin = Depends(get_current_admin),
+):
+    """
+    Saves the studio's drag-and-drop book order for one album. The body is
+    the complete ordered list of media ids; page notes follow their photo.
+    """
+    album = get_album_or_404(db, album_id)
+    reorder_album_media(db, album.id, payload.media_ids)
+    _log(db, admin.id, "media_reordered", album.id, request)
+    return {"success": True, "data": None}
 
 
 @router.get("/{album_id}/media/selection-summary")

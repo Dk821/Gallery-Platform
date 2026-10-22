@@ -1,4 +1,4 @@
-import { api, API_BASE_URL, DownloadJob, MediaItem, Page } from "./api";
+import { AlbumComment, api, API_BASE_URL, DownloadJob, MediaItem, Page } from "./api";
 
 export interface ClientListItem {
   id: number;
@@ -112,12 +112,19 @@ export interface AlbumItem {
   photo_count: number;
   video_count: number;
   total_bytes: number;
+  // Per-album admin toggle for the client-facing page-turning Book View.
+  book_view_enabled: boolean;
+  book_layout?: 'square' | 'portrait' | 'landscape';
+  // How many client page notes exist on this album (open + resolved).
+  // Counted in the database - one grouped query for the whole page of
+  // albums, never a count per album.
+  comment_count?: number;
 }
 
-// Re-exported so existing call sites (e.g. Uploads.tsx) that import
-// MediaItem from "./admin" keep working unchanged - the actual definition
-// lives in api.ts, shared with gallery.ts.
-export type { MediaItem };
+// Re-exported so existing call sites that import shared types from
+// "./admin" keep working unchanged - the actual definition lives in
+// api.ts, shared with gallery.ts.
+export type { MediaItem, AlbumComment };
 
 export interface MediaUpdatePayload {
   file_name?: string;
@@ -225,13 +232,33 @@ export const adminService = {
   // expiresAt: pass an ISO string to set/change it, null to clear it, or
   // omit the key entirely (don't include expiresAt in the call) to leave
   // it untouched - matches the three-state PATCH semantics the backend
-  // expects (see AlbumUpdateRequest).
+  // expects (see AlbumUpdateRequest). book_view_enabled: omit to leave it
+  // untouched, or pass true/false to switch the client-facing page-turning
+  // Book View on or off for this album.
   updateAlbum: (
     albumId: number,
-    updates: { album_name?: string; description?: string; expires_at?: string | null }
+    updates: {
+      album_name?: string;
+      description?: string;
+      expires_at?: string | null;
+      book_view_enabled?: boolean;
+      book_layout?: 'square' | 'portrait' | 'landscape';
+    }
   ) => api.put<AlbumItem>(`/admin/albums/${albumId}`, updates),
 
   removeAlbum: (albumId: number) => api.delete<null>(`/admin/albums/${albumId}`),
+
+  // --- Album page notes (client feedback on the Book View) ---
+  // Every client note on this album, in book order, with the photo each
+  // note is about so the studio can see the page the client was looking at.
+  listAlbumComments: (albumId: number) => api.get<AlbumComment[]>(`/admin/albums/${albumId}/comments`),
+
+  // Resolve / reopen a note, and optionally correct its text. Both fields
+  // are optional - omit one to leave it untouched.
+  updateAlbumComment: (commentId: number, payload: { status?: "open" | "resolved"; comment?: string }) =>
+    api.patch<AlbumComment>(`/admin/comments/${commentId}`, payload),
+
+  removeAlbumComment: (commentId: number) => api.delete<null>(`/admin/comments/${commentId}`),
 
   // --- Album media management (admin) ---
 
@@ -276,6 +303,12 @@ export const adminService = {
 
   updateMedia: (mediaId: number, payload: MediaUpdatePayload) =>
     api.patch<MediaItem>(`/admin/media/${mediaId}`, payload),
+
+  // Saves the album's complete book order (drag & drop). Every media id in
+  // the album must be present exactly once; the backend also renumbers the
+  // album's page notes so each note follows its photo.
+  reorderAlbumMedia: (albumId: number, mediaIds: number[]) =>
+    api.put<null>(`/admin/albums/${albumId}/media/order`, { media_ids: mediaIds }),
 
   moveMedia: (mediaId: number, targetAlbumId: number) =>
     api.post<MediaItem>(`/admin/media/${mediaId}/move`, { target_album_id: targetAlbumId }),

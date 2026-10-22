@@ -1,9 +1,11 @@
 from app.models.album import Album
+from app.models.album_comment import AlbumComment
 from app.models.client import Client
 from app.models.download_job import DownloadJob
 from app.models.media import Media
 from app.models.upload_session import UploadSession
 from app.schemas.album import AlbumResponse
+from app.schemas.comment import AlbumCommentResponse
 from app.schemas.download_job import DownloadJobResponse
 from app.schemas.media import (
     DirectUploadSessionResponse,
@@ -19,6 +21,7 @@ def album_to_response(
     photo_count: int = 0,
     video_count: int = 0,
     total_bytes: int = 0,
+    comment_count: int = 0,
 ) -> AlbumResponse:
     return AlbumResponse(
         id=album.id,
@@ -33,6 +36,9 @@ def album_to_response(
         photo_count=photo_count,
         video_count=video_count,
         total_bytes=total_bytes,
+        book_view_enabled=album.book_view_enabled,
+        book_layout=album.book_layout,
+        comment_count=comment_count,
     )
 
 
@@ -50,7 +56,33 @@ def media_to_response(media: Media, is_wishlisted: bool = False) -> MediaRespons
         has_thumbnail=bool(media.thumbnail_reference),
         status=media.status,
         created_at=media.created_at,
+        sort_order=media.sort_order,
         is_wishlisted=is_wishlisted,
+    )
+
+
+def album_comment_to_response(
+    comment: AlbumComment, media: Media | None = None
+) -> AlbumCommentResponse:
+    """
+    One page note. `media` is the item the note is about (None when that
+    photo has been deleted - the note survives, it just loses its picture).
+    Only a boolean says whether a thumbnail exists; the raw provider file id
+    is never sent to a client.
+    """
+    return AlbumCommentResponse(
+        id=comment.id,
+        album_id=comment.album_id,
+        client_id=comment.client_id,
+        media_id=comment.media_id,
+        page_number=comment.page_number,
+        comment=comment.comment,
+        status=comment.status,
+        media_file_name=media.file_name if media is not None else None,
+        media_file_type=media.file_type if media is not None else None,
+        has_thumbnail=bool(media is not None and media.thumbnail_reference),
+        created_at=comment.created_at,
+        updated_at=comment.updated_at,
     )
 
 
@@ -94,7 +126,7 @@ def upload_session_to_response(session: UploadSession) -> UploadStatusResponse:
 
 
 def upload_session_start_response(
-    session: UploadSession, upload_url: str | None
+    session: UploadSession, upload_url: str | None, cover_needed: bool = False
 ) -> DirectUploadSessionResponse:
     """
     upload_url is passed in separately rather than read off the session -
@@ -105,7 +137,7 @@ def upload_session_start_response(
     path, where there's nothing left to upload).
     """
     base = upload_session_to_response(session)
-    return DirectUploadSessionResponse(upload_url=upload_url, **base.model_dump())
+    return DirectUploadSessionResponse(upload_url=upload_url, cover_needed=cover_needed, **base.model_dump())
 
 
 def upload_session_list_item(

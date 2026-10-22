@@ -2,6 +2,7 @@ import { CSSProperties, FormEvent, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { authService } from "../services/auth";
 import { galleryService } from "../services/gallery";
+import PoweredBy from "../components/PoweredBy";
 
 type FloatStyle = CSSProperties & Record<`--${string}`, string | number>;
 
@@ -158,6 +159,10 @@ export default function ClientLogin() {
         </form>
 
         <p className="entrance-footer">Your photos are private and only visible with this password.</p>
+      </div>
+
+      <div className="login-powered-wrap">
+        <PoweredBy />
       </div>
     </div>
   );

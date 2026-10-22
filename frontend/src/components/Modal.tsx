@@ -5,9 +5,12 @@ interface ModalProps {
   description?: string;
   children: ReactNode;
   onClose: () => void;
+  // Extra class on .modal-card, for the few dialogs that need more width
+  // than the default form-sized card.
+  className?: string;
 }
 
-export default function Modal({ title, description, children, onClose }: ModalProps) {
+export default function Modal({ title, description, children, onClose, className }: ModalProps) {
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
@@ -18,7 +21,13 @@ export default function Modal({ title, description, children, onClose }: ModalPr
 
   return (
     <div className="modal-overlay" onClick={onClose} role="presentation">
-      <div className="modal-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={title}>
+      <div
+        className={`modal-card${className ? ` ${className}` : ""}`}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
         <h3>{title}</h3>
         {description && <p>{description}</p>}
         {children}

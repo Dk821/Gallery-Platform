@@ -27,6 +27,11 @@ class AlbumUpdateRequest(BaseModel):
     # with a plain Optional default, so callers use model_fields_set (see
     # album_service.update_album) to tell the two apart.
     expires_at: datetime.datetime | None = None
+    # Admin per-album toggle for the client-facing Book View. Two-state,
+    # not three: unlike expires_at there is no "clear" concept, so a plain
+    # Optional default (omit = don't touch) is enough.
+    book_view_enabled: bool | None = None
+    book_layout: str | None = None
 
 
 class AlbumResponse(BaseModel):
@@ -45,5 +50,13 @@ class AlbumResponse(BaseModel):
     photo_count: int = 0
     video_count: int = 0
     total_bytes: int = 0
+    # Whether the admin has switched on the client-facing Book View for this
+    # album. Presentation only - it never changes what a client may read.
+    book_view_enabled: bool = False
+    book_layout: str = "landscape"
+    # How many client page notes exist for this album. Only ever counted in
+    # the database (one grouped query for the whole page of albums), and on
+    # the client side it is the client's OWN notes - never another client's.
+    comment_count: int = 0
 
     model_config = {"from_attributes": True}

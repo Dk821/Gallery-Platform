@@ -12,6 +12,7 @@ import {
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import AdminLayout from "../components/AdminLayout";
+import AlbumCommentsModal from "../components/AlbumCommentsModal";
 import DownloadJobModal from "../components/DownloadJobModal";
 import MenuIcon from "../components/MenuIcon";
 import Modal from "../components/Modal";
@@ -40,6 +41,7 @@ export default function Albums() {
   const [editingAlbum, setEditingAlbum] = useState<AlbumItem | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<AlbumItem | null>(null);
   const [downloadJobAlbum, setDownloadJobAlbum] = useState<AlbumItem | null>(null);
+  const [commentsAlbum, setCommentsAlbum] = useState<AlbumItem | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   // Filters & View state
@@ -570,6 +572,21 @@ export default function Albums() {
                   <td>
                     <div className="row-actions" style={{ justifyContent: "flex-end" }}>
                       <button
+                        type="button"
+                        className={`album-notes-btn${a.comment_count ? " has-notes" : ""}`}
+                        onClick={() => setCommentsAlbum(a)}
+                        title={
+                          a.comment_count
+                            ? `${a.comment_count} page note${a.comment_count === 1 ? "" : "s"}`
+                            : "No page notes yet"
+                        }
+                        aria-label={`Page notes for ${a.album_name}`}
+                      >
+                        <MenuIcon name="message" size={15} />
+                        {!!a.comment_count && <span>{a.comment_count}</span>}
+                      </button>
+
+                      <button
                         className="btn-text"
                         style={{ fontSize: "0.82rem", color: "var(--accent)" }}
                         onClick={() => navigate(`/admin/albums/${a.id}`)}
@@ -649,7 +666,7 @@ export default function Albums() {
               </div>
 
               <div className="album-card__footer">
-                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "0.5rem", rowGap: "0.35rem" }}>
                   <span className="album-media-badge">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                       <rect x="3" y="3" width="18" height="18" rx="2" strokeWidth="2" />
@@ -658,6 +675,20 @@ export default function Albums() {
                     </svg>
                     {a.media_count} files
                   </span>
+                  <button
+                    type="button"
+                    className={`album-notes-btn album-notes-btn--card${a.comment_count ? " has-notes" : ""}`}
+                    onClick={() => setCommentsAlbum(a)}
+                    title={
+                      a.comment_count
+                        ? `${a.comment_count} page note${a.comment_count === 1 ? "" : "s"}`
+                        : "No page notes yet"
+                    }
+                    aria-label={`Page notes for ${a.album_name}`}
+                  >
+                    <MenuIcon name="message" size={14} />
+                    {a.comment_count ? <span>{a.comment_count}</span> : <span>Notes</span>}
+                  </button>
                   <span>{new Date(a.created_at).toLocaleDateString()}</span>
                 </div>
 
@@ -692,6 +723,18 @@ export default function Albums() {
               >
                 <MenuIcon name="image" />
                 View media files
+              </button>
+
+              <button
+                className="row-actions__item"
+                role="menuitem"
+                onClick={() => {
+                  closeMenu();
+                  setCommentsAlbum(activeAlbum);
+                }}
+              >
+                <MenuIcon name="message" />
+                Page notes{activeAlbum.comment_count ? ` (${activeAlbum.comment_count})` : ""}
               </button>
 
               <button
@@ -804,6 +847,17 @@ export default function Albums() {
           cancelJob={(jobId) => adminService.cancelDownloadJob(jobId)}
           fileUrl={adminService.downloadJobFileUrl}
           onClose={() => setDownloadJobAlbum(null)}
+        />
+      )}
+
+      {/* CLIENT PAGE NOTES */}
+      {commentsAlbum && (
+        <AlbumCommentsModal
+          album={commentsAlbum}
+          onClose={() => setCommentsAlbum(null)}
+          onCountChange={(count) =>
+            setAlbums((prev) => prev.map((a) => (a.id === commentsAlbum.id ? { ...a, comment_count: count } : a)))
+          }
         />
       )}
 
@@ -1026,6 +1080,8 @@ function EditAlbumModal({
   const [albumName, setAlbumName] = useState(album.album_name);
   const [description, setDescription] = useState(album.description ?? "");
   const [expiresAt, setExpiresAt] = useState(album.expires_at ? album.expires_at.slice(0, 10) : "");
+  const [bookViewEnabled, setBookViewEnabled] = useState(album.book_view_enabled);
+  const [bookLayout, setBookLayout] = useState<'square' | 'portrait' | 'landscape'>(album.book_layout ?? 'landscape');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -1045,6 +1101,11 @@ function EditAlbumModal({
         album_name: albumName.trim(),
         description: description.trim() || undefined,
         expires_at: expiryIso,
+        // Always sent: this is a plain two-state switch, and sending the
+        // key with an explicit false is how Book View gets turned OFF again
+        // (the backend treats an absent key as "leave untouched").
+        book_view_enabled: bookViewEnabled,
+        book_layout: bookLayout,
       });
       onUpdated();
     } catch (err) {
@@ -1112,6 +1173,57 @@ function EditAlbumModal({
             </button>
           )}
         </div>
+
+        {/* Book View - the per-album switch that decides whether this album
+            can be opened by the client as a page-turning book. Kept inside
+            the same dialog (rather than its own control elsewhere) so the
+            studio sets the name, the expiry and the presentation together,
+            and so it saves with the same single "Save changes". */}
+        <div className="album-book-view-control">
+          <div className="album-book-view-control__text">
+            <span className="album-book-view-control__label">Book View</span>
+            <span className="album-book-view-control__hint">
+              {bookViewEnabled
+                ? "Clients see an “Open as Book” button on this album."
+                : "Off — the client only sees the normal photo grid."}
+            </span>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={bookViewEnabled}
+            aria-label="Book View"
+            className={"toggle-switch" + (bookViewEnabled ? " toggle-switch--on" : "")}
+            disabled={submitting}
+            onClick={() => setBookViewEnabled((v) => !v)}
+          >
+            <span className="toggle-switch__thumb" />
+          </button>
+        </div>
+
+        {bookViewEnabled && (
+          <div className="album-layout-control">
+            <label htmlFor="album-layout-select" className="album-layout-control__label">
+              Album layout
+            </label>
+            <div className="album-layout-control__select-wrap">
+              <select
+                id="album-layout-select"
+                value={bookLayout}
+                onChange={(e) => setBookLayout(e.target.value as 'square' | 'portrait' | 'landscape')}
+                disabled={submitting}
+                className="album-layout-control__select"
+              >
+                <option value="square">Square</option>
+                <option value="portrait">Portrait</option>
+                <option value="landscape">Landscape</option>
+              </select>
+            </div>
+            <span className="album-layout-control__hint">
+              Choose book view aspect ratio based on the book size.
+            </span>
+          </div>
+        )}
 
         <div className="modal-actions">
           <button type="button" className="btn-secondary" onClick={onClose}>

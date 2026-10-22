@@ -1,0 +1,2045 @@
+/* ===========================================================================
+   Book View — page-turning digital photo book (client gallery)
+   Premium edition: leather hardcover, gold foil title, paper finish, moving
+   light on the turning page, floor shadow, glass control bar.
+
+   Depends on --font-ui (defined on :root by gallery.css) and the theme tokens
+   used by .album-book-view-btn (defined by .client-shell in gallery.css).
+   Fonts used (already loaded in index.html): Alex Brush, Cormorant Garamond,
+   Montserrat.
+   =========================================================================== */
+
+.book-shell {
+  --bg: #f9f7f4;
+  --bg-warm: #f5f1eb;
+  --panel: #ffffff;
+  --panel-raised: #f3eee7;
+  --hairline: #e6dfd5;
+  --hairline-dark: #d2c7b7;
+  --text: #211c18;
+  --text-muted: #6e6459;
+  --text-light: #9c9184;
+  --accent: #b4853b;
+  --accent-soft: rgba(180, 133, 59, 0.12);
+  --accent-text: #ffffff;
+  --btn-dark: #322b26;
+  --btn-dark-hover: #1e1916;
+
+  /* Book View palette */
+  --gold: #d6b06e;
+  --gold-deep: #b4853b;
+  --gold-light: #f6e3b8;
+  --ivory: #f3eee7;
+  --font-script: "Alex Brush", "Snell Roundhand", cursive;
+  --font-serif: "Cormorant Garamond", Georgia, serif;
+  --font-sans: "Montserrat", var(--font-ui), system-ui, sans-serif;
+
+  /* Fine paper grain and coarser leather grain (SVG noise, no image files). */
+  --grain: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .12 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --leather-grain: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.55' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* A softly lit room: warm spotlight above the book, dark vignette around. */
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 38%, rgba(214, 176, 110, 0.16) 0%, rgba(214, 176, 110, 0) 70%),
+    radial-gradient(ellipse 120% 90% at 50% 50%, rgba(0, 0, 0, 0) 45%, rgba(0, 0, 0, 0.55) 100%),
+    var(--grain),
+    linear-gradient(180deg, #2b2420 0%, #17120f 100%);
+  color: var(--text);
+  font-family: var(--font-ui);
+  overflow: hidden;
+}
+
+/* Slow floating gold dust in the light. Pure decoration. */
+.book-shell::before {
+  content: "";
+  position: absolute;
+  inset: -10% 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 12% 78%, rgba(246, 227, 184, 0.55) 0 1px, transparent 2px),
+    radial-gradient(circle at 24% 32%, rgba(246, 227, 184, 0.4) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 38% 62%, rgba(246, 227, 184, 0.35) 0 1px, transparent 2px),
+    radial-gradient(circle at 52% 18%, rgba(246, 227, 184, 0.5) 0 1px, transparent 2px),
+    radial-gradient(circle at 63% 84%, rgba(246, 227, 184, 0.4) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 76% 44%, rgba(246, 227, 184, 0.45) 0 1px, transparent 2px),
+    radial-gradient(circle at 88% 70%, rgba(246, 227, 184, 0.35) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 94% 22%, rgba(246, 227, 184, 0.5) 0 1px, transparent 2px);
+  animation: book-dust 22s ease-in-out infinite alternate;
+}
+
+@keyframes book-dust {
+  from {
+    transform: translate3d(0, 0, 0);
+    opacity: 0.55;
+  }
+  to {
+    transform: translate3d(14px, -38px, 0);
+    opacity: 1;
+  }
+}
+
+.book-loading,
+.book-error {
+  position: relative;
+  z-index: 1;
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  color: var(--ivory);
+  text-align: center;
+  padding: 2rem;
+  font-family: var(--font-serif);
+  font-size: 1.25rem;
+  font-style: italic;
+}
+
+.book-loading__spinner {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 2px solid rgba(243, 238, 231, 0.18);
+  border-top-color: var(--gold);
+  animation: book-spin 0.9s linear infinite;
+}
+
+@keyframes book-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.book-error .btn-secondary {
+  background: transparent;
+  border: 1px solid rgba(214, 176, 110, 0.5);
+  color: var(--ivory);
+  font-family: var(--font-sans);
+  font-style: normal;
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+}
+
+/* ---- Close + title row ------------------------------------------------- */
+
+.book-close-btn {
+  position: absolute;
+  top: 1.1rem;
+  right: 1.25rem;
+  z-index: 5;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid rgba(214, 176, 110, 0.28);
+  background: rgba(20, 16, 13, 0.45);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: var(--ivory);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+.book-close-btn:hover {
+  background: rgba(214, 176, 110, 0.18);
+  border-color: var(--gold);
+  transform: rotate(90deg);
+}
+
+.book-close-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.book-title-row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 1.3rem 4rem 0;
+  text-align: center;
+}
+
+.book-title-row {
+  transition: opacity 0.9s ease 0.5s, transform 0.9s ease 0.5s;
+}
+
+/* While the book is closed the cover carries the title, so the header waits. */
+.book-title-row.is-hidden {
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: none;
+}
+
+.book-title-row__eyebrow {
+  font-family: var(--font-sans);
+  font-size: 0.64rem;
+  letter-spacing: 0.46em;
+  font-weight: 500;
+  text-transform: uppercase;
+  color: rgba(243, 238, 231, 0.6);
+  margin: 0;
+  padding-left: 0.46em; /* balances the trailing letter-spacing */
+}
+
+.book-title-row__name {
+  margin: 0;
+  max-width: 100%;
+  font-family: var(--font-script);
+  font-weight: 400;
+  font-size: clamp(2rem, 4.2vw, 3rem);
+  line-height: 1.15;
+  padding: 0.05em 0.15em;
+  /* Gold foil lettering */
+  background: linear-gradient(180deg, var(--gold-light) 0%, var(--gold) 55%, #a87c36 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  filter: drop-shadow(0 2px 10px rgba(0, 0, 0, 0.55));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.book-title-row__ornament {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 0.1rem;
+}
+
+.book-title-row__ornament::before,
+.book-title-row__ornament::after {
+  content: "";
+  width: clamp(36px, 8vw, 84px);
+  height: 1px;
+}
+
+.book-title-row__ornament::before {
+  background: linear-gradient(90deg, transparent, rgba(214, 176, 110, 0.7));
+}
+
+.book-title-row__ornament::after {
+  background: linear-gradient(270deg, transparent, rgba(214, 176, 110, 0.7));
+}
+
+.book-title-row__ornament i {
+  width: 6px;
+  height: 6px;
+  background: var(--gold);
+  transform: rotate(45deg);
+  box-shadow: 0 0 10px rgba(214, 176, 110, 0.7);
+}
+
+/* ---- Stage / book ------------------------------------------------------- */
+
+.book-stage {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem 1rem;
+  min-height: 0;
+}
+
+.book-nav-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: min(18%, 140px);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  z-index: 3;
+}
+
+.book-nav-zone:disabled {
+  cursor: default;
+}
+
+/* Round chevron that fades in when you hover a side. */
+.book-nav-zone::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 46px;
+  height: 46px;
+  margin-top: -23px;
+  border-radius: 50%;
+  border: 1px solid rgba(214, 176, 110, 0.4);
+  background-color: rgba(20, 16, 13, 0.55);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 18px;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.book-nav-zone--prev {
+  left: 0;
+}
+
+.book-nav-zone--next {
+  right: 0;
+}
+
+.book-nav-zone--prev::after {
+  left: 1rem;
+  background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f6e3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='15 18 9 12 15 6'/%3E%3C/svg%3E");
+}
+
+.book-nav-zone--next::after {
+  right: 1rem;
+  background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f6e3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='9 18 15 12 9 6'/%3E%3C/svg%3E");
+}
+
+@media (hover: hover) {
+  .book-nav-zone:hover:not(:disabled)::after {
+    opacity: 1;
+  }
+  .book-nav-zone--prev:hover:not(:disabled)::after {
+    transform: translateX(-3px);
+  }
+  .book-nav-zone--next:hover:not(:disabled)::after {
+    transform: translateX(3px);
+  }
+}
+
+.book-cover {
+  /* --book-ratio = open spread width / height (both pages together).
+     Set per layout below. --book-w is the single source of truth for the
+     book's width; the height follows from aspect-ratio.
+     The turning page is built from --seg-n strips; --seg-n is set from
+     BookView.tsx (LEAF_SEGMENTS) so the two can never drift apart. */
+  --book-ratio: 3;
+  --book-max-w: 1100px;
+
+  /* How far the leather cover shows around the pages. */
+  --board-x: clamp(14px, 3vw, 34px);
+  --board-top: 14px;
+  --board-bottom: 22px;
+
+  /* Fit by width AND by height, so a wide 3:1 book never overflows a short
+     screen and a tall one never overflows a narrow screen. The cover board
+     is subtracted from the width; 22.5rem = title block + both control bars + padding. */
+  --book-w: min(calc(100vw - 2 * var(--board-x) - 12px), var(--book-max-w), calc((100dvh - 22.5rem) * var(--book-ratio)));
+
+  --seg-w: calc(var(--book-w) / (2 * var(--seg-n, 12)));
+  /* How far the paper bows at the peak of a turn: the total angle between the
+     spine end and the free edge, split evenly over the hinges (constant
+     curvature = a smooth circular arc, like real paper). 90deg would be a
+     quarter circle; above ~75deg the free edge can dip through the page
+     underneath mid-turn, so leave it around 70. */
+  --book-curl-total: 72deg;
+  --book-curl-step: calc(var(--book-curl-total) / (var(--seg-n, 12) - 1));
+  /* Camera angle: how far the book leans back. 12deg is nearly head-on, ~60deg
+     is the sample's table-top view. A steeper lean shows the bend better. */
+  --book-tilt: 32deg;
+  /* How a photo fills the open book: cover = fill and crop (like the sample),
+     contain = show the whole photo with dark bars. */
+  --book-photo-fit: cover;
+  /* Width of the soft shading either side of the spine. */
+  --crease: clamp(18px, 4vw, 46px);
+
+  /* Turn progress, written by BookView.tsx every frame (on this element, so
+     the floor shadow and light sheen can read them too).
+     --p    0 -> 1
+     --bend 0 -> 1 -> 0 (peaks mid-turn) */
+  --p: 0;
+  --bend: 0;
+
+  /* Camera dip at the peak of a turn (see .flipbook). */
+  --lean: 12deg;
+
+  /* One page = half the open book. */
+  --page-w: calc(var(--book-w) / 2);
+  /* How much of the book is showing: 0 = closed (only the front cover),
+     1 = fully open. Driven by data-phase below. */
+  --reveal: 1;
+
+  position: relative;
+  width: var(--book-w);
+  aspect-ratio: var(--book-ratio);
+
+  /* Same camera for every layout. */
+  perspective: 2000px;
+  perspective-origin: 50% 30%;
+  pointer-events: none; /* only the page media inside is interactive */
+  animation: book-enter 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  /* NOTE: no filter: drop-shadow() here. A filter on the parent of an
+     animated 3D subtree makes the browser re-blur the whole book every
+     frame, which is the main cause of choppy turns. */
+}
+
+@keyframes book-enter {
+  from {
+    opacity: 0;
+    transform: translateY(28px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Layout = the shape of ONE page. The open book is two pages wide.
+     landscape: page 3:2  -> spread 3:1
+     square:    page 1:1  -> spread 2:1
+     portrait:  page 2:3  -> spread 4:3
+   Upload spread images at the same ratio as the layout for zero cropping. */
+.book-cover[data-book-layout="landscape"] {
+  --book-ratio: 3;
+}
+
+.book-cover[data-book-layout="square"] {
+  --book-ratio: 2;
+}
+
+.book-cover[data-book-layout="portrait"] {
+  --book-ratio: 1.3333;
+}
+
+.book-cover[data-book-layout="square"],
+.book-cover[data-book-layout="portrait"] {
+  --book-max-w: 900px;
+}
+
+/* ---- Opening sequence ----------------------------------------------------
+   data-phase = closed | opening | open  (set from BookView.tsx)
+   Closed: only the front cover shows, centred on screen. While the cover swings
+   open the whole book slides back to the middle and the left half is revealed
+   (--reveal follows the turn progress --p). The individual `translate`
+   property is used so it never fights the entrance animation's `transform`. */
+.book-cover[data-phase="closed"] {
+  --reveal: 0;
+  translate: -25% 0;
+}
+
+.book-cover[data-phase="opening"] {
+  /* The left half of the case only appears once the cover is more than half
+     way over (there is nothing under it until it lands). */
+  --reveal: clamp(0, (var(--p, 0) - 0.55) / 0.45, 1);
+  --lean: 85deg;
+  translate: calc(var(--p, 0) * 25% - 25%) 0;
+}
+
+/* Until the book is open, only the right half exists: clip the left half of
+   everything that spans the spread. (Negative insets keep shadows visible.) */
+.book-cover:not([data-phase="open"]) :is(.book-board, .book-backdrop, .book-finish, .book-gutter) {
+  clip-path: inset(-60px -60px -60px calc(50% * (1 - var(--reveal))));
+}
+
+/* The left page is the back of the cover: it only appears once the cover has
+   landed on it (the leaf's back face shows the very same picture). */
+.book-cover:not([data-phase="open"]) .book-page--left {
+  visibility: hidden;
+}
+
+/* The open-album lean: the whole book tips back (rotateX) inside the
+   perspective above. */
+.flipbook {
+  position: absolute;
+  inset: 0;
+  /* While a page is in the air the camera leans in (the book flattens a little),
+     so a page standing upright never shoots up past the top of the screen.
+     --lean = how many degrees the tilt drops at the peak of a turn. */
+  transform: rotateX(calc(var(--book-tilt, 32deg) - var(--bend, 0) * var(--lean, 12deg)));
+  transform-origin: 50% 100%;
+  transform-style: preserve-3d;
+}
+
+/* Contact shadow on the desk. It lives outside .flipbook (which is tilted)
+   and swells softly while a page is in the air. A plain gradient, no filter. */
+.book-floor-shadow {
+  position: absolute;
+  left: calc(50% * (1 - var(--reveal)) - 5%);
+  right: -5%;
+  bottom: -46px;
+  height: 70px;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 50% 45%, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.3) 40%, rgba(0, 0, 0, 0) 72%);
+  transform: scale(calc(1 + var(--bend, 0) * 0.05), calc(1 + var(--bend, 0) * 0.3));
+  opacity: calc(0.95 - var(--bend, 0) * 0.15);
+}
+
+/* ---- Leather hardcover (peeks out around the pages) ---------------------- */
+
+.book-board {
+  position: absolute;
+  inset: calc(-1 * var(--board-top)) calc(-1 * var(--board-x)) calc(-1 * var(--board-bottom));
+  border-radius: 14px;
+  transform: translateZ(-3px);
+  background:
+    var(--leather-grain),
+    linear-gradient(150deg, #54392c 0%, #3b271f 45%, #261813 100%);
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -3px 8px rgba(0, 0, 0, 0.55),
+    inset 0 0 22px rgba(0, 0, 0, 0.35),
+    0 2px 0 #1b110d;
+}
+
+/* Gold stitching running round the cover. */
+.book-board::before {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  border-radius: 9px;
+  border: 1px dashed rgba(214, 176, 110, 0.55);
+  pointer-events: none;
+}
+
+/* A thin foil line just inside the stitching. */
+.book-board::after {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 11px;
+  border: 1px solid rgba(214, 176, 110, 0.18);
+  pointer-events: none;
+}
+
+/* Plain dark base under the pages (no extra white page edges). */
+.book-backdrop {
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  background: #0f0d0b;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.45);
+}
+
+/* ---- Spine gutter ------------------------------------------------------- */
+
+.book-gutter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(80, 68, 50, 0.35), rgba(80, 68, 50, 0.12));
+}
+
+.book-gutter::before,
+.book-gutter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+}
+
+.book-gutter::before {
+  right: 100%;
+  box-shadow: inset -6px 0 8px -4px rgba(0, 0, 0, 0.14);
+}
+
+.book-gutter::after {
+  left: 100%;
+  box-shadow: inset 6px 0 8px -4px rgba(0, 0, 0, 0.14);
+}
+
+.book-gutter__cap {
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9b8a6e;
+}
+
+/* ---- Static open pages -------------------------------------------------- */
+
+.book-page {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  z-index: 1;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #0f0d0b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+
+.book-page--left {
+  left: 0;
+  border-bottom-right-radius: 10px;
+}
+
+.book-page--right {
+  right: 0;
+  border-bottom-left-radius: 10px;
+}
+
+/* Shadow cast on the resting pages by the turning page: strongest at the
+   spine, growing and fading with the bend so it tracks the turn. */
+.book-page::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: calc(var(--bend, 0) * 0.55);
+}
+
+.book-page--right::after {
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0) 65%);
+}
+
+.book-page--left::after {
+  background: linear-gradient(270deg, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0) 65%);
+}
+
+/* ---- One photo across both pages ------------------------------------------
+   Every photo is a spread. Each page draws the WHOLE photo at twice its own
+   width (= the full book width) and its overflow: hidden crops away the other
+   half - the left page keeps the left half, the right page is shifted back by
+   a page width to keep the right half. */
+
+.book-spread {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 200%;
+}
+
+.book-spread--left {
+  left: 0;
+}
+
+.book-spread--right {
+  left: -100%;
+}
+
+img.book-spread-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: var(--book-photo-fit, cover);
+  pointer-events: none;
+}
+
+/* A video's poster keeps the video's own letterboxing. */
+img.book-spread-img.is-video {
+  object-fit: contain;
+}
+
+/* A video can't be cut in two, so it plays in one element over the whole
+   spread (only while no turn is running). */
+.book-video {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.book-page-media {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: auto;
+}
+
+/* ---- Turning leaf: a chain of hinged strips ------------------------------
+   The leaf only exists in the DOM while a turn is running.
+
+   .book-leaf      pivots at the spine and does the main rotation from --p.
+   .book-seg       one strip (--i = its index counting out from the spine).
+                   Each strip is a child of the previous one and is hinged at
+                   its inner edge, so it carries every strip after it.
+   Every strip but the first also rotates a little back against its parent by
+   --bend x --book-curl-step. The angles add up along the chain, so the outer
+   edge trails the spine side and the page bows like paper.
+
+   Right leaf (Next):     starts on the right half, hinge = its left edge,
+                          turns rotateY(0 -> -180deg).
+   Left leaf (Previous):  starts on the left half, hinge = its right edge,
+                          turns rotateY(0 -> +180deg); everything mirrored. */
+
+.book-leaf {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  z-index: 6; /* above the static pages while turning */
+  transform-style: preserve-3d;
+  will-change: transform;
+  pointer-events: none;
+}
+
+/* translateZ(1px) lifts the leaf off the coplanar static page so the two
+   never z-fight at the very start / end of a turn. */
+.book-leaf--right {
+  left: 50%;
+  transform-origin: left center;
+  transform: translateZ(1px) rotateY(calc(var(--p, 0) * -180deg));
+}
+
+.book-leaf--left {
+  left: 0;
+  transform-origin: right center;
+  transform: translateZ(1px) rotateY(calc(var(--p, 0) * 180deg));
+}
+
+.book-seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--seg-w);
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.book-leaf--right > .book-seg {
+  left: 0;
+}
+
+.book-leaf--left > .book-seg {
+  right: 0;
+}
+
+/* Nested strips: sit at the far edge of the parent and curl back from it. */
+.book-leaf--right .book-seg .book-seg {
+  left: 100%;
+  transform-origin: left center;
+  transform: rotateY(calc(var(--bend, 0) * var(--book-curl-step)));
+}
+
+.book-leaf--left .book-seg .book-seg {
+  right: 100%;
+  transform-origin: right center;
+  transform: rotateY(calc(var(--bend, 0) * var(--book-curl-step) * -1));
+}
+
+/* Each face overhangs its strip by half a pixel on both sides. Neighbouring
+   strips therefore overlap instead of butting edge to edge, which hides the
+   hairline seams that fractional widths would otherwise show. The overhang is
+   symmetric, so mirroring the back face never shifts the picture. */
+.book-seg__face {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -0.5px;
+  right: -0.5px;
+  overflow: hidden;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  background: #0f0d0b;
+}
+
+.book-seg__face--back {
+  transform: rotateY(180deg);
+}
+
+/* The whole photo, sized like the full spread (two pages wide), shifted so
+   only slice --k of half --half (0 = left, 1 = right) shows through this
+   strip's window. */
+.book-seg__slice {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--seg-w) * var(--seg-n, 12) * 2);
+  left: calc(0.5px - (var(--k, 0) + var(--half, 0) * var(--seg-n, 12)) * var(--seg-w));
+}
+
+/* Faux lighting: strips further along the page darken as the page bends. */
+.book-seg__face::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: #000;
+  pointer-events: none;
+  opacity: calc(var(--bend, 0) * var(--i, 0) * 0.022);
+}
+
+/* Round the outer corners of the last strip like the static pages. */
+.book-leaf--right .book-seg--tail .book-seg__face {
+  border-radius: 0 4px 4px 0;
+}
+
+.book-leaf--left .book-seg--tail .book-seg__face {
+  border-radius: 4px 0 0 4px;
+}
+
+/* ---- Front cover (the first leaf: leather, gold foil) --------------------
+   Drawn once per strip of the opening leaf, shifted like a photo slice, so it
+   stays crisp while it bends. It is one PAGE wide (the photo slices are two). */
+
+.book-seg__slice--cover {
+  width: var(--page-w);
+}
+
+.book-cover-art {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--page-w) * 0.018);
+  overflow: hidden;
+  text-align: center;
+  background:
+    linear-gradient(115deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0) 40%),
+    var(--leather-grain),
+    linear-gradient(150deg, #54392c 0%, #3b271f 45%, #261813 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 40px rgba(0, 0, 0, 0.45);
+}
+
+/* Double gold-foil frame. */
+.book-cover-art::before,
+.book-cover-art::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  border: 1px solid rgba(214, 176, 110, 0.75);
+}
+
+.book-cover-art::before {
+  inset: calc(var(--page-w) * 0.035);
+}
+
+.book-cover-art::after {
+  inset: calc(var(--page-w) * 0.05);
+  border-color: rgba(214, 176, 110, 0.3);
+}
+
+.book-cover-art__eyebrow {
+  font-family: var(--font-sans);
+  font-weight: 500;
+  font-size: max(6px, calc(var(--page-w) * 0.02));
+  letter-spacing: 0.42em;
+  padding-left: 0.42em;
+  text-transform: uppercase;
+  color: rgba(226, 194, 131, 0.85);
+}
+
+.book-cover-art__title {
+  max-width: 78%;
+  font-family: var(--font-script);
+  font-weight: 400;
+  font-size: max(16px, calc(var(--page-w) * 0.115));
+  line-height: 1.12;
+  color: #e6c98a;
+  text-wrap: balance;
+  text-shadow:
+    0 1px 0 rgba(255, 238, 200, 0.35),
+    0 -1px 0 rgba(0, 0, 0, 0.55),
+    0 3px 8px rgba(0, 0, 0, 0.45);
+}
+
+.book-cover-art__ornament {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--page-w) * 0.012);
+}
+
+.book-cover-art__ornament::before,
+.book-cover-art__ornament::after {
+  content: "";
+  width: calc(var(--page-w) * 0.12);
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(214, 176, 110, 0.8));
+}
+
+.book-cover-art__ornament::after {
+  transform: scaleX(-1);
+}
+
+.book-cover-art__ornament i {
+  width: max(4px, calc(var(--page-w) * 0.012));
+  height: max(4px, calc(var(--page-w) * 0.012));
+  background: #e6c98a;
+  transform: rotate(45deg);
+}
+
+/* Tap target + hint shown while the book is still closed. */
+.book-open-zone {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 0.4rem;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.book-open-hint.is-preparing {
+  font-size: 0.95rem;
+  animation-duration: 1.4s;
+}
+
+.book-open-hint {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 1.05rem;
+  letter-spacing: 0.08em;
+  color: var(--gold-light);
+  padding: 0.35rem 1.1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(214, 176, 110, 0.3);
+  background: rgba(20, 16, 13, 0.5);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  animation: book-hint 2.4s ease-in-out infinite;
+}
+
+@keyframes book-hint {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+/* ---- Paper finish: ONE overlay above pages AND the resting leaf -----------
+   Because it sits above everything (translateZ 2px, the leaf rests at 1px),
+   the light is never "swapped" when a turn ends, so nothing pops.
+     1. a soft band of light that travels with the turning page
+     2. the fold at the spine (shaded either side, a hair of highlight)
+     3. a gentle gloss from the top-left, like a window
+     4. fine paper grain
+   plus a faint darkening towards the outer edges. */
+
+.book-finish {
+  --sheen-pos: calc((1 - var(--p, 0)) * 100%);
+
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  border-radius: 4px;
+  pointer-events: none;
+  transform: translateZ(2px);
+  background:
+    linear-gradient(
+      100deg,
+      rgba(255, 255, 255, 0) calc(var(--sheen-pos) - 16%),
+      rgba(255, 255, 255, calc(var(--bend, 0) * 0.22)) var(--sheen-pos),
+      rgba(255, 255, 255, 0) calc(var(--sheen-pos) + 16%)
+    ),
+    linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0) calc(50% - var(--crease)),
+      rgba(0, 0, 0, 0.07) calc(50% - var(--crease) * 0.4),
+      rgba(0, 0, 0, 0.3) calc(50% - 1px),
+      rgba(255, 255, 255, 0.08) calc(50% + 1px),
+      rgba(0, 0, 0, 0.1) calc(50% + var(--crease) * 0.35),
+      rgba(0, 0, 0, 0) calc(50% + var(--crease) * 0.95)
+    ),
+    linear-gradient(118deg, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0) 38%, rgba(255, 255, 255, 0) 70%, rgba(255, 255, 255, 0.04) 100%),
+    var(--grain);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+    inset 0 0 60px rgba(0, 0, 0, 0.18);
+}
+
+/* Going back, the page travels left -> right, so the light does too. */
+.book-cover[data-turn="prev"] .book-finish {
+  --sheen-pos: calc(var(--p, 0) * 100%);
+}
+
+/* ---- Bottom controls: a glass bar --------------------------------------- */
+
+.book-controls {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  width: min(580px, calc(100% - 2rem));
+  margin: 0.5rem 0 calc(1.25rem + env(safe-area-inset-bottom, 0px));
+  padding: 0.55rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid rgba(214, 176, 110, 0.2);
+  background: linear-gradient(180deg, rgba(48, 39, 33, 0.7), rgba(24, 19, 16, 0.7));
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.book-control-btn {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid rgba(214, 176, 110, 0.28);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ivory);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease, opacity 0.2s ease, color 0.2s ease;
+}
+
+.book-control-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.book-control-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, var(--gold) 0%, var(--gold-deep) 100%);
+  border-color: var(--gold);
+  color: #1c1511;
+  transform: scale(1.07);
+}
+
+.book-control-btn[aria-pressed="true"] {
+  border-color: rgba(214, 176, 110, 0.6);
+  color: var(--gold-light);
+}
+
+/* Play / pause lives in the tool bar below, so this bar doesn't repeat it. */
+.book-controls .book-control-btn[aria-pressed] {
+  display: none;
+}
+
+.book-control-btn:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.book-progress {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+/* The page scrubber: drag to jump anywhere in the book. */
+.book-progress__range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.book-progress__range:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.book-progress__range:focus-visible {
+  outline: 2px solid rgba(214, 176, 110, 0.7);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+.book-progress__range::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--gold) var(--fill, 0%), rgba(243, 238, 231, 0.18) var(--fill, 0%));
+}
+
+.book-progress__range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5.5px;
+  border: none;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, var(--gold-light), var(--gold) 70%);
+  box-shadow:
+    0 0 0 4px rgba(214, 176, 110, 0.18),
+    0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+.book-progress__range::-moz-range-track {
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(243, 238, 231, 0.18);
+}
+
+.book-progress__range::-moz-range-progress {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--gold);
+}
+
+.book-progress__range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, var(--gold-light), var(--gold) 70%);
+  box-shadow:
+    0 0 0 4px rgba(214, 176, 110, 0.18),
+    0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+.book-progress__count {
+  text-align: center;
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 0.95rem;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  color: rgba(243, 238, 231, 0.78);
+}
+
+.book-progress__count b {
+  font-weight: 600;
+  font-style: normal;
+  color: var(--gold-light);
+}
+
+/* ---- "Open as Book" entry button, used on the normal album grid -------- */
+
+.album-book-view-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 1.1rem;
+  border-radius: 999px;
+  border: 1px solid var(--hairline-dark);
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.album-book-view-btn:hover {
+  background: var(--btn-dark);
+  border-color: var(--btn-dark);
+  color: #ffffff;
+}
+
+.album-book-view-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* ---- Responsive ---------------------------------------------------------- */
+
+@media (max-width: 820px) {
+  .book-title-row {
+    padding: 1.1rem 6rem 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .book-close-btn {
+    top: 0.85rem;
+    right: 0.85rem;
+    width: 38px;
+    height: 38px;
+  }
+
+  .book-title-row {
+    padding: 0.9rem 3rem 0;
+  }
+
+  .book-title-row__eyebrow {
+    font-size: 0.56rem;
+    letter-spacing: 0.34em;
+    padding-left: 0.34em;
+  }
+
+  .book-title-row__name {
+    font-size: 1.9rem;
+  }
+
+  .book-stage {
+    padding: 0.75rem 0.5rem;
+  }
+
+  /* Phones: use the full width (still capped by height). The aspect ratio
+     per layout comes from --book-ratio above. */
+  .book-cover {
+    --book-max-w: 100vw;
+    --board-top: 10px;
+    --board-bottom: 16px;
+    --book-w: min(calc(100vw - 2 * var(--board-x) - 8px), calc((100dvh - 19.5rem) * var(--book-ratio)));
+  }
+
+  .book-nav-zone {
+    width: 26%;
+  }
+
+  .book-controls {
+    gap: 0.6rem;
+    width: calc(100% - 1.25rem);
+    padding: 0.45rem 0.6rem;
+    margin-bottom: calc(0.9rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .book-control-btn {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+/* ---- Phone view -----------------------------------------------------------
+   Portrait phone  -> a "rotate your device" screen instead of the book.
+   Landscape phone -> cinematic layout: studio pill + album pill on top, round
+                      prev/next buttons at the sides, and one glass control bar
+                      (zoom, reset, sound, play, fullscreen, share, page count).
+   Desktop, laptop and tablet keep the layout above, untouched.
+   The background is the same warm room as everywhere else; only the accent
+   colour below is used by the new pieces (set it to your own brand colour). */
+
+.book-shell {
+  --m-accent: var(--gold);
+}
+
+/* Hidden everywhere except the phone queries below. */
+.book-chat-btn,
+.book-rotate {
+  display: none;
+}
+
+/* The wrapper that zooms / pans the book. It has no transform at 100%. */
+.book-zoom {
+  pointer-events: none;
+  transition: transform 0.28s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.book-zoom.is-dragging {
+  transition: none;
+}
+
+.book-stage.is-zoomed {
+  cursor: grab;
+}
+
+/* Studio logo, top left, on every screen. The light logo file is white on
+   transparent with wide empty margins, so it is clipped to the artwork
+   (--logo-size scales it) and the negative margins pull the layout box in to
+   match. The phone-landscape block below sets its own, smaller size. */
+.book-brand {
+  position: absolute;
+  top: 0.9rem;
+  left: 1.25rem;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.book-brand img {
+  --logo-size: 150px;
+  display: block;
+  width: var(--logo-size);
+  height: var(--logo-size);
+  margin: calc(var(--logo-size) * -0.17) calc(var(--logo-size) * -0.06) calc(var(--logo-size) * -0.21);
+  object-fit: contain;
+  clip-path: inset(17% 6% 21% 6%);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.55));
+}
+
+/* Smaller logo on narrower windows. These sit after the base rules above so
+   they win; the title row's side padding (Responsive section) leaves room. */
+@media (max-width: 820px) {
+  .book-brand {
+    top: 0.8rem;
+    left: 1rem;
+  }
+
+  .book-brand img {
+    --logo-size: 88px;
+  }
+}
+
+@media (max-width: 520px) {
+  .book-brand img {
+    --logo-size: 64px;
+  }
+}
+
+.book-toast {
+  position: absolute;
+  left: 50%;
+  bottom: calc(9rem + env(safe-area-inset-bottom, 0px));
+  translate: -50% 0;
+  z-index: 9;
+  padding: 0.55rem 1.1rem;
+  border-radius: 999px;
+  border: 1px solid rgba(214, 176, 110, 0.35);
+  background: rgba(20, 16, 13, 0.88);
+  color: var(--ivory);
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  pointer-events: none;
+  animation: book-toast-in 0.25s ease both;
+}
+
+@keyframes book-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- Tool bar: zoom, reset, play, fullscreen, share, page count ----------
+   Shown on every screen. On a sideways phone it replaces the desktop bar above. */
+
+.book-mbar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1rem;
+  height: 52px;
+  max-width: calc(100% - 1.5rem);
+  margin: 0 0 calc(1rem + env(safe-area-inset-bottom, 0px));
+  padding: 0 0.7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(214, 176, 110, 0.2);
+  background: linear-gradient(180deg, rgba(48, 39, 33, 0.72), rgba(24, 19, 16, 0.72));
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.book-mbtn {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(243, 238, 231, 0.8);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+
+.book-mbtn svg {
+  width: 20px;
+  height: 20px;
+}
+
+.book-mbtn:active:not(:disabled) {
+  background: rgba(214, 176, 110, 0.2);
+}
+
+.book-mbtn[aria-pressed="true"] {
+  color: var(--m-accent);
+}
+
+.book-mbtn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* A page with a note already written on it: warm dot in the corner. */
+.book-mbtn--has-note {
+  position: relative;
+  color: var(--gold-light);
+}
+
+.book-mbtn--has-note::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 6px rgba(214, 176, 110, 0.8);
+}
+
+.book-mbar__sep {
+  flex-shrink: 0;
+  width: 1px;
+  height: 24px;
+  margin: 0 0.4rem;
+  background: rgba(243, 238, 231, 0.14);
+}
+
+.book-mbar__zoom {
+  min-width: 3.2rem;
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #ffffff;
+}
+
+.book-mbar__count {
+  min-width: 4.4rem;
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  font-variant-numeric: tabular-nums;
+  color: rgba(243, 238, 231, 0.45);
+}
+
+.book-mbar__count b {
+  font-weight: 600;
+  color: rgba(243, 238, 231, 0.85);
+}
+
+/* ---- Phone held upright: rotate prompt ---------------------------------- */
+
+@media (orientation: portrait) and (pointer: coarse) and (max-width: 600px) {
+  /* Everything else steps aside (it keeps its place, so nothing reloads). */
+  .book-stage,
+  .book-title-row,
+  .book-controls,
+  .book-mbar,
+  .book-brand {
+    visibility: hidden;
+  }
+
+  .book-rotate {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem 1.75rem 4rem;
+    text-align: center;
+    font-family: var(--font-sans);
+  }
+
+  .book-rotate__tile {
+    position: relative;
+    width: 128px;
+    height: 128px;
+    margin-bottom: 2.2rem;
+    border-radius: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--m-accent);
+    background: linear-gradient(145deg, rgba(214, 176, 110, 0.22), rgba(214, 176, 110, 0.08));
+    border: 1px solid rgba(214, 176, 110, 0.22);
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.45);
+    transform: rotate(-35deg);
+    animation: book-rotate-hint 3.6s ease-in-out infinite;
+  }
+
+  /* Soft glow dot off the corner of the tile. */
+  .book-rotate__tile::after {
+    content: "";
+    position: absolute;
+    top: -22px;
+    right: -26px;
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(214, 176, 110, 0.4), rgba(214, 176, 110, 0) 70%);
+    pointer-events: none;
+  }
+
+  .book-rotate__tile svg {
+    width: 58px;
+    height: 58px;
+  }
+
+  .book-rotate__title {
+    margin: 0 0 0.9rem;
+    font-size: 1.75rem;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    color: #ffffff;
+  }
+
+  .book-rotate__text {
+    margin: 0 0 2rem;
+    max-width: 21rem;
+    font-size: 1.05rem;
+    line-height: 1.65;
+    color: rgba(243, 238, 231, 0.55);
+  }
+
+  .book-rotate__text b {
+    font-weight: 600;
+    color: #ffffff;
+  }
+
+  .book-rotate__pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.85rem 1.5rem;
+    border-radius: 999px;
+    border: 1px solid rgba(243, 238, 231, 0.1);
+    background: rgba(255, 255, 255, 0.04);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: rgba(243, 238, 231, 0.55);
+  }
+
+  .book-rotate__pill i {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--m-accent);
+    box-shadow: 0 0 10px rgba(214, 176, 110, 0.7);
+    animation: book-rotate-dot 1.8s ease-in-out infinite;
+  }
+
+  /* The close button stays reachable above the prompt. */
+  .book-close-btn {
+    z-index: 7;
+  }
+}
+
+/* Tilts the tile like a phone being turned, then back. */
+@keyframes book-rotate-hint {
+  0%,
+  18% {
+    transform: rotate(0deg);
+  }
+  45%,
+  72% {
+    transform: rotate(-90deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes book-rotate-dot {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---- Phone held sideways: cinematic layout ------------------------------ */
+
+@media (orientation: landscape) and (pointer: coarse) and (max-height: 500px) {
+  /* Pills along the top: studio (left), album name (centre), close (right). */
+  .book-brand,
+  .book-title-row {
+    position: absolute;
+    top: 0.6rem;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    box-sizing: border-box;
+    height: 42px;
+    max-width: 30%;
+    border-radius: 999px;
+    border: 1px solid rgba(214, 176, 110, 0.22);
+    background: rgba(20, 16, 13, 0.62);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    font-family: var(--font-sans);
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  /* Studio logo only: no pill, just the light logo sitting on the background. */
+  .book-brand {
+    left: calc(0.75rem + env(safe-area-inset-left, 0px));
+    top: 0.5rem;
+    height: auto;
+    padding: 0;
+    border: none;
+    background: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  /* The full light logo (mark + studio name). The file is white on transparent
+     with wide empty margins, so it is clipped to the artwork (--logo-size
+     scales it) and the negative margins pull the layout box in to match. */
+  .book-brand img {
+    --logo-size: 88px;
+    display: block;
+    width: var(--logo-size);
+    height: var(--logo-size);
+    margin: calc(var(--logo-size) * -0.17) calc(var(--logo-size) * -0.06) calc(var(--logo-size) * -0.21);
+    object-fit: contain;
+    clip-path: inset(17% 6% 21% 6%);
+    filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.55));
+  }
+
+  /* The title row becomes the centre pill: dot + spaced capitals. `translate`
+     (not `transform`) centres it, so the fade-in transform still works. */
+  .book-title-row {
+    left: 50%;
+    translate: -50% 0;
+    flex-direction: row;
+    gap: 0.7rem;
+    padding: 0 1.3rem;
+    max-width: 36%;
+  }
+
+  .book-title-row::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--m-accent);
+  }
+
+  .book-title-row__eyebrow,
+  .book-title-row__ornament {
+    display: none;
+  }
+
+  .book-title-row__name {
+    min-width: 0;
+    padding: 0;
+    font-family: var(--font-sans);
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    line-height: 1;
+    text-transform: uppercase;
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    color: rgba(243, 238, 231, 0.92);
+    filter: none;
+  }
+
+  .book-close-btn {
+    top: 0.6rem;
+    right: calc(0.75rem + env(safe-area-inset-right, 0px));
+    width: 42px;
+    height: 42px;
+  }
+
+  .book-chat-btn {
+    position: absolute;
+    top: 0.6rem;
+    right: calc(0.75rem + 42px + 0.6rem + env(safe-area-inset-right, 0px));
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 52px;
+    height: 42px;
+    border-radius: 999px;
+    background: #25d366;
+    color: #ffffff;
+    box-shadow: 0 8px 20px rgba(37, 211, 102, 0.3);
+  }
+
+  .book-chat-btn svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  /* The book: closer to head-on and as big as the screen allows. */
+  .book-stage {
+    padding: 3.6rem 0.5rem 0.25rem;
+    touch-action: none; /* pinch / drag belong to the book, not the page */
+  }
+
+  .book-cover {
+    --book-max-w: 100vw;
+    --book-tilt: 16deg;
+    --lean: 8deg;
+    --board-x: 16px;
+    --board-top: 10px;
+    --board-bottom: 14px;
+    --book-w: min(calc(100vw - 2 * var(--board-x) - 128px), calc((100dvh - 8.6rem) * var(--book-ratio)));
+  }
+
+  /* Round prev / next buttons at the sides, always visible. */
+  .book-nav-zone {
+    width: 16%;
+  }
+
+  .book-nav-zone::after {
+    opacity: 1;
+    width: 42px;
+    height: 42px;
+    margin-top: -21px;
+  }
+
+  .book-nav-zone--prev::after {
+    left: calc(0.75rem + env(safe-area-inset-left, 0px));
+  }
+
+  .book-nav-zone--next::after {
+    right: calc(0.75rem + env(safe-area-inset-right, 0px));
+  }
+
+  .book-nav-zone:disabled::after {
+    opacity: 0.25;
+  }
+
+  /* One control bar replaces the desktop one. */
+  .book-controls {
+    display: none;
+  }
+
+  .book-mbar {
+    margin-bottom: calc(0.6rem + env(safe-area-inset-bottom, 0px));
+    /* The note button added one more control; on the narrowest phones the
+       bar's content is wider than the pill, so let it scroll sideways
+       instead of spilling out of the rounded background. */
+    justify-content: flex-start;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .book-mbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .book-toast {
+    bottom: calc(4.6rem + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* ---- Page notes: the visitor's feedback sheet --------------------------- */
+
+.book-comment {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+  background: radial-gradient(ellipse at 50% 45%, rgba(20, 16, 13, 0.55), rgba(10, 8, 6, 0.85));
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  animation: book-comment-fade 0.2s ease both;
+}
+
+.book-comment__card {
+  width: min(30rem, 100%);
+  max-height: calc(100dvh - 2.5rem);
+  overflow-y: auto;
+  padding: 1.35rem 1.4rem 1.2rem;
+  border-radius: 18px;
+  border: 1px solid rgba(214, 176, 110, 0.3);
+  background: linear-gradient(180deg, rgba(48, 39, 33, 0.98), rgba(26, 21, 17, 0.98));
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  color: var(--ivory);
+  font-family: var(--font-sans);
+  animation: book-comment-rise 0.24s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.book-comment__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.9rem;
+}
+
+.book-comment__eyebrow {
+  margin: 0 0 0.2rem;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+
+.book-comment__title {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 1.35rem;
+  font-weight: 500;
+  line-height: 1.15;
+  color: var(--ivory);
+}
+
+.book-comment__title span {
+  font-family: var(--font-sans);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(243, 238, 231, 0.45);
+}
+
+.book-comment__close {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(243, 238, 231, 0.14);
+  background: transparent;
+  color: rgba(243, 238, 231, 0.7);
+  cursor: pointer;
+}
+
+.book-comment__close svg {
+  width: 16px;
+  height: 16px;
+}
+
+.book-comment__close:hover {
+  background: rgba(243, 238, 231, 0.08);
+  color: var(--ivory);
+}
+
+.book-comment__close:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.book-comment__input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 7.5rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 12px;
+  border: 1px solid rgba(214, 176, 110, 0.25);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--ivory);
+  font-family: var(--font-sans);
+  font-size: 0.92rem;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.book-comment__input::placeholder {
+  color: rgba(243, 238, 231, 0.34);
+}
+
+.book-comment__input:focus {
+  outline: none;
+  border-color: rgba(214, 176, 110, 0.65);
+  box-shadow: 0 0 0 3px rgba(214, 176, 110, 0.14);
+}
+
+.book-comment__input:disabled {
+  opacity: 0.6;
+}
+
+.book-comment__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.45rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: rgba(243, 238, 231, 0.42);
+}
+
+.book-comment__meta .is-full {
+  color: var(--gold-light);
+}
+
+.book-comment__error {
+  margin: 0.7rem 0 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  background: rgba(180, 74, 60, 0.16);
+  border: 1px solid rgba(180, 74, 60, 0.4);
+  color: #f3b9b1;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.book-comment__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 1.1rem;
+}
+
+.book-comment__actions-end {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.book-comment__delete {
+  padding: 0;
+  border: none;
+  background: none;
+  color: rgba(243, 238, 231, 0.5);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.book-comment__delete:hover:not(:disabled) {
+  color: #f3b9b1;
+}
+
+.book-comment__cancel,
+.book-comment__submit {
+  padding: 0.55rem 1rem;
+  border-radius: 999px;
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: opacity 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.book-comment__cancel {
+  border: 1px solid rgba(243, 238, 231, 0.18);
+  background: transparent;
+  color: rgba(243, 238, 231, 0.72);
+}
+
+.book-comment__cancel:hover:not(:disabled) {
+  border-color: rgba(243, 238, 231, 0.35);
+  color: var(--ivory);
+}
+
+.book-comment__submit {
+  border: 1px solid rgba(214, 176, 110, 0.7);
+  background: linear-gradient(180deg, var(--gold-light), var(--gold));
+  color: #241b12;
+}
+
+.book-comment__submit:hover:not(:disabled) {
+  background: linear-gradient(180deg, #fff0cb, var(--gold-light));
+}
+
+.book-comment__cancel:disabled,
+.book-comment__submit:disabled,
+.book-comment__delete:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+@keyframes book-comment-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes book-comment-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Sideways phone: less chrome, so the photo stays visible around the sheet. */
+@media (orientation: landscape) and (pointer: coarse) and (max-height: 500px) {
+  .book-comment {
+    padding: 0.6rem;
+  }
+
+  .book-comment__card {
+    width: min(36rem, 100%);
+    max-height: calc(100dvh - 1.2rem);
+    padding: 0.9rem 1rem 0.85rem;
+    border-radius: 14px;
+  }
+
+  .book-comment__head {
+    margin-bottom: 0.55rem;
+  }
+
+  .book-comment__title {
+    font-size: 1.1rem;
+  }
+
+  .book-comment__input {
+    min-height: 3.4rem;
+    height: 3.4rem;
+    resize: none;
+  }
+
+  .book-comment__actions {
+    margin-top: 0.65rem;
+  }
+}
+
+/* ---- Reduced motion: keep it elegant, drop the extras -------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .book-shell::before,
+  .book-cover,
+  .book-open-hint,
+  .book-rotate__tile,
+  .book-rotate__pill i,
+  .book-toast,
+  .book-comment,
+  .book-comment__card {
+    animation: none;
+  }
+
+  .book-zoom {
+    transition: none;
+  }
+}

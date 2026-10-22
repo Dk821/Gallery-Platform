@@ -48,6 +48,7 @@ const DEMO_ALBUMS: GalleryAlbum[] = [
     photo_count: 428,
     video_count: 18,
     total_bytes: 1480000000,
+    book_view_enabled: true,
   },
   {
     id: 2,
@@ -62,6 +63,7 @@ const DEMO_ALBUMS: GalleryAlbum[] = [
     photo_count: 312,
     video_count: 10,
     total_bytes: 920000000,
+    book_view_enabled: true,
   },
   {
     id: 3,
@@ -76,6 +78,7 @@ const DEMO_ALBUMS: GalleryAlbum[] = [
     photo_count: 196,
     video_count: 8,
     total_bytes: 610000000,
+    book_view_enabled: true,
   },
 ];
 
@@ -165,7 +168,7 @@ export default function Gallery() {
             <p className="wedding-landing__kicker">Welcome</p>
             <h1 className="wedding-landing__title">{clientName}</h1>
             <div className="wedding-landing__heart-sep" aria-hidden="true">
-              ♡
+              â™¡
             </div>
             <p className="wedding-landing__sub">Your memories are here</p>
             {info && info.total_files > 0 && (
@@ -258,7 +261,7 @@ export default function Gallery() {
                           <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                         </svg>
                         <span>Enter Album</span>
-                        <span aria-hidden="true">›</span>
+                        <span aria-hidden="true">â€º</span>
                       </button>
 
                       {expiry && (
@@ -293,7 +296,7 @@ export default function Gallery() {
 
           <div className="wedding-footer__center">
             <div className="wedding-footer__heart-accent">
-              <span className="wedding-footer__heart-icon">♡</span>
+              <span className="wedding-footer__heart-icon">â™¡</span>
             </div>
             <p className="wedding-footer__sub1">More Than Photos</p>
             <p className="wedding-footer__sub2">A Beautiful Story</p>

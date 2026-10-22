@@ -51,7 +51,7 @@ final v2/
 │   ├── alembic/              # Database migrations
 │   ├── .env                  # Backend config (secrets - not committed)
 │   ├── .env.example          # Config template (committed)
-│   └── tests/                # 21 pytest test files + conftest/fakes
+│   └── tests/                # 23 pytest test files + conftest/fakes
 ├── frontend/
 │   ├── .env.example          # VITE_API_BASE_URL - only needed when frontend/backend
 │   │                         # are on different origins (mirrors CROSS_SITE_FRONTEND)
@@ -69,16 +69,18 @@ final v2/
 │   │   ├── robots.txt        # Allows /, blocks /admin, /api, /.git, /.env*
 │   │   └── sitemap.xml       # Canonical public URLs (the site root + /gallery)
 │   └── src/
-│       ├── components/       # Shared UI (AdminLayout, Sidebar, Lightbox, Modals, GlobalUploadBadge, WishlistHeart)
+│       ├── components/       # Shared UI (AdminLayout, Sidebar, Lightbox, Modals, GlobalUploadBadge, WishlistHeart,
+│       │                         PoweredBy credit line, RequireAdmin route guard)
 │       ├── contexts/         # React Contexts (UploadContext - global persistent upload queue)
 │       ├── hooks/            # useWishlist (optimistic client wishlist state)
-│       ├── pages/            # Admin + Client pages
+│       ├── pages/            # Admin + Client pages (incl. BookView - the client-facing page-turning reader)
 │       ├── services/         # Typed API client (auth, admin, gallery)
-│       ├── styles/           # Plain CSS: index.css + admin.css + gallery.css
+│       ├── styles/           # Plain CSS: index.css + admin.css + gallery.css + book-view.css
 │       ├── utils/            # format.ts, photoThumbnail.ts, videoPoster.ts
 │       ├── vite-env.d.ts     # ImportMetaEnv typing for VITE_ vars
 │       ├── App.tsx           # Route definitions
 │       └── main.tsx          # Entry point
+├── model book view/          # Reference prototype of the Book View page-turn animation
 ├── ARCHITECTURE.md           # This file
 ├── Upload-Pipeline.md        # Deep dive on direct-to-Drive upload pipeline
 └── README.md                 # Setup guide and project overview
@@ -148,16 +150,17 @@ include session token hashes and encrypted password blobs.
 
 ---
 
-## Database Schema (11 Tables)
+## Database Schema (12 Tables)
 
 | Table | Purpose |
 |---|---|
 | `admins` | Admin/staff users (email, Argon2 password hash, status) |
 | `clients` | Client accounts with `client_uuid` (public galleryId), Drive folder ID, a random `folder_uid` folder-name suffix, encrypted password copies, and `thumbnail_folder_id` (the client's dedicated `Thumbnails` Drive folder - a sibling of the album folders, never inside one - holding every item thumbnail; nullable, created lazily, never exposed by any API). `password_hash` is **nullable**: a `NULL` gallery password means the gallery has no password prompt (see *Client Auth*) |
-| `albums` | Albums per client, with expiry (`expires_at`), Drive folder |
-| `media` | Photo/video records with Google Drive file IDs, metadata, type |
+| `albums` | Albums per client, with expiry (`expires_at`), Drive folder, and the two Book View presentation columns: `book_view_enabled` (boolean, default `false` - per-album opt-in to the client-facing page-turning reader) and `book_layout` (`square` / `portrait` / `landscape`, default `landscape` - the aspect ratio of the spread) |
+| `media` | Photo/video records with Google Drive file IDs, metadata, type, and `sort_order` (1-based position inside the album's book order; ordering is `sort_order ASC, id ASC`, and uploads/moves append at `MAX(sort_order)+1`) |
 | `sessions` | Client server-side sessions (SHA-256 hashed tokens, expiry, download password verification) |
 | `media_wishlists` | A client's favourites: `(client_id, media_id)` with `UNIQUE(client_id, media_id)` and an index on `media_id`; both FKs `ON DELETE CASCADE`. Pure database relationship - nothing is ever copied in Drive |
+| `album_comments` | Client page notes on a Book View album: 1-based `page_number`, free text (≤2000 chars), `status` (`open` / `resolved`), and an optional `media_id` (`ON DELETE SET NULL`, so the note survives its photo). `UNIQUE(client_id, album_id, page_number)` makes saving a page an upsert; the album/client FKs cascade |
 | `upload_sessions` | Idempotency ledger for uploads (admin_id, upload_id) |
 | `download_jobs` | Background ZIP download jobs with status lifecycle |
 | `download_records` | Download analytics (per client, per album) |
@@ -182,7 +185,8 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 | Area | Endpoints |
 |---|---|
 | Clients | CRUD (gallery password optionally left blank → **passwordless** gallery), view passwords, change password, change/clear download password, disable/enable, regenerate gallery ID, client wishlist (`GET /{id}/wishlist?album_id=`, read-only) |
-| Albums | CRUD, filter by client, list media (`?wishlist=all\|wishlisted\|not_wishlisted`), selection summary (same filter), wishlist counts (`GET /{id}/media/wishlist-counts`) |
+| Albums | CRUD, filter by client, list media (`?wishlist=all\|wishlisted\|not_wishlisted`, in book order), selection summary (same filter), wishlist counts (`GET /{id}/media/wishlist-counts`), drag-and-drop book order (`PUT /{id}/media/order` - the complete media-id list exactly once; `MEDIA_ORDER_INVALID` otherwise, page notes follow their photo). `PUT /{id}` also carries the Book View presentation flags (`book_view_enabled` - omit to leave untouched, explicit `false` to turn off - and `book_layout`) |
+| Page notes | Per-album notes (`GET /{id}/comments`), resolve/reopen or correct the text (`PATCH /comments/{id}`, both fields optional), delete (`DELETE /comments/{id}`). Admin review deliberately ignores album expiry |
 | Media | Direct upload session (`POST /upload-session`), thumbnail upload (`POST /upload-session/{id}/thumbnail`), completion confirmation (`POST /upload-complete`), progress ping (`POST /upload-progress/{id}`), abandonment (`POST /upload-session/{id}/abandon`), status (`GET /upload-status/{id}`), recent session list (`GET /upload-sessions`), bulk delete/move, stream, download, thumbnail, orphans |
 | Dashboard | Stats summary |
 | Activity | Audit log feed |
@@ -198,9 +202,10 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 ### Client (`/api/client/*`) — Cookie auth + galleryId scoping
 | Area | Endpoints |
 |---|---|
-| Gallery | Gallery info (incl. aggregated photo/video/byte totals), album listing, album detail |
+| Gallery | Gallery info (incl. aggregated photo/video/byte totals), album listing, album detail (both album responses carry `book_view_enabled` / `book_layout` for the Book View entry point) |
 | Media | List, detail (both carry `is_wishlisted`), stream, thumbnail, download |
 | Wishlist | `GET /wishlist` (paginated, optional `album_id`), `POST /wishlist/{media_id}`, `DELETE /wishlist/{media_id}` - both idempotent |
+| Page notes | `GET /albums/{id}/comments` (own notes only), `POST /albums/{id}/comments` (upsert by `media_id` + `page_number` + `comment`), `PUT /comments/{id}`, `DELETE /comments/{id}` |
 | Downloads | ZIP job creation, password verification, file download |
 
 ### Shared
@@ -256,7 +261,7 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 ### Album Covers
 There is no stored cover image anywhere in the system, and nothing to manage: no cover column, no cover upload route, no cover in any API response.
 
-- **Derived per album, at read time**: the gallery album grid fetches `GET /api/client/albums/{id}/media?page=1&limit=1` and uses the first item's `has_thumbnail` flag — if set, that item's thumbnail URL becomes the album cover; if not, the card falls back to one of the bundled gradient placeholders in `Gallery.tsx` (`DEFAULT_COVERS`).
+- **Derived per album, at read time**: the gallery album grid fetches `GET /api/client/media?album_id={id}&page=1&limit=1` and uses the first item's `has_thumbnail` flag — if set, that item's thumbnail URL becomes the album cover; if not, the card falls back to one of the bundled gradient placeholders in `Gallery.tsx` (`DEFAULT_COVERS`).
 - **One request per album, deliberately**: photo/video counts and byte totals already ride on the album list (aggregated in SQL), so the first media page is the only extra fetch the grid makes — and it asks for a single item.
 - **Replacing a removed feature**: an earlier design gave each *client* one automatic cover, built by the browser from the first eligible photo and stored as `cover.webp` beside the album folders. It was removed (Alembic `a5c7e3b1d9f8`) along with the `cover_folder_id` / `cover_drive_file_id` columns, `cover_service.py`, and the `POST /upload-session/{id}/cover` + `GET /gallery/cover` endpoints. Album art now comes from the album's own first thumbnail, so there is no cover that can go stale or need reconciling.
 - **Legacy bytes**: `migrate_thumbnail_folders.py` (dry-run by default, `--apply` to write) renames each legacy `Cover Images` folder to `Thumbnails` — metadata-only, so the folder id and every thumbnail inside it are untouched — then deletes the orphaned `cover.webp`, which is unambiguously identifiable because item thumbnails are always named `thumb_{uuid}.webp`. A file by that name is still skipped if any `Media` row references it, and a folder missing from Drive has its now-dangling `thumbnail_folder_id` cleared so the next upload recreates it.
@@ -268,6 +273,113 @@ A client can heart any photo or video; the state is one row in `media_wishlists`
 - **No N+1**: `is_wishlisted` rides on every media list/detail response from one batched `IN` query per page; the admin filter is a correlated SQL `EXISTS`, and the filter tab counts are one aggregate query.
 - **Admin** sees the client's picks read-only: filter tabs (`All media / Wishlist / Not wishlisted`) with counts on `/admin/albums/:albumId`, a heart badge on each wishlisted item, and `GET /api/admin/clients/{id}/wishlist`. "Select all" honours the active filter, since it feeds bulk delete/move/download.
 - **Lifecycle**: deleting a media item removes its wishlist rows; moving it between the client's albums keeps them; media in an expired album is hidden from the client's wishlist like everything else.
+
+### Book View (page-turning photo book)
+
+A per-album presentation mode: the client opens the album as a 3D book with an
+animated page turn instead of the normal grid (`frontend/src/pages/BookView.tsx`,
+styles in `frontend/src/styles/book-view.css`).
+
+- **Presentation flag, not a security boundary**: `albums.book_view_enabled`
+  (default `false` — an admin must opt each album in) only decides whether the
+  "Open as Book" button and the `/gallery/:galleryId/view/:albumId/book` route
+  are useful. It never changes which media a client may read.
+- **Entry point**: `AlbumView.tsx` renders the "Open as Book" button on the album
+  stat bar only when `album.book_view_enabled` is set (the same `getAlbum`
+  response the reader re-checks on entry, so the button and the page can never
+  disagree). In the demo path (`test-uuid` / `preview` / `demo`, and the
+  placeholder album/media data) the flag is baked in as `true` so the reader can
+  be previewed without an admin switching it on first.
+- **No new backend surface**: the page calls the same client endpoints the grid
+  uses (`GET /api/client/albums/{id}` and `GET /api/client/media?album_id=`),
+  so `get_album_for_client_or_403` and `check_album_not_expired` apply
+  unchanged. The page re-checks the flag on entry and redirects to the plain
+  album view when it is off, and back to the gallery entrance on
+  `ALBUM_EXPIRED` / `ALBUM_FORBIDDEN`.
+- **Admin controls**: the Edit Album dialog holds a Book View toggle plus an
+  Album layout select (`square` / `portrait` / `landscape`, `albums.book_layout`,
+  default `landscape` — sets the spread's aspect ratio via
+  `data-book-layout`). Both save through the normal `PUT /api/admin/albums/{id}`.
+  Two-state semantics: omit `book_view_enabled` to leave it alone, send an
+  explicit `false` to turn it off.
+- **Migrations**: `a1c7f4e2b9d6` (adds `book_view_enabled`), `711430f7f988`
+  (adds `book_layout`). Both backfill existing rows with a `server_default`
+  that is dropped afterwards, leaving the model's Python-side default as the
+  single source of truth.
+- **Presentation model**: one photo = one spread — the image is drawn across
+  both pages and cropped in half by each page's `overflow: hidden`. A turning
+  page is a chain of 12 nested hinged strips that curl (CSS `--p` / `--bend`
+  driven by a `requestAnimationFrame` loop), so completion never depends on a
+  browser event. Videos can't be split, so they turn as their poster and play
+  in a single overlay across the whole spread.
+- **Behaviour**: cover opens on its own after the first spread is decoded (or
+  instantly under `prefers-reduced-motion`), autoplay at 5s/page (paused on
+  video pages), arrow keys / swipe / click zones / scrubber navigation,
+  preloading ±3/−2 pages, and reads in the studio's saved book order
+  (`media.sort_order`, `id` as tie-break). Media is paged in at 200/page up to
+  a 2000-item hard cap.
+
+### Book Order (drag-and-drop page order)
+
+The album's reading order, owned by the studio. `AlbumMedia.tsx` opens
+`MediaOrderModal.tsx` ("Reorder book"): the whole album is loaded, reordered
+with native drag & drop (up/down buttons cover touch and keyboard), and saved
+in one request to `PUT /api/admin/albums/{id}/media/order`.
+
+- **One source of truth**: `media.sort_order`, 1-based inside its album. Every
+  album-scoped read (admin grid, client gallery default "Book Order", Book
+  View) orders by `sort_order ASC, id ASC`; the id tie-break only matters for
+  uploads that raced for the same value. Uploads and cross-album moves append
+  at `MAX(sort_order)+1`, so deletions leave gaps instead of silently
+  renumbering the book.
+- **Complete list or nothing**: the request must name every media item in the
+  album exactly once. A partial, duplicated, or foreign-album id list is
+  rejected with `MEDIA_ORDER_INVALID` 400 - silently leaving the unseen items
+  in place would produce an order the admin never saw. The write is audited as
+  `media_reordered`.
+- **Page notes follow their photo**: notes store a page number, not a media
+  id, so `_renumber_page_notes` rewrites them from the new positions. Because
+  `UNIQUE(client_id, album_id, page_number)` would reject a simple swap, it
+  negates all page numbers in the album first, flushes, then assigns the
+  finals. Notes whose media was deleted or moved away have no position and
+  keep their stored page.
+- **Migration**: `d3a7c9e1b5f6` adds the column and backfills existing albums
+  by `created_at, id` so the pre-reorder chronological order is preserved.
+
+### Page Notes (client feedback on book pages)
+
+The client's one-line channel back to the studio, attached to the page they are
+looking at (`BookCommentPanel.tsx` on the client, `AlbumCommentsModal.tsx` on
+the admin side).
+
+- **One note per page, upserted**: `UNIQUE(client_id, album_id, page_number)`
+  means the sheet is always "write" or "edit", never a thread. Saving a page
+  again edits the same row; `POST` reports `created` so the audit log can tell
+  the two apart. A unique-key race between two identical submissions is caught
+  (`IntegrityError` → rollback → re-read → update).
+- **Ownership**: the client is only ever resolved from the session cookie. The
+  media item must belong to that client's album (create requires `media_id` and
+  a live `page_number` in `1..100000`); a foreign album/media answers
+  `ALBUM_FORBIDDEN` / `MEDIA_FORBIDDEN`, and another client's note is an
+  indistinguishable `COMMENT_NOT_FOUND`. Notes are readable only through their
+  own album, so one client never sees another's feedback.
+- **Review loop**: a client edit (or re-save) sets `status` back to `open`, so
+  changed wording is re-reviewed. Admins resolve/reopen from the album list
+  modal, which groups notes by page and shows the page thumbnail. Admin routes
+  skip the album-expiry gate on purpose: feedback must stay reviewable after a
+  gallery closes.
+- **Text rules**: trimmed, non-blank, max 2000 characters. Status is limited to
+  `open` / `resolved`.
+- **Lifecycle**: deleting the photo keeps the note with `media_id = NULL` (the
+  feedback still matters); deleting the album or client cascades. Every write
+  is audited as `resource_type="album_comment"` with
+  `comment_added` / `comment_updated` / `comment_deleted`.
+- **Counts**: both album lists carry `comment_count` from one grouped subquery
+  (admin: whole album; client: that client's notes), so the badges never N+1.
+- **Client UX**: a note button in the Book View toolbar shows a dot when the
+  page already has one; submitting saves and turns to the next page. Autoplay
+  and keyboard page turns pause while the sheet is open.
+- **Migration**: `9b3f82e6a7c4` (creates `album_comments` + its indexes).
 
 ---
 
@@ -291,6 +403,9 @@ A client can heart any photo or video; the state is one row in `media_wishlists`
 /gallery/:galleryId              → Client entrance (auto-opens passwordless galleries)
 /gallery/:galleryId/view         → All media view
 /gallery/:galleryId/view/:albumId → Single album view
+/gallery/:galleryId/view/:albumId/book → Book View: the page-turning reader for one album
+                                    (redirects to the plain album view unless the album's
+                                    book_view_enabled flag is on)
 /gallery/:galleryId/wishlist     → The client's wishlist
 ```
 
@@ -313,7 +428,18 @@ Behavioral notes on the entrance routes:
   validated by `safeRedirectTarget()` (must be a same-origin absolute path; `//`, `/\`,
   `/\%5c` and non-slash targets are rejected) so a crafted URL can't be an open redirect.
 - Unknown routes render the dedicated `NotFound` 404 page instead of the old bare text.
-```
+
+**Admin route gate.** Every `/admin/*` page except `/admin/login` sits behind a layout route
+(`<Route element={<RequireAdmin />}>` in `App.tsx`), so nothing in the admin area renders until
+the server confirms an admin session. `RequireAdmin` (`frontend/src/components/RequireAdmin.tsx`)
+calls `GET /auth/me` once on entering the area and renders the page behind an `admin` identity;
+it redirects anyone else to `/admin/login?redirect=<path+query>`. Without it the shell was only
+"protected" indirectly (each page's own API calls 401 a beat later), so a client-side navigation —
+most visibly the 404 page's "Back to dashboard" button, which never triggers a fresh page load —
+could mount the dashboard for an unauthenticated visitor first. It checks once per area entry
+(the layout stays mounted across admin navigation, so there is no loader flash per click), fails
+closed on network errors, treats an active *gallery* session as "not an admin", and leaves
+sessions that expire mid-use to `api.ts`'s 401 handler.
 
 ### API Client (`services/`)
 - `api.ts` — Fetch wrapper with `ApiError`, typed interfaces (`Page`, `MediaItem`, `DownloadJob`);
@@ -338,10 +464,26 @@ Behavioral notes on the entrance routes:
 - `WishlistHeart` — The one heart button (tile overlay / list row / lightbox variants); `hooks/useWishlist.ts` owns the state: optimistic toggle with rollback, one in-flight request per photo, seeded from the server flags of freshly loaded pages
 - `DownloadJobModal` — Creates ZIP job, polls every 1.5s until completion
 - `DownloadPasswordModal` — Gate for download-protected galleries
+- `BookView` — The client-facing page-turning reader (`/gallery/:galleryId/view/:albumId/book`);
+  loads the album through the normal client endpoints, re-checks `book_view_enabled` on entry,
+  and renders the spread/leaf animation (see *Book View*)
+- `BookCommentPanel` — The client's note sheet for the page on show (upsert on save, delete,
+  length limit); `BookView` renders it above the book and pauses autoplay while it is open
+- `AlbumCommentsModal` — Admin review of one album's page notes: grouped by page with thumbnail,
+  status filter, resolve/reopen and delete; reports the new count back to the Albums list badge
+- `RequireAdmin` — Layout-route session gate wrapping every `/admin/*` page; confirms the
+  session with `GET /auth/me` before rendering and redirects non-admins to the login screen
+  (see *Routing*)
+- `PoweredBy` — The one shared credit line (`Powered by madgen` + `Version V0.4` / a date),
+  rendered on the Home footer, both login pages (`.login-powered-wrap`), and the bottom of the
+  admin sidebar; the version/date strings live only here
 
 ### Styling
-- Plain CSS (no Tailwind/UI framework) split across `index.css` (global) + `styles/admin.css` / `styles/gallery.css` per view
+- Plain CSS (no Tailwind/UI framework) split across `index.css` (global) + `styles/admin.css` / `styles/gallery.css` / `styles/book-view.css` per view
 - Wedding typography: Alex Brush, Cormorant Garamond, Montserrat (Google Fonts, imported at the top of the per-view stylesheets)
+- Reusable pieces in the shared sheets: `.powered-by` (credit line, in `index.css`; restyled for
+  the sidebar in `admin.css`) and `.toggle-switch` (the generic on/off pill used by the Edit
+  Album Book View control)
 
 ---
 
@@ -411,14 +553,20 @@ rather than imported so Vite serves it from `public/` unhashed:
 
 `public/light-ls-logo.png` is a light-background variant, present but not yet referenced by any view.
 
+Separately from the logo, the shared `PoweredBy` credit line (`Powered by madgen`, with the
+build's version and date) appears in four places: the Home footer (replacing the old two-span
+`.home-footer` tagline), both login cards via the `.login-powered-wrap` bottom anchor, and the
+base of the admin sidebar (`.admin-sidebar__powered`). It is the single source of the displayed
+version string.
+
 ---
 
 ## Testing
 
-- 21 pytest test files in `backend/tests/` (+ shared `conftest.py` / `fakes.py`)
+- 23 pytest test files in `backend/tests/` (+ shared `conftest.py` / `fakes.py`)
 - SQLite in-memory database + `FakeStorageService` (no real Drive calls)
-- Coverage: auth (incl. the optional gallery-password flow and cookie security attributes), authorization & cross-client isolation, client search & selection summaries, admin/client/album management, album expiry, media management (search, pagination, metadata edits, move, delete), bulk ops, gallery totals, ZIP download jobs & analytics, upload hardening (idempotency, disk reservation, concurrency limits, stale-session recovery, orphan reconciliation), thumbnails & streaming (range requests, 416s, concurrency), the server-side thumbnail fallback, the thumbnail-folder migration, dashboard, storage integration (Drive folder provisioning, storage overview), Drive folder naming, direct resumable uploads, FFmpeg availability, httplib2 cleanup-bug regression, studio settings/security policy (incl. self-service admin password change)
-- Suite status: **174 pass, 107 fail** (281 total). The failures are older tests that still drive the retired byte-relay `POST /api/admin/media/upload` route, which no longer exists in the direct-to-Drive app — a notable trap, because the SQLite-backed suite happily compiles queries (`count(...) FILTER (WHERE ...)`) that MySQL 8 rejects, so a green run is not proof a query works on the real database. The current upload path is exercised at the storage layer (`test_drive_resumable_upload.py`) and the session/ledger layer (`test_upload_hardening.py`), not as an end-to-end HTTP upload
+- Coverage: auth (incl. the optional gallery-password flow and cookie security attributes), authorization & cross-client isolation, client search & selection summaries, admin/client/album management, album expiry, media management (search, pagination, metadata edits, move, delete), bulk ops, gallery totals, ZIP download jobs & analytics, upload hardening (idempotency, disk reservation, concurrency limits, stale-session recovery, orphan reconciliation), thumbnails & streaming (range requests, 416s, concurrency), the server-side thumbnail fallback, the thumbnail-folder migration, dashboard, storage integration (Drive folder provisioning, storage overview), Drive folder naming, direct resumable uploads, FFmpeg availability, httplib2 cleanup-bug regression, studio settings/security policy (incl. self-service admin password change), page notes (`test_comments.py`: upsert, cross-client isolation, validation, expiry, admin review, album counts), book order (`test_media_order.py`: reorder, client-side ordering, complete-list validation, note renumbering, move-to-end, admin-only access)
+- Suite status: **192 pass, 107 fail** (299 total). The failures are older tests that still drive the retired byte-relay `POST /api/admin/media/upload` route, which no longer exists in the direct-to-Drive app — a notable trap, because the SQLite-backed suite happily compiles queries (`count(...) FILTER (WHERE ...)`) that MySQL 8 rejects, so a green run is not proof a query works on the real database. The current upload path is exercised at the storage layer (`test_drive_resumable_upload.py`) and the session/ledger layer (`test_upload_hardening.py`), not as an end-to-end HTTP upload
 - No frontend tests
 
 ---
@@ -454,4 +602,15 @@ rather than imported so Vite serves it from `public/` unhashed:
 13. **Logo served from `public/`, not bundled** — `ls-logo.png` is referenced by absolute URL from
     `index.html` and two views, so one file is the favicon, the admin avatar and the home mark
     without a build hash and without duplicating the binary into the JS bundle
-
+14. **Book View reuses the grid's endpoints** — the page-turning reader adds no
+    separate read path: it calls the same client album/media endpoints and access
+    checks, plus two presentation columns on `albums` (`book_view_enabled`,
+    `book_layout`) that decide whether the UI is offered. Making it a flag rather
+    than a separate permission keeps one set of ownership and expiry rules to
+    reason about, so the book can never expose media the grid wouldn't
+15. **Page notes are a per-page upsert, not a chat** — one note per
+    `(client, album, page)` keeps the table and both UIs simple: the client sheet
+    is always "write" or "edit", and the admin list never has duplicate threads to
+    merge. Editing a note reopens it so changed wording is re-reviewed, and the
+    note outlives its photo (`media_id ON DELETE SET NULL`) because the feedback
+    is still meaningful after the picture is removed
