@@ -646,6 +646,9 @@ export default function BookView() {
   useLayoutEffect(() => {
     if (!flip) return;
     const book = bookRef.current;
+    let cancelled = false;
+    let paintFrame = 0;
+    let cancelTurn: (() => void) | undefined;
     const commit = () => {
       flipLock.current = false;
       setCurrentIndex(flip.to);
@@ -655,8 +658,40 @@ export default function BookView() {
       commit();
       return;
     }
-    return animateTurn(book, FLIP_DURATION_MS, 1, commit);
-  }, [flip]);
+    const beginWhenPainted = async () => {
+      // The detached preload warms the network/cache, but the actual images
+      // mounted on the turning leaf also need to decode before it moves.
+      const leafImages = Array.from(book.querySelectorAll<HTMLImageElement>(".book-leaf img"));
+      try {
+        await Promise.all(leafImages.map((img) => {
+          if (typeof img.decode === "function") return img.decode();
+          if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+          return new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = () => reject(new Error("Page image failed to load"));
+          });
+        }));
+      } catch {
+        if (cancelled) return;
+        flipLock.current = false;
+        setFlip(null);
+        showToast("This page could not be loaded. Please try again.");
+        return;
+      }
+      if (cancelled) return;
+      // Let the decoded leaf paint once in its resting pose before animating.
+      await new Promise<void>((resolve) => {
+        paintFrame = requestAnimationFrame(() => resolve());
+      });
+      if (!cancelled) cancelTurn = animateTurn(book, FLIP_DURATION_MS, 1, commit);
+    };
+    void beginWhenPainted();
+    return () => {
+      cancelled = true;
+      if (paintFrame) cancelAnimationFrame(paintFrame);
+      cancelTurn?.();
+    };
+  }, [flip, showToast]);
 
   // ---- Page notes --------------------------------------------------------
   //
