@@ -37,6 +37,34 @@
   flex-direction: column;
 }
 
+.gallery-loading {
+  min-height: 100vh;
+}
+
+.gallery-loading__content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.gallery-loading__spinner {
+  width: 38px;
+  height: 38px;
+  border: 3px solid rgba(180, 133, 59, 0.2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: gallery-loading-spin 0.8s linear infinite;
+}
+
+@keyframes gallery-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ===========================================================================
    Top Navigation Bar ("Love Story PHOTOGRAPHY")
    =========================================================================== */
@@ -282,6 +310,12 @@
   aspect-ratio: 16 / 10;
   overflow: hidden;
   background-color: #ede7dd;
+}
+
+.wedding-album-card__cover-empty {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, #e6ded2, #cfc2b0);
 }
 
 .wedding-album-card__cover img {

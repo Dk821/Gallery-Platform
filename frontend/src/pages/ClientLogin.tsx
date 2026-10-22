@@ -33,13 +33,7 @@ export default function ClientLogin() {
   const [checking, setChecking] = useState(true);
   const navigate = useNavigate();
 
-  const isDemoGallery = galleryId === "test-uuid" || galleryId === "preview" || galleryId === "demo";
-
   useEffect(() => {
-    if (isDemoGallery) {
-      setChecking(false);
-      return;
-    }
     let cancelled = false;
     galleryService
       .checkGalleryAccess(galleryId)
@@ -73,7 +67,7 @@ export default function ClientLogin() {
     return () => {
       cancelled = true;
     };
-  }, [galleryId, isDemoGallery, navigate]);
+  }, [galleryId, navigate]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -83,10 +77,6 @@ export default function ClientLogin() {
       const client = await authService.clientLogin(galleryId, password);
       navigate(`/gallery/${galleryId}/view`, { state: { name: client.name } });
     } catch (err) {
-      if (isDemoGallery) {
-        navigate(`/gallery/${galleryId}/view`, { state: { name: "Sam & Priya" } });
-        return;
-      }
       setError(err instanceof Error ? err.message : "Login failed.");
     } finally {
       setLoading(false);

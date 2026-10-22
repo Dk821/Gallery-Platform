@@ -15,9 +15,9 @@ const PAGE_SIZE = 60;
 const DEFAULT_HERO_IMAGE = "/images/album-hero.webp";
 
 function formatLongDate(dateStr?: string | null): string {
-  if (!dateStr) return "14 FEBRUARY 2026";
+  if (!dateStr) return "";
   const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return "14 FEBRUARY 2026";
+  if (isNaN(d.getTime())) return "";
   const day = d.getDate();
   const month = d.toLocaleString("en-US", { month: "long" }).toUpperCase();
   const year = d.getFullYear();
@@ -25,9 +25,9 @@ function formatLongDate(dateStr?: string | null): string {
 }
 
 function formatShortDate(dateStr?: string | null): string {
-  if (!dateStr) return "14 Feb 2026";
+  if (!dateStr) return "";
   const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return "14 Feb 2026";
+  if (isNaN(d.getTime())) return "";
   const day = d.getDate();
   const month = d.toLocaleString("en-US", { month: "short" });
   const year = d.getFullYear();
@@ -40,188 +40,12 @@ function getVideoDurationBadge(id: number): string {
   return durations[id % durations.length];
 }
 
-const DEMO_MEDIA_ITEMS: GalleryMedia[] = [
-  {
-    id: 101,
-    file_uuid: "uuid-101",
-    album_id: 1,
-    file_name: "SAM_PRIYA_001.JPG",
-    title: "Couple Portrait",
-    description: null,
-    file_type: "photo",
-    mime_type: "image/jpeg",
-    file_size: 14200000,
-    has_thumbnail: true,
-    status: "ready",
-    created_at: "2026-02-14T10:15:00Z",
-    is_wishlisted: false,
-    sort_order: 0,
-  },
-  {
-    id: 102,
-    file_uuid: "uuid-102",
-    album_id: 1,
-    file_name: "SUNSET_ALTAR_002.JPG",
-    title: "Sunset Altar",
-    description: null,
-    file_type: "photo",
-    mime_type: "image/jpeg",
-    file_size: 18500000,
-    has_thumbnail: true,
-    status: "ready",
-    created_at: "2026-02-14T10:20:00Z",
-    is_wishlisted: false,
-    sort_order: 0,
-  },
-  {
-    id: 103,
-    file_uuid: "uuid-103",
-    album_id: 1,
-    file_name: "RINGS_DETAIL_003.JPG",
-    title: "Wedding Rings",
-    description: null,
-    file_type: "photo",
-    mime_type: "image/jpeg",
-    file_size: 12400000,
-    has_thumbnail: true,
-    status: "ready",
-    created_at: "2026-02-14T10:25:00Z",
-    is_wishlisted: false,
-    sort_order: 0,
-  },
-  {
-    id: 104,
-    file_uuid: "uuid-104",
-    album_id: 1,
-    file_name: "CEREMONY_HIGHLIGHT_004.MP4",
-    title: "Sunset Silhouette",
-    description: null,
-    file_type: "video",
-    mime_type: "video/mp4",
-    file_size: 185000000,
-    has_thumbnail: true,
-    status: "ready",
-    created_at: "2026-02-14T10:30:00Z",
-    is_wishlisted: false,
-    sort_order: 0,
-  },
-  {
-    id: 105,
-    file_uuid: "uuid-105",
-    album_id: 1,
-    file_name: "BRIDE_ELEGANCE_005.JPG",
-    title: "Bride Portrait",
-    description: null,
-    file_type: "photo",
-    mime_type: "image/jpeg",
-    file_size: 16100000,
-    has_thumbnail: true,
-    status: "ready",
-    created_at: "2026-02-14T10:35:00Z",
-    is_wishlisted: false,
-    sort_order: 0,
-  },
-  {
-    id: 106,
-    file_uuid: "uuid-106",
-    album_id: 1,
-    file_name: "BETTER_TOGETHER_006.JPG",
-    title: "Better Together",
-    description: null,
-    file_type: "photo",
-    mime_type: "image/jpeg",
-    file_size: 11200000,
-    has_thumbnail: true,
-    status: "ready",
-    created_at: "2026-02-14T10:40:00Z",
-    is_wishlisted: false,
-    sort_order: 0,
-  },
-  {
-    id: 107,
-    file_uuid: "uuid-107",
-    album_id: 1,
-    file_name: "JOYFUL_SMILES_007.JPG",
-    title: "Joyful Moments",
-    description: null,
-    file_type: "photo",
-    mime_type: "image/jpeg",
-    file_size: 15300000,
-    has_thumbnail: true,
-    status: "ready",
-    created_at: "2026-02-14T10:45:00Z",
-    is_wishlisted: false,
-    sort_order: 0,
-  },
-  {
-    id: 108,
-    file_uuid: "uuid-108",
-    album_id: 1,
-    file_name: "GOLDEN_HOUR_WALK_008.JPG",
-    title: "Golden Hour Walk",
-    description: null,
-    file_type: "photo",
-    mime_type: "image/jpeg",
-    file_size: 19800000,
-    has_thumbnail: true,
-    status: "ready",
-    created_at: "2026-02-14T10:50:00Z",
-    is_wishlisted: false,
-    sort_order: 0,
-  },
-  {
-    id: 109,
-    file_uuid: "uuid-109",
-    album_id: 1,
-    file_name: "FLORAL_BOUQUET_009.JPG",
-    title: "Floral Bouquet",
-    description: null,
-    file_type: "photo",
-    mime_type: "image/jpeg",
-    file_size: 13900000,
-    has_thumbnail: true,
-    status: "ready",
-    created_at: "2026-02-14T10:55:00Z",
-    is_wishlisted: false,
-    sort_order: 0,
-  },
-  {
-    id: 110,
-    file_uuid: "uuid-110",
-    album_id: 1,
-    file_name: "TWILIGHT_VEIL_010.MP4",
-    title: "Twilight Veil",
-    description: null,
-    file_type: "video",
-    mime_type: "video/mp4",
-    file_size: 210000000,
-    has_thumbnail: true,
-    status: "ready",
-    created_at: "2026-02-14T11:00:00Z",
-    is_wishlisted: false,
-    sort_order: 0,
-  },
-];
-
-const DEMO_THUMBNAILS: Record<number, string> = {
-  101: "https://images.unsplash.com/photo-1583939003579-730e3918a45a?auto=format&fit=crop&w=800&q=80",
-  102: "https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=800&q=80",
-  103: "https://images.unsplash.com/photo-1606800052052-a08af7148866?auto=format&fit=crop&w=800&q=80",
-  104: "https://images.unsplash.com/photo-1511285560929-80b456fea0bc?auto=format&fit=crop&w=800&q=80",
-  105: "https://images.unsplash.com/photo-1545232979-8bf68ee9b1af?auto=format&fit=crop&w=800&q=80",
-  106: "https://images.unsplash.com/photo-1522673607200-164d1b6ce486?auto=format&fit=crop&w=800&q=80",
-  107: "https://images.unsplash.com/photo-1537633552985-df8429e8048b?auto=format&fit=crop&w=800&q=80",
-  108: "https://images.unsplash.com/photo-1515934751635-c81c6bc9a2d8?auto=format&fit=crop&w=800&q=80",
-  109: "https://images.unsplash.com/photo-1561181286-d3fee7d55364?auto=format&fit=crop&w=800&q=80",
-  110: "https://images.unsplash.com/photo-1509927083803-4bd519298ac4?auto=format&fit=crop&w=800&q=80",
-};
-
 export default function AlbumView() {
   const { galleryId = "", albumId = "" } = useParams();
   const navigate = useNavigate();
   const albumIdNum = Number(albumId);
 
-  const [clientName, setClientName] = useState("Sam & Priya");
+  const [clientName, setClientName] = useState("");
   const [album, setAlbum] = useState<GalleryAlbum | null>(null);
   const [items, setItems] = useState<GalleryMedia[]>([]);
   const [page, setPage] = useState(1);
@@ -256,9 +80,7 @@ export default function AlbumView() {
 
   // Wishlist hearts. Flags arrive with the media list itself (no request per
   // photo); toggling is optimistic and rolls back with a toast on failure.
-  // Demo galleries have no server rows, so their hearts stay local.
-  const isDemoGallery = galleryId === "test-uuid" || galleryId === "preview" || galleryId === "demo";
-  const wishlist = useWishlist({ demo: isDemoGallery, onError: showToast });
+  const wishlist = useWishlist({ onError: showToast });
 
   // Close more menu when clicking outside
   useEffect(() => {
@@ -279,7 +101,7 @@ export default function AlbumView() {
         galleryService.getAlbum(albumIdNum),
         galleryService.listMedia(albumIdNum, 1, PAGE_SIZE, searchTerm || undefined),
       ]);
-      setClientName(galleryInfo.client_name || "Sam & Priya");
+      setClientName(galleryInfo.client_name);
       setHasDownloadPassword(galleryInfo.has_download_password);
       setAlbum(albumData);
       setItems(mediaPage.items);
@@ -303,30 +125,10 @@ export default function AlbumView() {
         setExpired(true);
       } else if (err instanceof ApiRequestError && err.code === "ALBUM_FORBIDDEN") {
         setError("This gallery is no longer available to you.");
-      } else if (galleryId === "test-uuid" || galleryId === "preview" || galleryId === "demo") {
-        setClientName("Sam & Priya");
-        setAlbum({
-          id: albumIdNum || 1,
-          album_uuid: "wedding-1",
-          client_id: 1,
-          album_name: albumIdNum === 2 ? "Reception" : albumIdNum === 3 ? "Pre-Wedding" : "Wedding",
-          description: "Our story of",
-          status: "active",
-          expires_at: null,
-          created_at: "2026-02-14T10:00:00Z",
-          media_count: 260,
-          photo_count: 242,
-          video_count: 18,
-          total_bytes: 1480000000,
-          // On in the demo path so the "Open as Book" entry point can be
-          // previewed without an admin having to switch it on first.
-          book_view_enabled: true,
-        });
-        setItems(DEMO_MEDIA_ITEMS);
-        setTotalAlbumBytes(1480000000);
-        setHasMore(false);
       } else {
-        // Most likely an expired/invalid session -> back to password screen
+        setError(err instanceof Error ? err.message : "Could not load this album.");
+        // Invalid session -> back to the gallery entrance after showing the
+        // loading state only for the duration of the request.
         navigate(`/gallery/${galleryId}`, { replace: true });
       }
     } finally {
@@ -425,14 +227,8 @@ export default function AlbumView() {
   // media_aggregates) - exactly what the admin album list and the client
   // gallery cards already read.
   //
-  // The page-derived fallbacks below are ONLY correct for the demo path, and
-  // they used to be preferred for real albums, which made this view disagree
-  // with the admin view of the same album: `items` is just the pages loaded
-  // so far (PAGE_SIZE to begin with, more only via loadMore), so
-  // `media_count - videoCount` subtracted one page's worth of videos from the
-  // album's true total, and `videoCount` on its own reported only the loaded
-  // page - the two didn't even sum to media_count. Applying a search made it
-  // drift again, since it narrows `items` to the matches.
+  // Counts come from the album aggregate; item counts are only a fallback
+  // while the album metadata is unavailable.
   const photoCount = items.filter((i) => i.file_type === "photo").length;
   const videoCount = items.filter((i) => i.file_type === "video").length;
 
@@ -443,10 +239,22 @@ export default function AlbumView() {
     selectAllBytesOverride ?? items.filter((i) => selectedIds.has(i.id)).reduce((sum, i) => sum + i.file_size, 0);
 
   const expiry = album ? getExpiryInfo(album.expires_at) : null;
-  const getThumbnail = (item: GalleryMedia) => DEMO_THUMBNAILS[item.id] || galleryService.thumbnailUrl(item.id);
-  const getViewUrl = (id: number) => DEMO_THUMBNAILS[id] || galleryService.viewUrl(id);
-  const getThumbnailUrl = (id: number) => DEMO_THUMBNAILS[id] || galleryService.thumbnailUrl(id);
+  const getThumbnail = (item: GalleryMedia) => galleryService.thumbnailUrl(item.id);
+  const getViewUrl = (id: number) => galleryService.viewUrl(id);
+  const getThumbnailUrl = (id: number) => galleryService.thumbnailUrl(id);
   const heroBackground = DEFAULT_HERO_IMAGE;
+
+  if (loading) {
+    return (
+      <div className="client-shell gallery-loading" role="status" aria-live="polite">
+        <ClientNav galleryId={galleryId} />
+        <div className="gallery-loading__content">
+          <span className="gallery-loading__spinner" aria-hidden="true" />
+          <span>Loading your album…</span>
+        </div>
+      </div>
+    );
+  }
 
   if (expired) {
     return (
@@ -1063,7 +871,7 @@ export default function AlbumView() {
       {/* Download Job Modal */}
       {downloadJobRequest !== null && (
         <DownloadJobModal
-          requirePasswordFirst={hasDownloadPassword || galleryId === "test-uuid" || galleryId === "preview" || galleryId === "demo"}
+          requirePasswordFirst={hasDownloadPassword}
           createJob={() =>
             galleryService.createDownloadJob(
               albumIdNum,
@@ -1073,12 +881,7 @@ export default function AlbumView() {
           pollStatus={(jobId) => galleryService.getDownloadJobStatus(jobId)}
           cancelJob={(jobId) => galleryService.cancelDownloadJob(jobId)}
           fileUrl={galleryService.downloadJobFileUrl}
-          verifyPassword={(_, pw) => {
-            if (galleryId === "test-uuid" || galleryId === "preview" || galleryId === "demo") {
-              return Promise.resolve(true);
-            }
-            return galleryService.verifyDownloadPassword(pw).then(() => true);
-          }}
+          verifyPassword={(_, pw) => galleryService.verifyDownloadPassword(pw).then(() => true)}
           onClose={() => setDownloadJobRequest(null)}
         />
       )}
