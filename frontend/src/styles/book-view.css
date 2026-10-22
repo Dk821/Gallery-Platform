@@ -757,9 +757,10 @@ img.book-spread-img.is-video {
   overflow: hidden;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
-  /* Keep the page below visible if the browser drops a 3D face for a frame
-     while the cover is opening or a photo leaf is turning. */
-  background: transparent;
+  /* Use paper as the fallback if the browser drops a 3D face for a frame
+     while its photo is being painted. An opaque surface avoids both a black
+     flash and a see-through gap. */
+  background: #f7f5ef;
 }
 
 .book-seg__face--back {
