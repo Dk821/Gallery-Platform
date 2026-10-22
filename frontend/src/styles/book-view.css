@@ -446,9 +446,9 @@
   clip-path: inset(-60px -60px -60px calc(50% * (1 - var(--reveal))));
 }
 
-/* The left page is the back of the cover: it only appears once the cover has
-   landed on it (the leaf's back face shows the very same picture). */
-.book-cover:not([data-phase="open"]) .book-page--left {
+/* Keep the left page hidden on the closed cover. Reveal it as the cover opens
+   so it remains visible beneath the leaf if a browser drops a 3D face. */
+.book-cover[data-phase="closed"] .book-page--left {
   visibility: hidden;
 }
 
@@ -750,7 +750,9 @@ img.book-spread-img.is-video {
   overflow: hidden;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
-  background: #0f0d0b;
+  /* Keep the page below visible if the browser drops a 3D face for a frame
+     while the cover is opening or a photo leaf is turning. */
+  background: transparent;
 }
 
 .book-seg__face--back {
