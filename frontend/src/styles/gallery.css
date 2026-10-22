@@ -1666,6 +1666,12 @@
 }
 
 @media (max-width: 520px) {
+  .client-shell {
+    width: 100%;
+    min-width: 0;
+    overflow-x: clip;
+  }
+
   .sam-nav {
     padding: 0.5rem 1rem;
   }
@@ -1801,6 +1807,131 @@
   .gallery-filter-row {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  /* Keep the album summary and its actions inside the phone viewport. */
+  .album-hero {
+    min-height: 340px;
+    padding: 2rem 1rem;
+    background-position: center;
+  }
+
+  .album-hero__title {
+    font-size: clamp(2rem, 10vw, 2.8rem);
+    overflow-wrap: anywhere;
+  }
+
+  .album-hero__date {
+    letter-spacing: 0.16em;
+    font-size: 0.7rem;
+  }
+
+  .album-hero__tagline {
+    font-size: 0.95rem;
+    letter-spacing: 0.1em;
+  }
+
+  .album-stat-bar-wrapper {
+    width: 100%;
+    max-width: none;
+    margin: -28px auto 1.25rem;
+    padding: 0 0.85rem;
+  }
+
+  .album-stat-bar {
+    width: 100%;
+    padding: 1rem;
+    gap: 1rem;
+    border-radius: 18px;
+  }
+
+  .album-stat-bar__left {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem 0.65rem;
+    color: var(--text);
+  }
+
+  .album-stat-item {
+    min-width: 0;
+    gap: 0.55rem;
+  }
+
+  .album-stat-item__icon {
+    flex: 0 0 22px;
+  }
+
+  .album-stat-item__count {
+    font-size: 0.88rem;
+    overflow-wrap: anywhere;
+  }
+
+  .album-stat-item__label {
+    font-size: 0.68rem;
+  }
+
+  .album-stat-bar__right {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) 40px;
+    gap: 0.5rem;
+  }
+
+  .album-book-view-btn,
+  .album-stat-btn-download {
+    display: inline-flex;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0.55rem 0.45rem;
+    justify-content: center;
+    gap: 0.35rem;
+    font-size: 0.72rem;
+    line-height: 1.2;
+    text-align: center;
+  }
+
+  .album-book-view-btn {
+    border: 1px solid rgba(215, 205, 192, 0.9);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.9);
+    color: #211c18;
+    font-family: var(--font-ui);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .album-book-view-btn span,
+  .album-stat-btn-download span {
+    min-width: 0;
+  }
+
+  .album-stat-btn-more {
+    width: 40px;
+    height: 44px;
+  }
+
+  .gallery-controls-wrapper {
+    width: 100%;
+    padding: 0 0.85rem;
+  }
+
+  .gallery-filter-tabs {
+    width: 100%;
+    justify-content: space-between;
+    gap: 0.45rem;
+  }
+
+  .gallery-filter-tab {
+    gap: 0.3rem;
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  .gallery-filter-tab svg {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 auto;
   }
 
   .gallery-controls-right {
