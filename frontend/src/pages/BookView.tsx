@@ -534,18 +534,6 @@ export default function BookView() {
   const leftItem = turningPrev ? targetItem : currentItem;
   const rightItem = turningNext ? targetItem : currentItem;
 
-  // The page a turning leaf lands on keeps showing the OLD spread until the
-  // leaf covers it. If the NEW spread is only mounted when the turn ends, the
-  // browser has to load/decode/paint a huge photo right as the leaf is removed,
-  // and the page shows a blank paper-white gap for a couple of seconds. So for
-  // the length of the turn the incoming spread is already mounted underneath
-  // (first in the list = lower in the stack), fully decoded and painted. Keyed
-  // by item id so that same <img> simply becomes the page when the turn ends.
-  const leftItems: GalleryMedia[] =
-    turningNext && currentItem && targetItem ? [targetItem, currentItem] : leftItem ? [leftItem] : [];
-  const rightItems: GalleryMedia[] =
-    turningPrev && currentItem && targetItem ? [targetItem, currentItem] : rightItem ? [rightItem] : [];
-
   const isOpen = phase === "open";
   const coverInfo: CoverInfo = { title: album?.album_name ?? "" };
 
@@ -581,13 +569,7 @@ export default function BookView() {
   const openBook = useCallback(() => {
     if (flipLock.current || phase !== "closed" || !coverReady) return;
     flipLock.current = true;
-    // The left page is hidden under the cover until the book is open, so its
-    // photo has never been decoded. Decode it BEFORE the cover starts to swing,
-    // otherwise the page goes blank the moment the cover lands.
-    const pageImages = Array.from(bookRef.current?.querySelectorAll<HTMLImageElement>(".book-page img") ?? []);
-    Promise.all(
-      pageImages.map((img) => (typeof img.decode === "function" ? img.decode().catch(() => undefined) : undefined))
-    ).then(() => setPhase("opening"));
+    setPhase("opening");
   }, [phase, coverReady]);
 
   // Hold on the closed cover for a moment, then open it (autoplay only: pause
@@ -676,13 +658,19 @@ export default function BookView() {
       commit();
       return;
     }
+    // The leaf is mounted before its pictures are decoded, and --p / --bend
+    // still hold the END of the previous turn. Left alone, the new leaf shows
+    // up already "landed" on the other page with blank paper faces for as long
+    // as the decode takes (~2 s on big photos), then snaps back and turns. So:
+    // park it at rest and keep it invisible until it is ready to turn.
+    book.style.setProperty("--p", "0");
+    book.style.setProperty("--bend", "0");
+    const leaf = book.querySelector<HTMLElement>(".book-leaf");
+    if (leaf) leaf.style.visibility = "hidden";
     const beginWhenPainted = async () => {
       // The detached preload warms the network/cache, but the actual images
-      // mounted on the turning leaf also need to decode before it moves - and
-      // so do the ones on the resting pages, including the incoming spread
-      // waiting under the page the leaf will land on. Decoding them now, not
-      // when the leaf is removed, is what keeps the landing page from going blank.
-      const leafImages = Array.from(book.querySelectorAll<HTMLImageElement>(".book-leaf img, .book-page img"));
+      // mounted on the turning leaf also need to decode before it moves.
+      const leafImages = Array.from(book.querySelectorAll<HTMLImageElement>(".book-leaf img"));
       try {
         await Promise.all(leafImages.map((img) => {
           if (typeof img.decode === "function") return img.decode();
@@ -700,7 +688,9 @@ export default function BookView() {
         return;
       }
       if (cancelled) return;
-      // Let the decoded leaf paint once in its resting pose before animating.
+      // Decoded: show the leaf in its resting pose (it sits exactly over the
+      // page it is about to lift from) and let it paint before animating.
+      if (leaf) leaf.style.visibility = "";
       await new Promise<void>((resolve) => {
         paintFrame = requestAnimationFrame(() => resolve());
       });
@@ -1061,15 +1051,11 @@ export default function BookView() {
               <div className="book-backdrop" aria-hidden="true" />
 
               <div className="book-page book-page--left">
-                {leftItems.map((item) => (
-                  <SpreadHalf key={item.id} item={item} half={0} describe />
-                ))}
+                {leftItem && <SpreadHalf item={leftItem} half={0} describe />}
               </div>
 
               <div className="book-page book-page--right">
-                {rightItems.map((item) => (
-                  <SpreadHalf key={item.id} item={item} half={1} />
-                ))}
+                {rightItem && <SpreadHalf item={rightItem} half={1} />}
               </div>
 
               <div className="book-gutter" aria-hidden="true">
