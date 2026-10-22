@@ -303,7 +303,7 @@ export default function AlbumView() {
         setExpired(true);
       } else if (err instanceof ApiRequestError && err.code === "ALBUM_FORBIDDEN") {
         setError("This gallery is no longer available to you.");
-      } else if (galleryId === "test-uuid" || galleryId === "preview" || galleryId === "demo" || !album) {
+      } else if (galleryId === "test-uuid" || galleryId === "preview" || galleryId === "demo") {
         setClientName("Sam & Priya");
         setAlbum({
           id: albumIdNum || 1,
