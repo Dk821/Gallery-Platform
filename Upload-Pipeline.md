@@ -27,7 +27,7 @@ To prevent bandwidth saturation, server memory exhaustion, and long-running HTTP
 | **Media Service** | `backend/app/services/media_service.py` | Business logic for validating upload intent, initiating Drive resumable sessions, validating file headers via ranged reads, managing session state transitions, and creating `Media` records. |
 | **Google Drive Service** | `backend/app/services/google_drive_service.py` | Encapsulates Google Drive API v3 interactions (resumable session initialization, ranged chunk downloads, folder management, file deletion). Holds OAuth2 credentials server-side; frontend never sees Drive credentials. Every network call uses a dedicated per-call httplib2 client (httplib2 is not thread-safe), so concurrent upload confirmations can never share a socket across threads. |
 | **Thumbnail Worker** | `backend/app/workers/thumbnail_worker.py` | Normalizes browser-submitted WebP thumbnails; provides optional fallback image downscaling and server-side FFmpeg poster extraction for backfill scripts. |
-| **Upload Session Model** | `backend/app/models/upload_session.py` | MySQL `upload_sessions` table acting as an idempotency ledger with fields: `admin_id`, `upload_id`, `album_id`, `filename`, `total_bytes`, `bytes_uploaded`, `status`, `drive_file_id`, `thumbnail_drive_file_id`. |
+| **Upload Session Model** | `backend/app/models/upload_session.py` | MySQL `upload_sessions` table acting as an idempotency ledger with fields: `admin_id`, `upload_id`, `album_id`, `filename`, `total_bytes`, `bytes_uploaded`, `status`, `drive_file_id`, `thumbnail_drive_file_id`, `drive_resumable_upload_url`, `media_id`, `error_code`, `error_message`. |
 | **Circuit Breaker & Retry** | `backend/app/services/circuit_breaker.py`<br>`backend/app/services/retry.py` | Fast-failing protection against Google API outages and exponential backoff for transient network issues. |
 | **Thumbnail Folder Migration** | `backend/app/services/thumbnail_folder_migration.py`<br>`backend/app/migrate_thumbnail_folders.py` | One-shot ops pass: renames legacy `Cover Images` Drive folders to `Thumbnails` and purges the removed cover's orphaned `cover.webp`. Dry-run by default, `--apply` to write. Not part of the upload path. |
 
@@ -38,7 +38,7 @@ To prevent bandwidth saturation, server memory exhaustion, and long-running HTTP
 | **Upload Context** | `frontend/src/contexts/Uploadcontext.tsx` | Global React context holding upload queue state, scheduling concurrent uploads (max 4), tracking progress, retrying, and managing `File` memory cleanup. |
 | **Uploads Page** | `frontend/src/pages/Uploads.tsx` | UI interface for drag-and-drop file selection, album targeting, upload progress bars, error notifications, and batch actions. |
 | **Global Upload Badge** | `frontend/src/components/Globaluploadbadge.tsx` | Floating UI badge rendered across all admin routes when uploads are active in the background. |
-| **Video Poster Utility** | `frontend/src/utils/videoPoster.ts` | Uses `<video>` and `<canvas>` to capture a frame at $t \approx 1.0\text{s}$ into an uploaded video, exporting as WebP. |
+| **Video Poster Utility** | `frontend/src/utils/videoPoster.ts` | Uses `<video>` and `<canvas>` to capture a frame near 1s (or the midpoint for short clips), scans later frames when the first is dark, and exports WebP (JPEG fallback). |
 | **Photo Thumbnail Utility** | `frontend/src/utils/photoThumbnail.ts` | Uses `Image` and `<canvas>` to downscale photos to $\le 400\text{px}$ WebP thumbnails. |
 | **Admin API Service** | `frontend/src/services/admin.ts` | Handles XHR PUT requests to Google Drive resumable URLs, reporting upload progress, and calling backend session endpoints. |
 
@@ -67,22 +67,23 @@ sequenceDiagram
     Backend-->>Browser: 200 OK + { upload_url, upload_id }
 
     %% Step 2: Direct Upload
-    par Direct Chunk Upload & Thumbnail Generation
+    par Direct Chunk Upload
         Browser->>Drive: Resumable PUT bytes to upload_url (XHR with onProgress)
         Drive-->>Browser: 200 OK + { id: drive_file_id, size, mimeType }
-    and Browser Thumbnail
-        Browser->>Browser: Extract frame/thumbnail via Canvas -> WebP Blob
-        Browser->>Backend: POST /api/admin/media/upload-session/{id}/thumbnail (Multipart)
-        Backend->>Drive: Upload thumbnail → Client/Thumbnails/thumb_{uuid}.webp
-        Drive-->>Backend: Thumbnail drive_file_id
-        Backend->>DB: Record session.thumbnail_drive_file_id
-        Backend-->>Browser: 200 OK
+    and Browser Thumbnail Generation (in parallel)
+        Browser->>Browser: Extract frame/thumbnail via Canvas -> WebP (JPEG fallback) Blob
     end
+    Note over Browser: Once the Drive PUT finishes, upload the generated thumbnail
+    Browser->>Backend: POST /api/admin/media/upload-session/{id}/thumbnail (Multipart)
+    Backend->>Drive: Upload thumbnail → Client/Thumbnails/thumb_{uuid}.webp
+    Drive-->>Backend: Thumbnail drive_file_id
+    Backend->>DB: Record session.thumbnail_drive_file_id
+    Backend-->>Browser: 200 OK
 
     %% Step 3: Confirmation & Finalization
     Browser->>Backend: POST /api/admin/media/upload-complete<br/>{upload_id, drive_file_id, reported_size, reported_mime_type}
     Backend->>Drive: GET file metadata (authoritative size check)
-    Backend->>Drive: Ranged GET bytes [0..512] (Header signature validation)
+    Backend->>Drive: Ranged GET bytes [0..511] (Header signature validation)
     Backend->>Backend: validate_upload() (Magic bytes / ISO-BMFF box checks)
     Backend->>DB: Insert Media record & link thumbnail
     Backend->>DB: Update upload_sessions (status='completed')
@@ -111,11 +112,11 @@ Google Drive's resumable upload endpoint **requires** that the initial `POST` re
 Generating video poster frames on a VPS server typically requires downloading multi-gigabyte video files back from Google Drive into server memory/disk and running FFmpeg. 
 
 To eliminate this bottleneck:
-1. **Video Poster Extraction (`videoPoster.ts`)**: When a video is queued, a hidden 1×1px `<video>` element is **attached to the document** (off-screen, `opacity: 0.01`) with `URL.createObjectURL(file)`. The element must be in the DOM — browsers only *paint* frames for rendered media, so a detached element draws black. With `preload="auto"` it seeks to a position, then plays muted while waiting for `requestVideoFrameCallback` (a frame the decoder actually delivered), pauses, and draws to an HTML5 `<canvas>` as `image/webp` (quality 0.82, max dimension 720px). It samples 25%, 50% and 75% of the clip and keeps the brightest frame; a never-decoded, solid-black frame (luma ≤ 4) is never stored — the utility returns `null` instead.
-2. **Photo Thumbnail Downscaling (`photoThumbnail.ts`)**: For high-resolution photos, an `Image` object renders to canvas and scales down to $\le 400\text{px}$ WebP.
-3. **Upload via Session Hook**: The browser uploads the lightweight WebP blob (~10–100 KB) to `POST /api/admin/media/upload-session/{upload_id}/thumbnail`.
+1. **Video Poster Extraction (`videoPoster.ts`)**: When a video is queued, a hidden 1×1px `<video>` element is **attached to the document** (off-screen, `opacity: 0.01`) with `URL.createObjectURL(file)`. The element must be in the DOM — browsers only *paint* frames for rendered media, so a detached element draws black. With `preload="auto"` it seeks to a position, then plays muted while waiting for `requestVideoFrameCallback` (a frame the decoder actually delivered), pauses, and draws to an HTML5 `<canvas>` as `image/webp` (quality 0.80, max dimension 720px; JPEG fallback when WebP encoding is unavailable). It starts near 1s (the midpoint for clips under 2s); if that frame is dark, it scans 25%, 50% and 75% of the clip and keeps the brightest frame. A never-decoded, solid-black frame (luma ≤ 4) is never stored — the utility returns `null` instead.
+2. **Photo Thumbnail Downscaling (`photoThumbnail.ts`)**: For high-resolution photos, an `Image` object renders to canvas and scales down to $\le 400\text{px}$ WebP (JPEG fallback if WebP encoding fails); source images over 50 megapixels are skipped.
+3. **Upload via Session Hook**: Once the Drive PUT finishes, the browser uploads the lightweight WebP blob (~10–150 KB) to `POST /api/admin/media/upload-session/{upload_id}/thumbnail`.
 4. **Where they are stored**: both the video poster and the photo thumbnail are written to the client's single dedicated **`Thumbnails`** Drive folder — a sibling of the album folders, never inside one. That folder is created lazily once per client and its id recorded on `clients.thumbnail_folder_id`, so a retry after a failed thumbnail upload reuses it instead of creating a second folder. (Clients predating the rename still have their folder called `Cover Images` in Drive; `migrate_thumbnail_folders.py` renames it.)
-5. **Best-Effort Resiliency**: Thumbnail generation has a 20-second timeout. If the browser or client codec fails to extract a frame (or only produces black), nothing is stored and the main upload continues unimpeded. The gallery grid gracefully falls back to a placeholder icon.
+5. **Best-Effort Resiliency**: Extraction and upload are best-effort, with 15–20-second timeouts. If the browser or client codec fails to extract a frame (or only produces black), nothing is stored and the main upload continues unimpeded. The gallery grid gracefully falls back to a placeholder tile.
 
 ### 4.3 Idempotency Ledger & Upload Session Lifecycle
 
@@ -185,8 +186,8 @@ An earlier version of this pipeline gave each client one cover image for the gal
 
 - **What it was**: the first eligible photo (jpg/jpeg/png/webp, not video, not GIF) to finish uploading while the client had no cover. `POST /upload-session` reported `cover_needed`; the browser rendered a $\le 1600\text{px}$ WebP from the same local file (`extractPhotoCover`) and sent it to `POST /upload-session/{id}/cover` after `/upload-complete`, fire-and-forget so a cover failure could never fail an upload. The server re-encoded the blob and stored `cover.webp` in the client's `Cover Images` folder with an atomic `UPDATE ... WHERE col IS NULL` claim, so concurrent uploads could only ever create one.
 - **Why it went**: it was a second, parallel set of cover bytes — a second storage location, a second compare-and-set race, two extra columns, and two extra endpoints — all to produce an image the item's own thumbnail already provided.
-- **What replaced it**: nothing in the pipeline. Album art is now derived at read time — the gallery grid takes the first item of each album and uses its thumbnail (`Gallery.tsx`, `DEFAULT_COVERS` as fallback). See `ARCHITECTURE.md` § *Album Covers*.
-- **Removed with it**: `cover_service.py`, `clients.cover_drive_file_id`, `clients.cover_folder_id`, `has_cover` on the gallery-info response, and the `cover_needed` flag on the session response. Alembic `a5c7e3b1d9f8` renamed `cover_folder_id` to `thumbnail_folder_id` (that column is still used — for item thumbnails), so old clients' folders kept working by id; only the *name* in Drive was stale.
+- **What replaced it**: nothing in the pipeline. Album art is now derived at read time — the gallery grid takes the first item of each album and uses its thumbnail (`Gallery.tsx`; a styled empty cover block is shown when no thumbnail exists). See `ARCHITECTURE.md` § *Album Covers*.
+- **Removed with it**: `cover_service.py`, the `clients.cover_drive_file_id` column, `has_cover` on the gallery-info response, and the `cover_needed` flag on the session response. Alembic `a5c7e3b1d9f8` dropped `cover_drive_file_id` and renamed `cover_folder_id` to `thumbnail_folder_id` (value preserved — that column is still used for item thumbnails), so old clients' folders kept working by id; only the *name* in Drive was stale.
 - **Leftover bytes**: `python -m app.migrate_thumbnail_folders --apply` renames those `Cover Images` folders to `Thumbnails` and deletes the orphaned `cover.webp`. Item thumbnails are always named `thumb_{uuid}.webp`, so the file is unambiguous — and a file by that name is still skipped if any `Media` row references it.
 
 ---
@@ -202,4 +203,4 @@ An earlier version of this pipeline gave each client one cover image for the gal
 | **Server restart while uploads in-flight** | Lifespan Startup Sweep | `app/main.py` scans for lingering `uploading`/`queued` sessions and marks them `failed` (`UPLOAD_STALE`). |
 | **Drive outage / 5xx errors** | `CircuitBreaker` | Trips after 3 consecutive network failures with a 20-second cooldown, preventing thread exhaustion. |
 | **Orphaned files in Drive** | `reconcile_orphans.py` | Nightly cron identifies files in Drive without matching DB records (past grace period) and purges them. |
-| **Thumbnail upload fails** | Best-effort (§4.2) | The main upload is unaffected. The session keeps no `thumbnail_drive_file_id`; the gallery grid falls back to a placeholder icon for that item. The `Thumbnails` folder id is recorded anyway, so a retry reuses it. |
+| **Thumbnail upload fails** | Best-effort (§4.2) | The main upload is unaffected. The session keeps no `thumbnail_drive_file_id`; the gallery grid falls back to a placeholder tile for that item. The `Thumbnails` folder id is recorded anyway, so a retry reuses it. |

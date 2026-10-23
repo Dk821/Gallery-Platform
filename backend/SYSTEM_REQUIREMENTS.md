@@ -8,7 +8,7 @@ optionally be installed at the OS level.
 
 **Current Status: Optional.**
 
-In the current direct-to-Drive upload architecture, **video poster frames (and photo thumbnails) are generated client-side by the browser during upload** (`frontend/src/utils/videoPoster.ts` and `photoThumbnail.ts`) using HTML5 `<video>` / `<img>` and `<canvas>`, then uploaded directly to `POST /api/admin/media/upload-session/{id}/thumbnail` as lightweight WebP images. Because of this, the server never has to read a multi-GB video file from Google Drive to generate a poster, and uploads do not require FFmpeg on the server.
+In the current direct-to-Drive upload architecture, **video poster frames and photo thumbnails are normally generated client-side by the browser during upload** (`frontend/src/utils/videoPoster.ts` and `photoThumbnail.ts`) using HTML5 `<video>` / `<img>` and `<canvas>`, then uploaded directly to `POST /api/admin/media/upload-session/{id}/thumbnail` as lightweight WebP images. If the browser cannot produce a photo thumbnail, the server can generate one with Pillow from a bounded read-back of the just-uploaded image; FFmpeg is never part of the upload path. Because of this, the server never has to read a multi-GB video file from Google Drive to generate a poster, and uploads do not require FFmpeg on the server.
 
 **What it's for on the server:**
 - Serves as backfill tooling (`app/workers/thumbnail_worker.py:generate_video_poster`) for administrative scripts or future tasks to generate poster frames for videos that were uploaded without one.

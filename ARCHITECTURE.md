@@ -16,7 +16,7 @@ A private gallery platform for wedding photographers to manage clients, albums, 
 | Migrations | Alembic |
 | Storage | Google Drive v3 API (OAuth2 credentials) |
 | Video Processing | FFmpeg (system binary — **optional**, see below) |
-| Image Processing | Pillow |
+| Image Processing | Pillow (server-side fallbacks) + HTML5 Canvas/WebP (client-side) |
 | Auth | Argon2 (passwords), itsdangerous (admin tokens), Fernet (reversible encryption) |
 | Testing | pytest, httpx, TestClient |
 
@@ -37,10 +37,10 @@ final v2/
 │   │   │   └── client_*.py   # Client endpoints (gallery, download jobs, wishlist)
 │   │   ├── config/           # pydantic-settings (.env loader)
 │   │   ├── database/         # SQLAlchemy engine, session, Base
-│   │   ├── models/           # 11 ORM models + mixins
+│   │   ├── models/           # 12 ORM models + mixins
 │   │   ├── schemas/          # Pydantic request/response models (auth, client, album, media, download_job, studio_settings, errors, pagination)
 │   │   ├── security/         # Password hashing (Argon2), session tokens, reversible encryption (Fernet)
-│   │   ├── services/         # Business logic layer (circuit_breaker, storage_provider, storage_service, google_drive_service, folder_naming, retry, timeouts, upload_concurrency, upload_logging, media_validation, media_aggregates, disk_service, admin_service, client_service, album_service, media_service, download_job_service, download_analytics_service, storage_analytics_service, dashboard_service, activity_service, orphan_reconciliation, thumbnail_folder_migration, studio_settings_service, wishlist_service)
+│   │   ├── services/         # Business logic layer (activity_service, admin_service, album_service, auth_service, circuit_breaker, client_service, comment_service, dashboard_service, disk_service, download_analytics_service, download_job_service, folder_naming, google_drive_service, media_aggregates, media_service, media_validation, orphan_reconciliation, retry, storage_analytics_service, storage_provider, storage_service, studio_settings_service, thumbnail_folder_migration, timeout_utils, upload_concurrency, upload_logging, wishlist_service)
 │   │   ├── workers/          # Thumbnail generation (PIL + FFmpeg)
 │   │   ├── main.py           # App factory, lifespan, middleware, error envelope
 │   │   ├── create_admin.py   # First admin bootstrap (python -m app.create_admin)
@@ -53,8 +53,8 @@ final v2/
 │   ├── .env.example          # Config template (committed)
 │   └── tests/                # 23 pytest test files + conftest/fakes
 ├── frontend/
-│   ├── .env.example          # VITE_API_BASE_URL - only needed when frontend/backend
-│   │                         # are on different origins (mirrors CROSS_SITE_FRONTEND)
+│   ├── .env.example          # VITE_API_BASE_URL - API base for cross-origin builds
+│   │                         #   (VITE_API_URL is only needed to enable the dev proxy)
 │   ├── .env                  # Local override (not committed)
 │   ├── index.html            # SPA entry: <head> (title, description, favicon -> /ls-logo.png,
 │   │                         #   Google Fonts) + #root mount + the /src/main.tsx module script
@@ -80,7 +80,6 @@ final v2/
 │       ├── vite-env.d.ts     # ImportMetaEnv typing for VITE_ vars
 │       ├── App.tsx           # Route definitions
 │       └── main.tsx          # Entry point
-├── model book view/          # Reference prototype of the Book View page-turn animation
 ├── ARCHITECTURE.md           # This file
 ├── Upload-Pipeline.md        # Deep dive on direct-to-Drive upload pipeline
 └── README.md                 # Setup guide and project overview
@@ -176,10 +175,10 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 ### Auth (`/api/auth`)
 | Method | Path | Description |
 |---|---|---|
-| POST | `/auth/admin/login` | Admin login → HttpOnly cookie |
-| POST | `/auth/client/login` | Client login → HttpOnly cookie |
-| POST | `/auth/logout` | Clear session |
-| GET | `/auth/me` | Current user info |
+| POST | `/api/auth/admin/login` | Admin login → HttpOnly cookie |
+| POST | `/api/auth/client/login` | Client login → HttpOnly cookie |
+| POST | `/api/auth/logout` | Clear session |
+| GET | `/api/auth/me` | Current user info |
 
 ### Admin (`/api/admin/*`) — Cookie auth required
 | Area | Endpoints |
@@ -203,7 +202,7 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 | Area | Endpoints |
 |---|---|
 | Gallery | Gallery info (incl. aggregated photo/video/byte totals), album listing, album detail (both album responses carry `book_view_enabled` / `book_layout` for the Book View entry point) |
-| Media | List, detail (both carry `is_wishlisted`), stream, thumbnail, download |
+| Media | List, detail (both carry `is_wishlisted`), selection summary, stream, thumbnail, download |
 | Wishlist | `GET /wishlist` (paginated, optional `album_id`), `POST /wishlist/{media_id}`, `DELETE /wishlist/{media_id}` - both idempotent |
 | Page notes | `GET /albums/{id}/comments` (own notes only), `POST /albums/{id}/comments` (upsert by `media_id` + `page_number` + `comment`), `PUT /comments/{id}`, `DELETE /comments/{id}` |
 | Downloads | ZIP job creation, password verification, file download |
@@ -228,7 +227,7 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 - Raw token in HttpOnly cookie `client_session`
 - Each client scoped to their own `galleryId` — ownership enforced on every route
 - **Optional gallery password**: a client created without one has `password_hash = NULL`
-  and no password prompt. `POST /auth/client/login` accepts an empty/missing `password`
+  and no password prompt. `POST /api/auth/client/login` accepts an empty/missing `password`
   and creates a normal server-side session, so every authenticated client page works
   unchanged. A gallery *with* a password always rejects a missing or wrong password
   (`INVALID_CREDENTIALS`) — an admin can remove a set password entirely via
@@ -253,7 +252,7 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 - **Idempotency ledger (`upload_sessions`)**: Each upload uses a UUID-based `upload_id` decoupled from filename to prevent `VARCHAR(100)` column overflow. Duplicate submissions of completed uploads safely return the existing `Media` record without re-uploading.
 - **Global queue persistence**: `UploadContext.tsx` maintains upload state globally across admin routes. Transfer progress is visible anywhere via `GlobalUploadBadge.tsx`. Memory is guarded by `withReleasedFile()`, which clears `File` object handles from React state upon upload completion or cancellation.
 - **Client-side throttling**: The upload queue scheduler caps active transfers to `MAX_CONCURRENT_UPLOADS = 4` simultaneous connections to prevent network saturation.
-- **Server admission control**: Configured via `UPLOAD_MAX_CONCURRENT=3`, `UPLOAD_MAX_CONCURRENT_REQUESTS=8`, `UPLOAD_QUEUE_WAIT_SECONDS=45`, `UPLOAD_CHUNK_TIMEOUT=120`, `UPLOAD_SESSION_TIMEOUT=3600` in `.env`.
+- **Server admission control**: Tunable via `UPLOAD_MAX_CONCURRENT` (default `3`), `UPLOAD_MAX_CONCURRENT_REQUESTS` (default `8`), `UPLOAD_QUEUE_WAIT_SECONDS` (default `45`), `UPLOAD_CHUNK_TIMEOUT` (default `120`) and `UPLOAD_SESSION_TIMEOUT` (default `3600`). Override them in `.env` for larger batches or slower links.
 - **Socket-level timeouts**: Every `httplib2.Http()` used to communicate with Google Drive has explicit socket timeouts (`timeout=settings.upload_chunk_timeout`), preventing hung TLS handshakes from permanently blocking worker threads.
 - **Circuit breaker** (`app/services/circuit_breaker.py`): Wraps transport calls to Google Drive. Trips after 3 consecutive transport/connectivity failures with a 20-second cooldown, protecting the backend thread pool during Google Drive service degradation.
 
@@ -261,9 +260,9 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 ### Album Covers
 There is no stored cover image anywhere in the system, and nothing to manage: no cover column, no cover upload route, no cover in any API response.
 
-- **Derived per album, at read time**: the gallery album grid fetches `GET /api/client/media?album_id={id}&page=1&limit=1` and uses the first item's `has_thumbnail` flag — if set, that item's thumbnail URL becomes the album cover; if not, the card falls back to one of the bundled gradient placeholders in `Gallery.tsx` (`DEFAULT_COVERS`).
+- **Derived per album, at read time**: the gallery album grid fetches `GET /api/client/media?album_id={id}&page=1&limit=1` and uses the first item's `has_thumbnail` flag — if set, that item's thumbnail URL becomes the album cover; if not, the card renders its styled empty cover block (`wedding-album-card__cover-empty`) over the album's gradient background.
 - **One request per album, deliberately**: photo/video counts and byte totals already ride on the album list (aggregated in SQL), so the first media page is the only extra fetch the grid makes — and it asks for a single item.
-- **Replacing a removed feature**: an earlier design gave each *client* one automatic cover, built by the browser from the first eligible photo and stored as `cover.webp` beside the album folders. It was removed (Alembic `a5c7e3b1d9f8`) along with the `cover_folder_id` / `cover_drive_file_id` columns, `cover_service.py`, and the `POST /upload-session/{id}/cover` + `GET /gallery/cover` endpoints. Album art now comes from the album's own first thumbnail, so there is no cover that can go stale or need reconciling.
+- **Replacing a removed feature**: an earlier design gave each *client* one automatic cover, built by the browser from the first eligible photo and stored as `cover.webp` beside the album folders. It was removed (Alembic `a5c7e3b1d9f8`) along with `cover_service.py` and the `POST /upload-session/{id}/cover` + `GET /gallery/cover` endpoints; `cover_drive_file_id` was dropped, while `cover_folder_id` was renamed to `thumbnail_folder_id` (value preserved). Album art now comes from the album's own first thumbnail, so there is no cover that can go stale or need reconciling.
 - **Legacy bytes**: `migrate_thumbnail_folders.py` (dry-run by default, `--apply` to write) renames each legacy `Cover Images` folder to `Thumbnails` — metadata-only, so the folder id and every thumbnail inside it are untouched — then deletes the orphaned `cover.webp`, which is unambiguously identifiable because item thumbnails are always named `thumb_{uuid}.webp`. A file by that name is still skipped if any `Media` row references it, and a folder missing from Drive has its now-dangling `thumbnail_folder_id` cleared so the next upload recreates it.
 
 ### Client Wishlist
@@ -401,7 +400,7 @@ the admin side).
 /admin/settings           → Studio profile, admin account (change password), security & download policy
 
 /gallery/:galleryId              → Client entrance (auto-opens passwordless galleries)
-/gallery/:galleryId/view         → All media view
+/gallery/:galleryId/view         → Album picker: every album shared with the client
 /gallery/:galleryId/view/:albumId → Single album view
 /gallery/:galleryId/view/:albumId/book → Book View: the page-turning reader for one album
                                     (redirects to the plain album view unless the album's
@@ -432,7 +431,7 @@ Behavioral notes on the entrance routes:
 **Admin route gate.** Every `/admin/*` page except `/admin/login` sits behind a layout route
 (`<Route element={<RequireAdmin />}>` in `App.tsx`), so nothing in the admin area renders until
 the server confirms an admin session. `RequireAdmin` (`frontend/src/components/RequireAdmin.tsx`)
-calls `GET /auth/me` once on entering the area and renders the page behind an `admin` identity;
+calls `GET /api/auth/me` once on entering the area and renders the page behind an `admin` identity;
 it redirects anyone else to `/admin/login?redirect=<path+query>`. Without it the shell was only
 "protected" indirectly (each page's own API calls 401 a beat later), so a client-side navigation —
 most visibly the 404 page's "Back to dashboard" button, which never triggers a fresh page load —
@@ -472,7 +471,7 @@ sessions that expire mid-use to `api.ts`'s 401 handler.
 - `AlbumCommentsModal` — Admin review of one album's page notes: grouped by page with thumbnail,
   status filter, resolve/reopen and delete; reports the new count back to the Albums list badge
 - `RequireAdmin` — Layout-route session gate wrapping every `/admin/*` page; confirms the
-  session with `GET /auth/me` before rendering and redirects non-admins to the login screen
+  session with `GET /api/auth/me` before rendering and redirects non-admins to the login screen
   (see *Routing*)
 - `PoweredBy` — The one shared credit line (`Powered by madgen` + `Version V0.4` / a date),
   rendered on the Home footer, both login pages (`.login-powered-wrap`), and the bottom of the
@@ -538,7 +537,7 @@ The two are on different origins, so `CROSS_SITE_FRONTEND=true` and the Secure/S
 - **Ops pass, once**: `python -m app.migrate_thumbnail_folders --apply` (renames legacy `Cover Images`
   folders to `Thumbnails` and purges the removed cover — see *Album Covers*); dry-run first
 - **Cron jobs**: `python -m app.cleanup_download_jobs`, `python -m app.reconcile_orphans --apply`
-- **Dev proxy**: Vite proxies `/api` → `http://localhost:8000`
+- **Dev API access**: the app calls `VITE_API_BASE_URL` directly; optionally set `VITE_API_URL` so Vite proxies `/api` to that origin (e.g. `http://localhost:8000`)
 
 ### Branding
 
@@ -591,7 +590,7 @@ version string.
     in the browser via HTML5 Canvas and WebP compression avoids expensive server-side video re-downloads
     and renders server-side FFmpeg optional (retained only for backfill tooling)
 11. **No stored cover image** — Album art is the album's own first thumbnail, resolved at read
-    time, and a client with no cover-eligible photo just falls back to a bundled placeholder. The
+    time, and an album with no thumbnailed item falls back to a styled empty cover block. The
     earlier per-client automatic cover was removed outright: a second, parallel set of cover
     bytes meant a second storage location, a second claim/compare-and-set race, two more columns,
     two more endpoints, and a migration to reclaim the leftovers — all to produce an image that a

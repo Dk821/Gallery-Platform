@@ -22,7 +22,7 @@ A private gallery platform for wedding photographers to manage clients, albums, 
 ## Prerequisites
 
 - **Python 3.12+**
-- **Node.js 18+** and npm
+- **Node.js 20.19+** (or 22.12+) and npm (Vite 8's engine requirement)
 - **MySQL 8**
 - **Google Drive API** credentials (OAuth2 Desktop app credentials with Drive access)
 - **FFmpeg** (optional system binary — video poster frames are generated directly in the browser during upload; FFmpeg on the server is only used for administrative backfill tooling)
@@ -55,7 +55,7 @@ final v2/
 │   │   ├── api/              # Route handlers (admin, client, auth, media streaming)
 │   │   ├── config/           # pydantic-settings (.env loader)
 │   │   ├── database/         # SQLAlchemy engine, session, Base
-│   │   ├── models/           # 11 ORM models + shared mixins
+│   │   ├── models/           # 12 ORM models + shared mixins
 │   │   ├── schemas/          # Pydantic request/response models
 │   │   ├── security/         # Password hashing, sessions, encryption
 │   │   ├── services/         # Business logic layer (storage, direct upload, validation, etc.)
@@ -78,7 +78,7 @@ final v2/
 │   │   ├── hooks/            # useWishlist (optimistic wishlist state)
 │   │   ├── pages/            # Admin + Client pages
 │   │   ├── services/         # Typed API client (auth, admin, gallery)
-│   │   ├── styles/           # Plain CSS (index.css, admin.css, gallery.css)
+│   │   ├── styles/           # Plain CSS (index.css, admin.css, gallery.css, book-view.css)
 │   │   ├── utils/            # format.ts, photoThumbnail.ts, videoPoster.ts
 │   │   ├── App.tsx           # Route definitions
 │   │   └── main.tsx          # Entry point
@@ -89,7 +89,6 @@ final v2/
 │   ├── vercel.json           # SPA rewrite, /api proxy, security headers
 │   ├── .env.example          # Frontend config template
 │   └── package.json
-├── model book view/         # Reference prototype of the Book View page-turn animation
 ├── ARCHITECTURE.md
 ├── Upload-Pipeline.md
 └── README.md
@@ -177,7 +176,10 @@ cd frontend
 npm run dev
 ```
 
-The Vite dev server proxies `/api` requests to `http://localhost:8000`.
+By default the app calls the backend directly through `VITE_API_BASE_URL`
+(`http://localhost:8000` in the local `.env`). Alternatively, set
+`VITE_API_URL` in `frontend/.env` to have the Vite dev server proxy `/api`
+requests to that origin (for example `http://localhost:8000`).
 
 ### Create First Admin
 
@@ -190,7 +192,7 @@ Password must be exactly 8 characters.
 ### Admin Route Protection
 
 Every `/admin/*` page except `/admin/login` is wrapped by a `RequireAdmin` route
-guard, which calls `GET /auth/me` first and only renders the page once the server
+guard, which calls `GET /api/auth/me` first and only renders the page once the server
 confirms an admin session — otherwise it redirects to
 `/admin/login?redirect=<the page you wanted>`. This closes the gap where a
 client-side navigation (e.g. the 404 page's "Back to dashboard" button) could
@@ -259,7 +261,8 @@ alembic upgrade head
 - Honours `prefers-reduced-motion` (the book starts open, turns are instant).
 - Loads the whole album up to a hard cap of 2000 items.
 
-The page-turn animation prototype lives in `model book view/`.
+The reader is implemented in `frontend/src/pages/BookView.tsx`, with its styles in
+`frontend/src/styles/book-view.css`.
 
 ### Book order (drag & drop)
 
@@ -314,20 +317,44 @@ one), and saving closes the sheet and turns to the next page.
 | `SESSION_TTL_MINUTES` | Session lifetime | `1440` |
 | `CROSS_SITE_FRONTEND` | `true` if frontend on different origin | `false` |
 | `CORS_ORIGINS` | Comma-separated allowed origins (forwarded to Drive to authorize browser direct-PUTs) | — |
-| `MAX_UPLOAD_SIZE_BYTES` | Max upload size | `10737418240` (10GB) |
-| `ZIP_TEMP_DIR` | Temp directory for ZIP jobs | `/tmp/gallery_zip_jobs` |
+| `DEV_FRONTEND_ORIGIN` | Local frontend origin used as the CORS fallback when `CORS_ORIGINS` is empty | — |
+| `MAX_UPLOAD_SIZE_BYTES` | Max upload size | `10737418240` (10 GB) |
+| `ALLOWED_IMAGE_TYPES` | Accepted image extensions | `jpg,jpeg,png,webp,gif` |
+| `ALLOWED_VIDEO_TYPES` | Accepted video extensions | `mp4,mov,webm` |
+| `ZIP_TEMP_DIR` | Temp directory for ZIP jobs | `/tmp/gallery_zip_jobs` (OS temp dir) |
 | `ZIP_JOB_TTL_HOURS` | ZIP download link TTL | `24` |
-| `UPLOAD_MAX_CONCURRENT` | Max simultaneous Drive uploads | `3` |
+| `ZIP_JOB_MAX_FILES` | Max files in one ZIP job | `5000` |
+| `ZIP_JOB_PARALLEL_DOWNLOADS` | Concurrent file fetches while building a ZIP | `4` |
+| `UPLOAD_MAX_CONCURRENT` | Max uploads actively transferring to Drive | `3` |
+| `UPLOAD_MAX_CONCURRENT_REQUESTS` | Max uploads holding an admission slot (must be ≥ `UPLOAD_MAX_CONCURRENT`) | `8` |
+| `UPLOAD_QUEUE_WAIT_SECONDS` | Wait for an admission slot before returning 503 | `45` |
+| `UPLOAD_CHUNK_SIZE_MB` | Resumable chunk size, rounded to a 256 KiB multiple | `8` |
+| `UPLOAD_MAX_RETRIES` | Retry attempts for transient Drive failures | `5` |
+| `UPLOAD_INITIAL_BACKOFF_SECONDS` | Initial retry backoff | `0.5` |
+| `UPLOAD_MAX_BACKOFF_SECONDS` | Maximum retry backoff | `20` |
+| `UPLOAD_MAX_FILE_SIZE_MB` | Per-file size ceiling (the smaller of this and `MAX_UPLOAD_SIZE_BYTES` wins) | `10240` |
+| `UPLOAD_MIN_FREE_DISK_GB` | Free disk required before accepting an upload | `5` |
+| `UPLOAD_CHUNK_TIMEOUT` | Per-chunk network timeout | `120` |
+| `UPLOAD_SESSION_TIMEOUT` | Overall transfer deadline for one upload | `3600` |
+| `ORPHAN_FILE_GRACE_PERIOD_HOURS` | Age before an unmatched Drive file is considered an orphan | `48` |
+| `THUMBNAIL_IMAGE_SOURCE_MAX_MB` | Largest photo the server will read back to build a fallback thumbnail | `25` |
+| `VIDEO_THUMBNAIL_UPLOAD_MAX_KB` | Max browser-uploaded video poster size | `2048` |
 | `ENVIRONMENT` | `development` or `production` | `development` |
 
-See `backend/.env.example` for the full list with descriptions. Note that for direct-to-Drive uploads, your frontend origin (e.g. `http://localhost:5173`) must be present in `CORS_ORIGINS` so the backend can authorize the browser's origin with Google Drive when opening resumable upload sessions.
+See `backend/app/config/settings.py` for the complete settings model and
+`backend/.env.example` for a starting template. Note that for direct-to-Drive
+uploads, your frontend origin (e.g. `http://localhost:5173`) must be present in
+`CORS_ORIGINS` (or supplied via `DEV_FRONTEND_ORIGIN` when `CORS_ORIGINS` is
+empty) so the backend can authorize the browser's origin with Google Drive when
+opening resumable upload sessions.
 
 
-### Frontend (`.env`) — only if different origin
+### Frontend (`.env`)
 
 | Variable | Description |
 |---|---|
-| `VITE_API_BASE_URL` | Backend origin URL (e.g. `https://api.yourdomain.com`) |
+| `VITE_API_BASE_URL` | Backend origin URL baked into API requests (e.g. `https://api.yourdomain.com`); required when frontend and backend are on different origins |
+| `VITE_API_URL` | Optional dev-server proxy target for `/api` (e.g. `http://localhost:8000`); used only by `vite.config.ts` |
 
 ---
 
@@ -352,7 +379,7 @@ cd backend
 pytest
 ```
 
-22 test files covering auth (including the optional gallery-password flow),
+23 test files covering auth (including the optional gallery-password flow),
 authorization & cross-client isolation, client search & selection summaries,
 admin/client/album management, album expiry, media management (search,
 pagination, metadata edits, move, delete), bulk operations, gallery totals,
@@ -365,7 +392,7 @@ resumable uploads, FFmpeg availability, the httplib2 cleanup-bug regression,
 studio settings/security policy (incl. self-service admin password change),
 page notes (`test_comments.py`: upsert, cross-client isolation, validation,
 expiry, admin review, album counts), and book order (`test_media_order.py`:
-reorder, client-side ordering, complete-list validation, note renumbering,?
+reorder, client-side ordering, complete-list validation, note renumbering,
 move-to-end, admin-only access).
 
 Tests use an in-memory SQLite database and `FakeStorageService` — no real Drive calls.
