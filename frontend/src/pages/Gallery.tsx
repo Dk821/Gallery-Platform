@@ -100,7 +100,7 @@ export default function Gallery() {
             <p className="wedding-landing__kicker">Welcome</p>
             <h1 className="wedding-landing__title">{clientName}</h1>
             <div className="wedding-landing__heart-sep" aria-hidden="true">
-              â™¡
+              ♡
             </div>
             <p className="wedding-landing__sub">Your memories are here</p>
             {info && info.total_files > 0 && (
@@ -229,7 +229,7 @@ export default function Gallery() {
 
           <div className="wedding-footer__center">
             <div className="wedding-footer__heart-accent">
-              <span className="wedding-footer__heart-icon">â™¡</span>
+              <span className="wedding-footer__heart-icon">♡</span>
             </div>
             <p className="wedding-footer__sub1">More Than Photos</p>
             <p className="wedding-footer__sub2">A Beautiful Story</p>
