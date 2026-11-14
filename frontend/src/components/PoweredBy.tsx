@@ -8,8 +8,8 @@ export default function PoweredBy() {
         </a>
       </span>
       <span className="powered-by__meta">
-        <span>Version V0.5</span>
-        <span>31/10/2026</span>
+        <span>Version V0.6</span>
+        <span>14/11/2026</span>
       </span>
     </div>
   );
