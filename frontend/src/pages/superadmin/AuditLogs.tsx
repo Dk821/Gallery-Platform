@@ -59,16 +59,6 @@ function remember(key: string, value: string) {
   }
 }
 
-/** Compact "key value" text for the first few metadata entries. */
-function metaPairs(meta: Record<string, unknown>): { key: string; value: string }[] {
-  return Object.entries(meta)
-    .slice(0, 3)
-    .map(([key, value]) => {
-      const text = typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
-      return { key: key.replace(/_/g, " "), value: text.length > 40 ? `${text.slice(0, 40)}…` : text };
-    });
-}
-
 export default function AuditLogs() {
   const [params] = useSearchParams();
   const [studios, setStudios] = useState<Studio[]>([]);
@@ -273,8 +263,7 @@ export default function AuditLogs() {
                     <th>When</th>
                     <th>Action</th>
                     <th>Studio</th>
-                    <th>Actor</th>
-                    <th>Details</th>
+                    <th>Target</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -295,14 +284,12 @@ export default function AuditLogs() {
 
 function AuditRow({ row, studioName }: { row: AuditLogRow; studioName: string | null }) {
   const failed = row.action.endsWith("_failed");
-  const pairs = row.metadata ? metaPairs(row.metadata) : [];
   return (
     <tr className={failed ? "sa-row--problem" : undefined}>
       <td className="sa-nowrap sa-muted">{formatDateTime(row.created_at)}</td>
       <td>
         <span className="sa-table__title">{humanizeAction(row.action)}</span>
         {failed && <span className="sa-badge sa-badge--danger sa-badge--inline">failed</span>}
-        <div className="sa-muted sa-small sa-mono">{row.action}</div>
       </td>
       <td>
         {row.studio_id ? (
@@ -312,32 +299,7 @@ function AuditRow({ row, studioName }: { row: AuditLogRow; studioName: string | 
         )}
       </td>
       <td className="sa-muted">
-        {row.actor_role ? row.actor_role.replace("_", " ") : row.user_type}
-        {row.user_id ? ` #${row.user_id}` : ""}
-        {row.ip_address && <div className="sa-small sa-mono">{row.ip_address}</div>}
-      </td>
-      <td>
-        {row.resource_type && (
-          <div className="sa-muted sa-small">
-            {row.resource_type}
-            {row.resource_id ? ` #${row.resource_id}` : ""}
-          </div>
-        )}
-        {pairs.length > 0 && (
-          <div className="sa-meta-pairs">
-            {pairs.map((p) => (
-              <span key={p.key}>
-                <em>{p.key}</em> {p.value}
-              </span>
-            ))}
-          </div>
-        )}
-        {row.metadata && Object.keys(row.metadata).length > 0 && (
-          <details className="sa-meta">
-            <summary>Full details</summary>
-            <pre>{JSON.stringify(row.metadata, null, 2)}</pre>
-          </details>
-        )}
+        {row.resource_type ? `${row.resource_type.replace(/_/g, " ")}${row.resource_id ? ` #${row.resource_id}` : ""}` : "—"}
       </td>
     </tr>
   );

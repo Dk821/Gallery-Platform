@@ -50,7 +50,8 @@ export const superAdminService = {
     api.get<StudioLoginsPage>(`/super-admin/logins${qs({ page: p.page, limit: p.limit, state: p.state, search: p.search?.trim() })}`),
   storageCheck: () => api.get<StorageReport>("/super-admin/storage/reconcile"),
   storageRepair: () => api.post<StorageReport>("/super-admin/storage/reconcile", {}),
-  trends: (days: number) => api.get<PlatformTrends>(`/super-admin/stats/trends${qs({ days })}`),
+  trends: (r: { days: number } | { start: string; end: string }) =>
+    api.get<PlatformTrends>(`/super-admin/stats/trends${qs("days" in r ? { days: r.days } : { start: r.start, end: r.end })}`),
 
   listStudios: (p: { page?: number; limit?: number; search?: string; status?: StudioStatus | "" } = {}) =>
     api.get<Page<Studio>>(

@@ -54,8 +54,8 @@ def test_category_actor_search_and_sort(client, db_session):
     assert _actions(client, "category=logins") == ["studio_admin_password_reset"]
     assert _actions(client, "category=storage") == ["studio_quota_changed"]
     content = _actions(client, "category=content")
-    assert "media_uploaded" in content and "media_upload_failed" in content and "client_login" not in content
-    assert set(_actions(client, "category=problems")) == {"admin_login_failed", "media_upload_failed"}
+    assert "media_uploaded" in content and "media_upload_failed" not in content and "client_login" not in content
+    assert set(_actions(client, "category=problems")) == {"admin_login_failed"}
     assert client.get("/api/super-admin/audit-logs?category=bogus").status_code == 400
 
     assert set(_actions(client, "actor=super_admin")) == {"studio_suspended", "studio_admin_password_reset", "studio_quota_changed"} | {

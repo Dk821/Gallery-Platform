@@ -8,7 +8,6 @@ import {
   IconAlbums,
   IconDownload,
   IconMedia,
-  IconRefresh,
   IconStudios,
   IconUpload,
   IconUsers,
@@ -19,6 +18,7 @@ import { formatBytes, formatDateTime, formatNumber, humanizeAction, percent } fr
 // The Recent activity list shows only the latest 10 entries (the full history is on the Audit log page).
 const RECENT_ACTIVITY_LIMIT = 10;
 
+type TrendRange = { days: number } | { start: string; end: string };
 const RANGES = [7, 30, 90] as const;
 type MetricKey = "uploaded_bytes" | "media" | "clients" | "albums" | "downloads";
 const METRICS: { key: MetricKey; label: string; unit: "bytes" | "count" }[] = [
@@ -85,10 +85,9 @@ export default function Dashboard() {
   const [trendsFailed, setTrendsFailed] = useState(false);
   const [trendsBusy, setTrendsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
 
-  const [days, setDays] = useState<number>(() => {
+  const [presetDays, setPresetDays] = useState<number>(() => {
     const saved = Number(recall("sa.dashboard.range"));
     return (RANGES as readonly number[]).includes(saved) ? saved : 30;
   });
@@ -97,7 +96,14 @@ export default function Dashboard() {
     return METRICS.some((m) => m.key === saved) ? (saved as MetricKey) : "uploaded_bytes";
   });
 
-  const loadTrends = useCallback((range: number) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [custom, setCustom] = useState<{ start: string; end: string } | null>(null);
+  const [draft, setDraft] = useState<{ start: string; end: string }>({ start: "", end: today });
+  const draftValid = !!draft.start && !!draft.end && draft.start <= draft.end && draft.end <= today;
+  const days = custom ? trends?.range_days ?? presetDays : presetDays;
+
+  const loadTrends = useCallback((range: TrendRange) => {
     setTrendsBusy(true);
     return superAdminService
       .trends(range)
@@ -110,7 +116,7 @@ export default function Dashboard() {
   }, []);
 
   const loadAll = useCallback(
-    async (range: number) => {
+    async (range: TrendRange) => {
       const [s, st, l] = await Promise.all([
         superAdminService.stats(),
         superAdminService.listStudios({ limit: 200 }),
@@ -127,7 +133,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     let active = true;
-    loadAll(days).catch((err) => active && setError(err instanceof Error ? err.message : "Could not load the dashboard."));
+    loadAll({ days: presetDays }).catch((err) => active && setError(err instanceof Error ? err.message : "Could not load the dashboard."));
     return () => {
       active = false;
     };
@@ -136,22 +142,22 @@ export default function Dashboard() {
   }, []);
 
   const changeRange = (next: number) => {
-    if (next === days) return;
-    setDays(next);
+    if (next === presetDays && !custom) return;
+    setPresetDays(next);
+    setCustom(null);
+    setCustomOpen(false);
     remember("sa.dashboard.range", String(next));
-    void loadTrends(next);
+    void loadTrends({ days: next });
+  };
+  const applyCustom = () => {
+    if (!draftValid) return;
+    setCustom(draft);
+    void loadTrends(draft);
   };
   const changeMetric = (next: MetricKey) => {
     setMetric(next);
     remember("sa.dashboard.metric", next);
   };
-  const refresh = () => {
-    setRefreshing(true);
-    loadAll(days)
-      .catch((err) => setError(err instanceof Error ? err.message : "Could not refresh the dashboard."))
-      .finally(() => setRefreshing(false));
-  };
-
   if (error) return <p className="sa-form-error">{error}</p>;
   if (!stats || !studios || !logs) return <p className="sa-muted">Loading…</p>;
 
@@ -167,7 +173,7 @@ export default function Dashboard() {
   const formatMetric = (v: number) => (activeMetric.unit === "bytes" ? formatBytes(v) : formatNumber(Math.round(v)));
   const metricTotal = totals ? totals[metric] : 0;
   const metricDelta = totals && previous ? delta(totals[metric], previous[metric]) : null;
-  const rangeLabel = `last ${days} days`;
+  const rangeLabel = custom ? `${dayLabel(custom.start)} – ${dayLabel(custom.end)}` : `last ${days} days`;
 
   const photos = trends?.media_types.photo ?? { files: 0, bytes: 0 };
   const videos = trends?.media_types.video ?? { files: 0, bytes: 0 };
@@ -200,17 +206,24 @@ export default function Dashboard() {
         <div className="sa-dash-tools">
           <div className="sa-seg" role="group" aria-label="Time range">
             {RANGES.map((r) => (
-              <button key={r} type="button" className={`sa-seg__btn${r === days ? " is-active" : ""}`} aria-pressed={r === days} onClick={() => changeRange(r)}>
+              <button key={r} type="button" className={`sa-seg__btn${!custom && r === presetDays ? " is-active" : ""}`} aria-pressed={!custom && r === presetDays} onClick={() => changeRange(r)}>
                 {r}d
               </button>
             ))}
+            <button type="button" className={`sa-seg__btn${custom ? " is-active" : ""}`} aria-pressed={!!custom} aria-expanded={customOpen} onClick={() => setCustomOpen((o) => !o)}>
+              Custom
+            </button>
           </div>
-          <button type="button" className="sa-btn sa-btn--ghost sa-btn--sm" onClick={refresh} disabled={refreshing} aria-label="Refresh dashboard">
-            <span className={refreshing ? "sa-spin" : undefined}>
-              <IconRefresh />
-            </span>
-            Refresh
-          </button>
+          {customOpen && (
+            <div className="sa-dash-custom">
+              <input type="date" aria-label="Start date" value={draft.start} max={draft.end || today} onChange={(e) => setDraft({ ...draft, start: e.target.value })} />
+              <span className="sa-muted">to</span>
+              <input type="date" aria-label="End date" value={draft.end} min={draft.start || undefined} max={today} onChange={(e) => setDraft({ ...draft, end: e.target.value })} />
+              <button type="button" className="sa-btn sa-btn--dark sa-btn--sm" onClick={applyCustom} disabled={!draftValid}>
+                Apply
+              </button>
+            </div>
+          )}
           <button type="button" className="sa-btn sa-btn--ghost sa-btn--sm" onClick={exportStudios}>
             <IconDownload /> Export studios
           </button>
@@ -246,7 +259,7 @@ export default function Dashboard() {
           <div className="sa-card__head">
             <div>
               <h2>Platform activity</h2>
-              <span className="sa-muted sa-small">{`Last ${days} days (UTC)`}</span>
+              <span className="sa-muted sa-small">{custom ? `${dayLabel(custom.start, true)} – ${dayLabel(custom.end, true)} (UTC)` : `Last ${days} days (UTC)`}</span>
             </div>
             {totals && (
               <div className="sa-chart-card__total">
@@ -268,7 +281,7 @@ export default function Dashboard() {
           </div>
           {trendsFailed && !trends ? (
             <p className="sa-notice sa-notice--warn" role="status">
-              Activity data could not be loaded. <button type="button" className="sa-linkbtn" onClick={() => void loadTrends(days)}>Try again</button>
+              Activity data could not be loaded. <button type="button" className="sa-linkbtn" onClick={() => void loadTrends(custom ?? { days: presetDays })}>Try again</button>
             </p>
           ) : (
             <AreaChart

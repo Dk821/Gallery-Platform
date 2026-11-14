@@ -214,38 +214,52 @@ def platform_stats(db: DbSession) -> dict:
 TREND_RANGES = (7, 30, 90)
 
 
-def _daily(db: DbSession, column, since: datetime.datetime, *aggregates, extra_filter=None) -> dict[str, tuple]:
-    """{ 'YYYY-MM-DD': (aggregate values...) } for rows whose `column` is on/after `since`."""
+def _daily(db: DbSession, column, since: datetime.datetime, *aggregates, extra_filter=None, until=None) -> dict[str, tuple]:
+    """{ 'YYYY-MM-DD': (aggregate values...) } for rows whose `column` is on/after `since` (and before `until`)."""
     day = func.date(column)
     query = db.query(day, *aggregates).filter(column >= since)
+    if until is not None:
+        query = query.filter(column < until)
     if extra_filter is not None:
         query = query.filter(extra_filter)
     return {str(d): tuple(int(v or 0) for v in vals) for d, *vals in query.group_by(day).all()}
 
 
-def platform_trends(db: DbSession, days: int = 30) -> dict:
+def platform_trends(
+    db: DbSession, days: int = 30, start_date: datetime.date | None = None, end_date: datetime.date | None = None
+) -> dict:
     """
     Daily activity across the platform for the dashboard charts (read-only, additive):
     new studios / clients / albums / media, bytes uploaded, downloads and bytes downloaded,
     one bucket per day for the last `days` days (oldest first, empty days are zero), plus the
     totals of the same length period right before it so the UI can show a change.
     """
-    days = days if days in TREND_RANGES else 30
     today = datetime.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    start = today - datetime.timedelta(days=days - 1)
+    if start_date is not None and end_date is not None:
+        # Custom range (UTC days, inclusive): end capped at today, at most one year.
+        end = min(datetime.datetime.combine(end_date, datetime.time()), today)
+        start = min(datetime.datetime.combine(start_date, datetime.time()), end)
+        start = max(start, end - datetime.timedelta(days=365))
+        days = (end - start).days + 1
+    else:
+        days = days if days in TREND_RANGES else 30
+        end = today
+        start = today - datetime.timedelta(days=days - 1)
+    until = end + datetime.timedelta(days=1)
     prev_start = start - datetime.timedelta(days=days)
 
     media_ok = Media.status != "failed"
-    new_studios = _daily(db, Studio.created_at, prev_start, func.count(Studio.id))
-    new_clients = _daily(db, Client.created_at, prev_start, func.count(Client.id))
-    new_albums = _daily(db, Album.created_at, prev_start, func.count(Album.id))
-    new_media = _daily(db, Media.created_at, prev_start, func.count(Media.id), func.sum(Media.file_size), extra_filter=media_ok)
+    new_studios = _daily(db, Studio.created_at, prev_start, func.count(Studio.id), until=until)
+    new_clients = _daily(db, Client.created_at, prev_start, func.count(Client.id), until=until)
+    new_albums = _daily(db, Album.created_at, prev_start, func.count(Album.id), until=until)
+    new_media = _daily(db, Media.created_at, prev_start, func.count(Media.id), func.sum(Media.file_size), extra_filter=media_ok, until=until)
     downloads = _daily(
         db,
         DownloadRecord.downloaded_at,
         prev_start,
         func.count(DownloadRecord.id),
         func.sum(DownloadRecord.total_bytes),
+        until=until,
     )
 
     def at(source: dict, key: str, idx: int = 0) -> int:
@@ -280,7 +294,7 @@ def platform_trends(db: DbSession, days: int = 30) -> dict:
     }
     active = (
         db.query(Media.studio_id, func.count(Media.id), func.sum(Media.file_size))
-        .filter(Media.created_at >= start, media_ok, Media.studio_id.isnot(None))
+        .filter(Media.created_at >= start, Media.created_at < until, media_ok, Media.studio_id.isnot(None))
         .group_by(Media.studio_id)
         .order_by(func.sum(Media.file_size).desc())
         .limit(5)
@@ -766,7 +780,8 @@ def _audit_query(
     east of UTC, e.g. 330 for India); timestamps are stored in UTC.
     """
     shift = datetime.timedelta(minutes=max(-840, min(840, int(tz_offset_minutes or 0))))
-    query = db.query(AuditLog)
+    # Failed media uploads are noisy and not shown in the audit log.
+    query = db.query(AuditLog).filter(AuditLog.action != "media_upload_failed")
     if studio_id is not None:
         query = query.filter(AuditLog.studio_id == studio_id)
     if action:

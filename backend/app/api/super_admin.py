@@ -53,9 +53,13 @@ def platform_stats(db: DbSession = Depends(get_db), admin: Admin = Depends(requi
 
 @router.get("/stats/trends")
 def platform_trends(
-    days: int = 30, db: DbSession = Depends(get_db), admin: Admin = Depends(require_super_admin)
+    days: int = 30,
+    start: datetime.date | None = None,
+    end: datetime.date | None = None,
+    db: DbSession = Depends(get_db),
+    admin: Admin = Depends(require_super_admin),
 ):
-    return {"success": True, "data": studio_service.platform_trends(db, days)}
+    return {"success": True, "data": studio_service.platform_trends(db, days, start, end)}
 
 
 @router.get("/studios")
