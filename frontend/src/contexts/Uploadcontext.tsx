@@ -1,4 +1,5 @@
 import { ReactNode, createContext, startTransition, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { adminService, UploadSessionListItem } from "../services/admin";
 import { ApiRequestError } from "../services/api";
 import { extractPhotoThumbnail } from "../utils/photoThumbnail";
@@ -203,7 +204,14 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   // unmounts on navigation) rather than on every visit to the Uploads
   // page, which is both more correct (no risk of re-adding/re-flagging
   // items already handled this session) and cheaper.
+  // Only studio-admin pages can use this endpoint (super admins, clients and
+  // signed-out visitors get 401/403), so it waits for the first such page.
+  const { pathname } = useLocation();
+  const inStudioArea = pathname.startsWith("/admin/") && !pathname.startsWith("/admin/login");
+  const restoredOnce = useRef(false);
   useEffect(() => {
+    if (!inStudioArea || restoredOnce.current) return;
+    restoredOnce.current = true;
     let cancelled = false;
     adminService
       .listUploadSessions(100)
@@ -242,7 +250,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [inStudioArea]);
 
   const summary = useMemo<UploadSummary>(() => {
     const total = items.length;
