@@ -37,6 +37,8 @@ export interface StudioDetail extends Studio {
 
 export interface PlatformStorage {
   capacity_bytes: number;
+  provider_limit_bytes?: number | null;
+  provider_usage_bytes?: number | null;
   used_bytes: number;
   reserved_bytes: number;
   remaining_bytes: number;

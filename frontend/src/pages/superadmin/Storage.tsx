@@ -66,8 +66,10 @@ export default function Storage() {
   if (!stats || !studios) return <p className="sa-muted">Loading…</p>;
 
   const { storage } = stats;
-  const oversold = storage.allocated_quota_bytes > storage.capacity_bytes;
-  const capacityPct = percent(storage.used_bytes + storage.reserved_bytes, storage.capacity_bytes);
+  const driveLimit = storage.provider_limit_bytes ?? null;
+  const barTotal = driveLimit ?? storage.capacity_bytes;
+  const oversold = storage.allocated_quota_bytes > barTotal;
+  const capacityPct = percent(storage.used_bytes + storage.reserved_bytes, barTotal);
   const nearlyCount = studios.items.filter((s) => s.usage.quota_bytes > 0 && pct(s) >= 80).length;
   const editing = studios.items.find((s) => s.id === editingId) ?? null;
 
@@ -89,14 +91,24 @@ export default function Storage() {
       <section className="sa-card">
         <div className="sa-card__head">
           <h2>Platform capacity</h2>
-          <span className="sa-muted sa-small">Capacity is enforced by the platform, not the storage provider.</span>
+          <span className="sa-muted sa-small">
+            {driveLimit != null
+              ? "Capacity shown is the Google Drive storage limit."
+              : "Capacity is enforced by the platform, not the storage provider."}
+          </span>
         </div>
-        <UsageMeter used={storage.used_bytes} reserved={storage.reserved_bytes} total={storage.capacity_bytes} />
+        <UsageMeter used={storage.used_bytes} reserved={storage.reserved_bytes} total={barTotal} />
         <dl className="sa-kv sa-kv--row">
           <div>
-            <dt>Capacity</dt>
-            <dd>{formatBytes(storage.capacity_bytes)}</dd>
+            <dt>{driveLimit != null ? "Drive capacity" : "Capacity"}</dt>
+            <dd>{formatBytes(barTotal)}</dd>
           </div>
+          {driveLimit != null && (
+            <div>
+              <dt>Drive used (all files)</dt>
+              <dd>{formatBytes(storage.provider_usage_bytes ?? 0)}</dd>
+            </div>
+          )}
           <div>
             <dt>Stored</dt>
             <dd>{formatBytes(storage.used_bytes)}</dd>

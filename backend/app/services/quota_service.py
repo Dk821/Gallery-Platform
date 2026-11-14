@@ -44,6 +44,7 @@ Thumbnails are not counted: Media.file_size is the original object only
 """
 
 import logging
+import time
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session as DbSession
@@ -81,8 +82,40 @@ def ensure_platform_row(db: DbSession) -> None:
         db.rollback()
 
 
+_PROVIDER_CACHE_TTL_SECONDS = 300
+_provider_cache: dict = {"at": 0.0, "value": None}
+
+
+def get_provider_limit() -> dict | None:
+    """
+    Real storage limit/usage reported by the storage provider (Google Drive
+    only), cached for a few minutes. Display-only: never used for enforcement.
+    Returns None when unavailable or not applicable.
+    """
+    settings = get_settings()
+    if (settings.storage_provider or "google_drive").strip().lower() != "google_drive":
+        return None
+    if not settings.google_drive_refresh_token:
+        return None
+    now = time.monotonic()
+    if _provider_cache["at"] and now - _provider_cache["at"] < _PROVIDER_CACHE_TTL_SECONDS:
+        return _provider_cache["value"]
+    value = None
+    try:
+        from app.services.storage_provider import get_storage_service
+
+        meta = get_storage_service().get_metadata()
+        if meta.get("available") and meta.get("limit_bytes"):
+            value = {"limit_bytes": int(meta["limit_bytes"]), "usage_bytes": int(meta.get("usage_bytes") or 0)}
+    except Exception as exc:  # noqa: BLE001 - display-only, never break the dashboard
+        logger.warning("Could not read provider storage limit: %s", exc)
+    _provider_cache.update(at=now, value=value)
+    return value
+
+
 def get_platform_usage(db: DbSession) -> dict:
     ensure_platform_row(db)
+    provider = get_provider_limit()
     capacity = get_settings().platform_capacity_bytes
     row = db.execute(
         select(PlatformStorage.used_bytes, PlatformStorage.reserved_bytes).where(
@@ -93,6 +126,8 @@ def get_platform_usage(db: DbSession) -> dict:
     allocated = int(db.execute(select(func.coalesce(func.sum(Studio.quota_bytes), 0))).scalar_one())
     return {
         "capacity_bytes": capacity,
+        "provider_limit_bytes": provider["limit_bytes"] if provider else None,
+        "provider_usage_bytes": provider["usage_bytes"] if provider else None,
         "used_bytes": used,
         "reserved_bytes": reserved,
         "remaining_bytes": max(capacity - used - reserved, 0),
