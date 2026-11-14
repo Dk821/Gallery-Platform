@@ -545,3 +545,16 @@ button.sa-kpi { font: inherit; color: inherit; text-align: left; cursor: pointer
 .sa-meta-pairs { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; font-size: 0.78rem; margin-top: 0.15rem; }
 .sa-meta-pairs em { font-style: normal; color: var(--text-light); }
 .sa-toolbar--wrap .sa-seg { flex: none; }
+
+/* Audit log — phones */
+@media (max-width: 640px) {
+  .sa-table--audit tr { padding: 0.85rem 1.1rem; }
+  .sa-table--audit td { display: flex; gap: 0.75rem; justify-content: space-between; align-items: baseline; padding: 0.2rem 0 !important; text-align: right; }
+  .sa-table--audit td::before { content: attr(data-label); flex: none; font-size: 0.66rem; letter-spacing: 0.08em; text-transform: uppercase; color: #999288; font-weight: 700; text-align: left; }
+  .sa-table--audit tbody tr:hover td { background: transparent; }
+  .sa-toolbar--wrap .sa-search { flex: 1 1 100%; max-width: none; }
+  .sa-toolbar--wrap .sa-seg { max-width: 100%; overflow-x: auto; }
+  .sa-toolbar--wrap .sa-date-field { flex: 1 1 140px; }
+  .sa-toolbar__bulk { flex-wrap: wrap; }
+  .sa-toolbar__bulk select { flex: 1 1 140px; }
+}

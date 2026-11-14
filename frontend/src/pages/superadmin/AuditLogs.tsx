@@ -257,7 +257,7 @@ export default function AuditLogs() {
             <p className="sa-empty">No audit entries match these filters.</p>
           ) : (
             <div className="sa-table-wrap">
-              <table className="sa-table">
+              <table className="sa-table sa-table--stack sa-table--audit">
                 <thead>
                   <tr>
                     <th>When</th>
@@ -286,19 +286,19 @@ function AuditRow({ row, studioName }: { row: AuditLogRow; studioName: string | 
   const failed = row.action.endsWith("_failed");
   return (
     <tr className={failed ? "sa-row--problem" : undefined}>
-      <td className="sa-nowrap sa-muted">{formatDateTime(row.created_at)}</td>
-      <td>
+      <td className="sa-nowrap sa-muted" data-label="When">{formatDateTime(row.created_at)}</td>
+      <td data-label="Action">
         <span className="sa-table__title">{humanizeAction(row.action)}</span>
         {failed && <span className="sa-badge sa-badge--danger sa-badge--inline">failed</span>}
       </td>
-      <td>
+      <td data-label="Studio">
         {row.studio_id ? (
           <Link to={`/super-admin/studios/${row.studio_id}`}>{studioName}</Link>
         ) : (
           <span className="sa-muted">Platform</span>
         )}
       </td>
-      <td className="sa-muted">
+      <td className="sa-muted" data-label="Target">
         {row.resource_type ? `${row.resource_type.replace(/_/g, " ")}${row.resource_id ? ` #${row.resource_id}` : ""}` : "—"}
       </td>
     </tr>
