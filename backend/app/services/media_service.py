@@ -14,11 +14,13 @@ from app.models.album_comment import AlbumComment
 from app.models.client import Client
 from app.models.media import Media
 from app.models.media_wishlist import MediaWishlist
+from app.models.studio import Studio
 from app.models.upload_session import UploadSession
 from app.schemas.errors import ApiError, bad_request, forbidden, not_found
 from app.schemas.media import MediaUpdateRequest
 from app.schemas.pagination import paginate_params
 from app.services.album_service import album_not_expired_clause, check_album_not_expired
+from app.services import audit_service, quota_service
 from app.services.folder_naming import THUMBNAIL_FOLDER_NAME
 from app.services.media_aggregates import photo_count_column, total_bytes_column, video_count_column
 from app.services.media_validation import (
@@ -54,8 +56,8 @@ def get_media_for_client_or_403(db: DbSession, media_id: int, client_id: int) ->
     return media
 
 
-def get_media_or_404(db: DbSession, media_id: int) -> Media:
-    media = db.query(Media).filter(Media.id == media_id).first()
+def get_media_or_404(db: DbSession, media_id: int, studio_id: int) -> Media:
+    media = db.query(Media).filter(Media.id == media_id, Media.studio_id == studio_id).first()
     if media is None:
         raise not_found("Media not found.", code="MEDIA_NOT_FOUND")
     return media
@@ -312,6 +314,11 @@ def move_media_to_album(db: DbSession, storage: StorageService, media: Media, ta
     same "storage first, DB second, roll back storage on DB failure"
     reconciliation pattern used everywhere else in this file.
     """
+    if target_album.studio_id != media.studio_id:
+        # Defence in depth: the route already resolved target_album inside the
+        # caller's studio, but never let a move cross a tenant boundary.
+        raise not_found("Album not found.", code="ALBUM_NOT_FOUND")
+
     if target_album.client_id != media.client_id:
         # Never allow moving media across clients, regardless of what the
         # request body says - this is checked here, not just in the UI.
@@ -445,14 +452,52 @@ def _open_drive_session(
     that claims to be 'uploading' without a real Drive session behind it.
     """
     mime_type = guess_mime_type(filename)
+    # Providers that address objects by key (R2) get a tenant-scoped key that
+    # the SERVER chooses and remembers; the browser is never allowed to name
+    # the object. Drive/fake providers return None and behave exactly as before.
+    studio = db.query(Studio).filter(Studio.id == album.studio_id).first()
+    studio_prefix = studio.storage_prefix if studio else None
+    album_folder = album.drive_folder_id if studio_prefix else None
+    if album_folder and not album_folder.startswith(studio_prefix.rstrip("/") + "/albums/"):
+        album_folder = None
+    object_key = storage.object_key_for(
+        album.studio_id, album.id, str(uuid.uuid4()), studio_prefix=studio_prefix, album_folder=album_folder
+    )
+    extra = {"object_key": object_key} if object_key else {}
     try:
-        return storage.create_resumable_session(
-            filename, mime_type, file_size, album.drive_folder_id, upload_id=upload_id, origin=origin
+        url = storage.create_resumable_session(
+            filename, mime_type, file_size, album.drive_folder_id, upload_id=upload_id, origin=origin, **extra
         )
+        if object_key:
+            session.drive_file_id = object_key
+        return url
     except StorageError as exc:
         logger.error("Failed to open Drive resumable session for upload_id=%s: %s", upload_id, exc)
         _fail_upload_session(db, session, "STORAGE_SESSION_FAILED", str(exc))
         raise ApiError(502, "STORAGE_SESSION_FAILED", "Could not start the upload with storage. Please retry.")
+
+
+def _reserve_or_fail(db: DbSession, session: UploadSession, album: Album, file_size: int) -> None:
+    """
+    Quota gate (BEFORE any storage session is opened): reserves file_size
+    against the studio quota and the platform capacity, atomically. A refusal
+    is recorded on the ledger row (so the Uploads page shows why) and raised
+    as 413 STUDIO_QUOTA_EXCEEDED / 507 PLATFORM_CAPACITY_EXCEEDED /
+    403 STUDIO_SUSPENDED.
+    """
+    if album.studio_id is None:
+        # Legacy album not mapped to a studio: there is no quota to charge.
+        raise ApiError(
+            409,
+            "STUDIO_NOT_ASSIGNED",
+            "This album is not assigned to a studio yet. Run the legacy studio mapping first.",
+        )
+    try:
+        quota_service.reserve(db, session, album.studio_id, file_size)
+    except ApiError as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        _fail_upload_session(db, session, detail.get("code", "QUOTA_REJECTED"), detail.get("message", "Rejected."))
+        raise
 
 
 def start_direct_upload(
@@ -519,17 +564,33 @@ def start_direct_upload(
                 409, "UPLOAD_ALREADY_IN_PROGRESS", "This upload is already being processed. Please wait."
             )
 
-        upload_url = _open_drive_session(
-            db, storage, session, admin_id, upload_id, album, filename, file_size, origin
-        )
+        # A retry of a failed/cancelled attempt: take a fresh reservation for
+        # THIS attempt's size before touching storage (the previous attempt's
+        # reservation was released when it failed).
+        # Any reservation still held by the dead attempt is dropped first; a
+        # 'committed' one belongs to a Media row that no longer exists (its
+        # bytes were already handed back when that media was deleted).
+        quota_service.release(db, session.id)
+        if session.reservation_status == "committed":
+            session.reservation_status = "none"
+            session.reserved_bytes = 0
+        session.studio_id = album.studio_id
         session.album_id = album.id
         session.filename = filename
         session.total_bytes = file_size
+        db.commit()
+        db.refresh(session)
+        _reserve_or_fail(db, session, album, file_size)
+        # Reset BEFORE opening: key-addressed providers (R2) record the object
+        # key they chose on the session while it opens.
+        session.drive_file_id = None
+        upload_url = _open_drive_session(
+            db, storage, session, admin_id, upload_id, album, filename, file_size, origin
+        )
         session.bytes_uploaded = 0
         session.status = "uploading"
         session.error_code = None
         session.error_message = None
-        session.drive_file_id = None
         if session.thumbnail_drive_file_id:
             # A browser-generated poster the PREVIOUS (failed/abandoned)
             # attempt already uploaded. This attempt regenerates its own, so
@@ -544,6 +605,7 @@ def start_direct_upload(
     session = UploadSession(
         upload_id=upload_id,
         admin_id=admin_id,
+        studio_id=album.studio_id,
         album_id=album.id,
         filename=filename,
         total_bytes=file_size,
@@ -569,6 +631,7 @@ def start_direct_upload(
         )
     db.refresh(session)
 
+    _reserve_or_fail(db, session, album, file_size)
     upload_url = _open_drive_session(
         db, storage, session, admin_id, upload_id, album, filename, file_size, origin
     )
@@ -612,6 +675,9 @@ def _fail_upload_session(db: DbSession, session: UploadSession, code: str, messa
         session.status = "failed"
         session.error_code = code
         session.error_message = message[:2000]
+        # Give the reserved bytes back in the same transaction that marks the
+        # session failed (compare-and-set: a no-op if nothing is reserved).
+        quota_service.release(db, session.id)
         # A failed session's Drive resumable URL is either already
         # unusable (session expired/aborted) or must not be handed out
         # again - clearing it means a stray late browser retry against
@@ -619,6 +685,19 @@ def _fail_upload_session(db: DbSession, session: UploadSession, code: str, messa
         # bytes for a session this server has already given up on.
         session.drive_resumable_upload_url = None
         db.commit()
+        # Audit trail (best effort - audit_service swallows its own errors).
+        # Only non-sensitive facts: the error code and sizes, never URLs/ids.
+        audit_service.record(
+            db,
+            action="media_upload_failed",
+            user_type="admin",
+            user_id=session.admin_id,
+            actor_role="studio_admin",
+            studio_id=session.studio_id,
+            resource_type="upload_session",
+            resource_id=session.id,
+            metadata={"error_code": code, "total_bytes": session.total_bytes},
+        )
     except Exception:  # noqa: BLE001 - never let bookkeeping failure mask the real error
         db.rollback()
         logger.error("Failed to persist failure state for upload_id=%s", session.upload_id)
@@ -1133,6 +1212,20 @@ def complete_direct_upload(
         _fail_upload_session(db, session, "ALBUM_NOT_FOUND", "The target album no longer exists.")
         raise not_found("Album not found.", code="ALBUM_NOT_FOUND")
 
+    # Key-addressed providers: the object key was chosen by the server when
+    # the session opened - whatever the browser reported is ignored.
+    if storage.object_key_for(session.studio_id, session.album_id, "x") is not None and session.drive_file_id:
+        drive_file_id = session.drive_file_id
+
+    # Tenant guard: the object id comes from the BROWSER. Never record it (the
+    # orphan sweep would later DELETE whatever it points at) unless the
+    # provider can show it belongs to this studio.
+    if not storage.owns_object(drive_file_id, session.studio_id):
+        _fail_upload_session(
+            db, session, "UPLOAD_OBJECT_NOT_OWNED", "The reported object does not belong to this studio."
+        )
+        raise ApiError(403, "UPLOAD_OBJECT_NOT_OWNED", "The reported object does not belong to this studio.")
+
     # Durable checkpoint (Section 9): recorded as soon as we're told a
     # Drive file id exists at all, BEFORE any further validation - so a
     # crash (or a signature-mismatch deletion) after this point still
@@ -1174,6 +1267,18 @@ def complete_direct_upload(
         logger.error("Could not confirm direct upload for upload_id=%s: %s", upload_id, exc)
         _fail_upload_session(db, session, "STORAGE_CONFIRM_FAILED", str(exc))
         raise ApiError(502, "STORAGE_CONFIRM_FAILED", "Could not confirm the upload with storage. Please retry.")
+
+    # A file created through THIS session's resumable URL carries the
+    # session's upload_id as a Drive appProperty. A different value means the
+    # browser pointed us at some other file; refuse WITHOUT deleting it (it is
+    # not ours to delete) and forget the id so reconciliation never touches it.
+    if stored.app_properties is not None and stored.app_properties.get("gallery_upload_id") != upload_id:
+        session.drive_file_id = None
+        db.commit()
+        _fail_upload_session(
+            db, session, "UPLOAD_OBJECT_NOT_OWNED", "The reported object was not created by this upload."
+        )
+        raise ApiError(403, "UPLOAD_OBJECT_NOT_OWNED", "The reported object was not created by this upload.")
 
     # Authoritative size comes from Drive, never from the browser's report
     # (Section 13) - reported_size only ever mattered for the pre-flight
@@ -1217,6 +1322,20 @@ def complete_direct_upload(
     session.bytes_uploaded = file_size
     session.total_bytes = file_size
     db.commit()
+
+    # A session opened BEFORE quota enforcement existed (e.g. an upload that
+    # was in flight during the deploy) holds no reservation. Take one now,
+    # under the normal limits; if it is refused the object is removed again.
+    if session.reservation_status == "none":
+        try:
+            quota_service.reserve(db, session, album.studio_id, file_size)
+        except ApiError as exc:
+            _delete_from_storage_best_effort(storage, drive_file_id)
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            _fail_upload_session(
+                db, session, detail.get("code", "QUOTA_REJECTED"), detail.get("message", "Rejected.")
+            )
+            raise
 
     # Thumbnail selection is best-effort and non-fatal: a missing thumbnail
     # means the gallery grid falls back to a placeholder tile for this item,
@@ -1262,6 +1381,7 @@ def complete_direct_upload(
 
     try:
         media = Media(
+            studio_id=album.studio_id,
             client_id=album.client_id,
             album_id=album.id,
             file_uuid=file_uuid,
@@ -1270,14 +1390,45 @@ def complete_direct_upload(
             mime_type=mime_type,
             file_size=file_size,
             google_drive_file_id=drive_file_id,
+            storage_provider=storage.provider_name,
+            storage_key=drive_file_id if storage.provider_name != "google_drive" else None,
             thumbnail_reference=thumbnail_file_id,
             thumbnail_mime_type="image/webp" if thumbnail_file_id else None,
             sort_order=next_media_sort_order(db, album.id),
             status="ready",
         )
         db.add(media)
+        db.flush()
+        # reserved -> used, in the SAME transaction as the Media row and the
+        # session's 'completed' state: usage and media can never disagree, and
+        # the compare-and-set inside makes a duplicate completion a no-op.
+        quota_service.commit_reservation(db, session, file_size)
+        session.status = "completed"
+        session.media_id = media.id
+        session.drive_resumable_upload_url = None
         db.commit()
         db.refresh(media)
+    except quota_service.ReservationStateError:
+        # Duplicate / concurrent completion lost the race: nothing was charged
+        # and no second Media row may exist. Return the winner's media.
+        db.rollback()
+        db.refresh(session)
+        winner = db.query(Media).filter(Media.id == session.media_id).first() if session.media_id else None
+        if winner is not None:
+            log_event(logger, "upload_completed", upload_id=upload_id, note="idempotent_replay")
+            return winner
+        raise ApiError(409, "UPLOAD_NOT_IN_PROGRESS", "This upload was already completed or released.")
+    except ApiError as exc:
+        # The real object turned out larger than the reservation and the extra
+        # bytes do not fit (commit_reservation already rolled back).
+        logger.warning("Quota refused completed upload_id=%s: %s", upload_id, exc.detail)
+        db.rollback()
+        _delete_from_storage_best_effort(storage, drive_file_id)
+        if thumbnail_file_id:
+            _delete_from_storage_best_effort(storage, thumbnail_file_id)
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        _fail_upload_session(db, session, detail.get("code", "QUOTA_REJECTED"), detail.get("message", "Rejected."))
+        raise
     except Exception:
         db.rollback()
         logger.critical(
@@ -1290,11 +1441,6 @@ def complete_direct_upload(
             _delete_from_storage_best_effort(storage, thumbnail_file_id)
         _fail_upload_session(db, session, "MEDIA_SAVE_FAILED", "DB save failed after successful Drive upload.")
         raise ApiError(500, "MEDIA_SAVE_FAILED", "Upload succeeded but saving the record failed. Please retry.")
-
-    session.status = "completed"
-    session.media_id = media.id
-    session.drive_resumable_upload_url = None
-    db.commit()
 
     if not media.thumbnail_reference:
         _adopt_late_thumbnail(db, session, media)
@@ -1319,11 +1465,16 @@ def delete_media(db: DbSession, storage: StorageService, media: Media) -> None:
     # in the same transaction as the media row makes the behaviour identical
     # everywhere.
     db.query(MediaWishlist).filter(MediaWishlist.media_id == media.id).delete(synchronize_session=False)
+    studio_id, freed = media.studio_id, int(media.file_size or 0)
     db.delete(media)
+    # Usage goes down only here - after the object was really deleted from
+    # storage (an earlier failure raised before reaching this line) - and in
+    # the same transaction as the row removal, so a retry cannot double-refund.
+    quota_service.decrease_used(db, studio_id, freed)
     db.commit()
 
 
-def bulk_delete_media(db: DbSession, storage: StorageService, media_ids: list[int]) -> dict:
+def bulk_delete_media(db: DbSession, storage: StorageService, media_ids: list[int], studio_id: int) -> dict:
     """
     Deletes each id independently through the same delete_media() used by
     the single-item endpoint - no separate bulk-specific deletion logic to
@@ -1334,7 +1485,7 @@ def bulk_delete_media(db: DbSession, storage: StorageService, media_ids: list[in
     deleted: list[int] = []
     failed: list[dict] = []
     for media_id in media_ids:
-        media = db.query(Media).filter(Media.id == media_id).first()
+        media = db.query(Media).filter(Media.id == media_id, Media.studio_id == studio_id).first()
         if media is None:
             failed.append({"id": media_id, "code": "MEDIA_NOT_FOUND", "message": "Media not found."})
             continue
@@ -1353,7 +1504,9 @@ def bulk_delete_media(db: DbSession, storage: StorageService, media_ids: list[in
     return {"deleted": deleted, "failed": failed}
 
 
-def bulk_move_media(db: DbSession, storage: StorageService, media_ids: list[int], target_album: Album) -> dict:
+def bulk_move_media(
+    db: DbSession, storage: StorageService, media_ids: list[int], target_album: Album, studio_id: int
+) -> dict:
     """
     Same reuse pattern as bulk_delete_media: each id goes through the
     existing move_media_to_album(), so cross-client protection and the
@@ -1365,7 +1518,7 @@ def bulk_move_media(db: DbSession, storage: StorageService, media_ids: list[int]
     moved: list[int] = []
     failed: list[dict] = []
     for media_id in media_ids:
-        media = db.query(Media).filter(Media.id == media_id).first()
+        media = db.query(Media).filter(Media.id == media_id, Media.studio_id == studio_id).first()
         if media is None:
             failed.append({"id": media_id, "code": "MEDIA_NOT_FOUND", "message": "Media not found."})
             continue

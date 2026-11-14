@@ -19,16 +19,28 @@ CLIENT_COOKIE_NAME = "client_session"
 _admin_serializer = URLSafeTimedSerializer(settings.secret_key, salt="admin-session")
 
 
-def create_admin_token(admin_id: int) -> str:
-    return _admin_serializer.dumps({"admin_id": admin_id})
+def create_admin_token(admin_id: int, session_version: int = 0) -> str:
+    # `sv` ties the cookie to Admin.session_version: bumping that column
+    # (credential reset, password change) invalidates every cookie issued
+    # before it. Role / studio are deliberately NOT in the token - they are
+    # read from the database on each request so a demotion, a studio
+    # suspension or a re-assignment takes effect immediately.
+    return _admin_serializer.dumps({"admin_id": admin_id, "sv": int(session_version)})
+
+
+def read_admin_session(token: str) -> tuple[int, int] | None:
+    """Returns (admin_id, session_version) for a valid, unexpired token, else None."""
+    try:
+        data = _admin_serializer.loads(token, max_age=settings.session_ttl_minutes * 60)
+        # Tokens minted before session_version existed carry no `sv`: treat as 0.
+        return int(data["admin_id"]), int(data.get("sv", 0))
+    except (BadSignature, SignatureExpired, KeyError, ValueError, TypeError):
+        return None
 
 
 def read_admin_token(token: str) -> int | None:
-    try:
-        data = _admin_serializer.loads(token, max_age=settings.session_ttl_minutes * 60)
-        return int(data["admin_id"])
-    except (BadSignature, SignatureExpired, KeyError, ValueError):
-        return None
+    parsed = read_admin_session(token)
+    return parsed[0] if parsed else None
 
 
 def generate_session_token() -> str:

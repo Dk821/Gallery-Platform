@@ -23,8 +23,8 @@ def main() -> None:
     if not name or not email:
         print("Name and email are required.")
         sys.exit(1)
-    if len(password) != 8:
-        print("Password must be exactly 8 characters.")
+    if len(password) < 4:
+        print("Password must be at least 4 characters.")
         sys.exit(1)
     if password != confirm:
         print("Passwords do not match.")

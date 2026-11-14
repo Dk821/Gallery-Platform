@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useGalleryBase } from "../hooks/useGalleryBase";
 import ClientNav from "../components/ClientNav";
 import DownloadJobModal from "../components/DownloadJobModal";
 import DownloadPasswordModal from "../components/DownloadPasswordModal";
@@ -42,6 +43,7 @@ function getVideoDurationBadge(id: number): string {
 
 export default function AlbumView() {
   const { galleryId = "", albumId = "" } = useParams();
+  const galleryBase = useGalleryBase();
   const navigate = useNavigate();
   const albumIdNum = Number(albumId);
 
@@ -68,7 +70,7 @@ export default function AlbumView() {
   // Filter & Sort & Layout state (Reference Image 1)
   const [mediaFilter, setMediaFilter] = useState<"all" | "photo" | "video">("all");
   const [sortBy, setSortBy] = useState<"book" | "newest" | "oldest" | "name">("book");
-  const [layoutMode, setLayoutMode] = useState<"grid" | "list">("grid");
+  const [layoutMode, setLayoutMode] = useState<"grid" | "large" | "list">("grid");
   const [totalAlbumBytes, setTotalAlbumBytes] = useState<number>(0);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const moreMenuRef = useRef<HTMLDivElement>(null);
@@ -129,7 +131,7 @@ export default function AlbumView() {
         setError(err instanceof Error ? err.message : "Could not load this album.");
         // Invalid session -> back to the gallery entrance after showing the
         // loading state only for the duration of the request.
-        navigate(`/gallery/${galleryId}`, { replace: true });
+        navigate(`${galleryBase}`, { replace: true });
       }
     } finally {
       setLoading(false);
@@ -282,7 +284,7 @@ export default function AlbumView() {
         <button
           type="button"
           className="album-back-btn"
-          onClick={() => navigate(`/gallery/${galleryId}/view`)}
+          onClick={() => navigate(`${galleryBase}/view`)}
           aria-label="Back to all albums"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -374,7 +376,7 @@ export default function AlbumView() {
               <button
                 type="button"
                 className="album-book-view-btn"
-                onClick={() => navigate(`/gallery/${galleryId}/view/${albumId}/book`)}
+                onClick={() => navigate(`${galleryBase}/view/${albumId}/book`)}
                 aria-label={`Open ${album.album_name} as a book`}
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -588,6 +590,18 @@ export default function AlbumView() {
               </button>
               <button
                 type="button"
+                className={"gallery-layout-btn" + (layoutMode === "large" ? " gallery-layout-btn--active" : "")}
+                onClick={() => setLayoutMode("large")}
+                aria-label="Large grid view"
+                title="Large grid view (2 per row, 1 on mobile)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="4" width="8" height="16" />
+                  <rect x="13" y="4" width="8" height="16" />
+                </svg>
+              </button>
+              <button
+                type="button"
                 className={"gallery-layout-btn" + (layoutMode === "list" ? " gallery-layout-btn--active" : "")}
                 onClick={() => setLayoutMode("list")}
                 aria-label="List view"
@@ -633,8 +647,8 @@ export default function AlbumView() {
         )}
 
         {/* Media Grid or List based on layoutMode */}
-        {layoutMode === "grid" ? (
-          <div className="wedding-media-grid">
+        {layoutMode !== "list" ? (
+          <div className={"wedding-media-grid" + (layoutMode === "large" ? " wedding-media-grid--large" : "")}>
             {sortedItems.map((item, i) => {
               const isSelected = selectedIds.has(item.id);
               const isVideo = item.file_type === "video";

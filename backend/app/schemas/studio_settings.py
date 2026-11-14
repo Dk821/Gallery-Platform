@@ -1,4 +1,5 @@
 import datetime
+import re
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -16,6 +17,15 @@ class StudioSettingsResponse(BaseModel):
 class StudioProfileUpdateRequest(BaseModel):
     studio_name: str | None = Field(default=None, max_length=255)
     contact_email: EmailStr | None = None
+    # Omitted = unchanged; blank clears it.
+    contact_phone: str | None = Field(default=None, max_length=50)
+
+    @field_validator("contact_phone")
+    @classmethod
+    def _phone(cls, v: str | None) -> str | None:
+        from app.schemas.studio import _clean_phone
+
+        return _clean_phone(v)
 
     @field_validator("studio_name")
     @classmethod
@@ -39,4 +49,42 @@ class SecurityPolicyUpdateRequest(BaseModel):
 
 class AdminChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=255)
-    new_password: str = Field(min_length=8, max_length=255)
+    new_password: str = Field(min_length=4, max_length=255)
+
+
+class SuperAdminAccountUpdateRequest(BaseModel):
+    """Edit the signed-in super admin's own name and/or sign-in email. Omitted fields stay unchanged."""
+
+    name: str | None = Field(default=None, max_length=255)
+    email: EmailStr | None = None
+    # Required only when the email changes (it is the sign-in name).
+    current_password: str | None = Field(default=None, max_length=255)
+    # Platform profile. Omitted = unchanged; an empty value clears it.
+    company_name: str | None = Field(default=None, max_length=255)
+    contact_phone: str | None = Field(default=None, max_length=50)
+
+    @field_validator("company_name", "contact_phone")
+    @classmethod
+    def strip_optional(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return v.strip() or None  # blank clears the value
+
+    @field_validator("contact_phone")
+    @classmethod
+    def phone_chars(cls, v: str | None) -> str | None:
+        if v is not None and (
+            not re.fullmatch(r"\+?[0-9()\-.\s]+", v) or not 7 <= len(re.sub(r"\D", "", v)) <= 15
+        ):
+            raise ValueError("enter a phone number (7-15 digits; digits, spaces and + - ( ) only)")
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            raise ValueError("must not be blank")
+        return v

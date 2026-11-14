@@ -8,43 +8,53 @@ from app.models.album import Album
 from app.models.client import Client
 from app.models.media import Media
 from app.models.session import ClientSession
+from app.models.studio import Studio
 from app.schemas.client import ClientCreateRequest, ClientUpdateRequest
 from app.schemas.errors import ApiError, bad_request, not_found
 from app.schemas.pagination import paginate_params
 from app.security.encryption import decrypt_password, encrypt_password
 from app.security.password import hash_password
+from app.services import quota_service
 from app.services.folder_naming import build_client_folder_name, generate_folder_uid
 from app.services.storage_service import StorageError, StorageService
+from app.services.studio_slug import gallery_path
 from app.services.studio_settings_service import get_studio_settings
 
 logger = logging.getLogger("gallery.clients")
 
 
-def _check_password_policy(db: DbSession, password: str | None) -> None:
+def _check_password_policy(db: DbSession, password: str | None, studio_id: int | None) -> None:
     if password is None:
         return
-    min_length = get_studio_settings(db).min_client_password_length
+    min_length = get_studio_settings(db, studio_id).min_client_password_length
     if len(password) < min_length:
         raise bad_request(
             f"Password must be at least {min_length} characters.", code="PASSWORD_TOO_SHORT"
         )
 
 
-def create_client(db: DbSession, payload: ClientCreateRequest, storage: StorageService) -> Client:
+def create_client(
+    db: DbSession, payload: ClientCreateRequest, storage: StorageService, studio_id: int
+) -> Client:
     password = payload.password or None
-    _check_password_policy(db, password)
-    _check_password_policy(db, payload.download_password)
+    _check_password_policy(db, password, studio_id)
+    _check_password_policy(db, payload.download_password, studio_id)
     client_uuid = str(uuid.uuid4())
     folder_uid = generate_folder_uid()
     folder_name = build_client_folder_name(payload.client_name, folder_uid)
 
+    studio = db.query(Studio).filter(Studio.id == studio_id).first()
+    studio_prefix = studio.storage_prefix if studio else None
     try:
-        folder_id = storage.create_folder(folder_name)
+        folder_id = storage.create_folder(
+            folder_name, parent_folder_id=storage.tenant_root_folder(studio_id, studio_prefix)
+        )
     except StorageError as exc:
         logger.error("Failed to create Drive folder for new client: %s", exc)
         raise ApiError(502, "STORAGE_FOLDER_CREATE_FAILED", "Could not provision storage for this client.")
 
     client = Client(
+        studio_id=studio_id,
         client_uuid=client_uuid,
         client_name=payload.client_name,
         password_hash=hash_password(password) if password else None,
@@ -79,14 +89,17 @@ def create_client(db: DbSession, payload: ClientCreateRequest, storage: StorageS
     return client
 
 
-def get_client_or_404(db: DbSession, client_id: int) -> Client:
-    client = db.query(Client).filter(Client.id == client_id).first()
+def get_client_or_404(db: DbSession, client_id: int, studio_id: int) -> Client:
+    # studio_id is REQUIRED and part of the lookup: a client id belonging to
+    # another studio is indistinguishable from one that doesn't exist (404),
+    # which is what stops cross-studio IDOR through URL, body or query ids.
+    client = db.query(Client).filter(Client.id == client_id, Client.studio_id == studio_id).first()
     if client is None:
         raise not_found("Client not found.", code="CLIENT_NOT_FOUND")
     return client
 
 
-def list_clients(db: DbSession, page: int, limit: int):
+def list_clients(db: DbSession, studio_id: int, page: int, limit: int):
     page, limit = paginate_params(page, limit)
 
     album_counts = (
@@ -108,18 +121,21 @@ def list_clients(db: DbSession, page: int, limit: int):
         )
         .outerjoin(album_counts, album_counts.c.client_id == Client.id)
         .outerjoin(media_counts, media_counts.c.client_id == Client.id)
+        .filter(Client.studio_id == studio_id)
         .order_by(Client.created_at.desc())
     )
 
     total = query.count()
     rows = query.offset((page - 1) * limit).limit(limit).all()
 
+    slug = db.query(Studio.slug).filter(Studio.id == studio_id).scalar()
     items = []
     for client, album_count, media_count in rows:
         items.append(
             {
                 "id": client.id,
                 "client_uuid": client.client_uuid,
+                "gallery_url_path": gallery_path(slug, client.client_uuid),
                 "client_name": client.client_name,
                 "status": client.status,
                 "has_password": bool(client.password_hash),
@@ -179,7 +195,7 @@ def update_client(
 def change_client_password(db: DbSession, client: Client, new_password: str | None) -> Client:
     # None removes the gallery password entirely - password_hash/encrypted go
     # back to NULL and the gallery becomes passwordless again.
-    _check_password_policy(db, new_password)
+    _check_password_policy(db, new_password, client.studio_id)
     client.password_hash = hash_password(new_password) if new_password else None
     client.password_encrypted = encrypt_password(new_password) if new_password else None
     db.commit()
@@ -188,7 +204,7 @@ def change_client_password(db: DbSession, client: Client, new_password: str | No
 
 
 def change_client_download_password(db: DbSession, client: Client, new_password: str | None) -> Client:
-    _check_password_policy(db, new_password)
+    _check_password_policy(db, new_password, client.studio_id)
     client.download_password_hash = hash_password(new_password) if new_password else None
     client.download_password_encrypted = encrypt_password(new_password) if new_password else None
     # A changed or removed password invalidates previous download approvals.
@@ -242,6 +258,16 @@ def delete_client(db: DbSession, client: Client, storage: StorageService) -> Non
             logger.error("Failed to delete Drive folder for client %s: %s", client.id, exc)
             raise ApiError(502, "STORAGE_DELETE_FAILED", "Could not delete client storage. Please retry.")
 
+    # The media rows are about to cascade away with the client: hand their
+    # bytes back to the studio quota in the SAME transaction. Only reached
+    # after the storage folder was deleted successfully (above).
+    freed = db.query(func.coalesce(func.sum(Media.file_size), 0)).filter(Media.client_id == client.id).scalar() or 0
+    studio_id = client.studio_id
+    quota_service.release_reserved_sessions(
+        db, album_ids=[row[0] for row in db.query(Album.id).filter(Album.client_id == client.id).all()]
+    )
+
     # Cascades to albums, media rows, and sessions via FK ondelete=CASCADE.
     db.delete(client)
+    quota_service.decrease_used(db, studio_id, int(freed))
     db.commit()

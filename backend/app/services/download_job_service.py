@@ -95,6 +95,7 @@ def create_download_job(
     total_bytes = sum(m.file_size for m in media_rows)
 
     job = DownloadJob(
+        studio_id=album.studio_id,
         client_id=album.client_id,
         album_id=album.id,
         status="queued",
@@ -119,8 +120,8 @@ def get_download_job_for_client_or_403(db: DbSession, job_id: int, client_id: in
     return job
 
 
-def get_download_job_or_404(db: DbSession, job_id: int) -> DownloadJob:
-    job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+def get_download_job_or_404(db: DbSession, job_id: int, studio_id: int) -> DownloadJob:
+    job = db.query(DownloadJob).filter(DownloadJob.id == job_id, DownloadJob.studio_id == studio_id).first()
     if job is None:
         raise not_found("Download job not found.", code="DOWNLOAD_JOB_NOT_FOUND")
     return job
@@ -372,7 +373,7 @@ def process_download_job(job_id: int, storage: StorageService | None = None) -> 
         # get_studio_settings() lazily creates the row, seeded from
         # settings.zip_job_ttl_hours, so this is a no-op change in
         # behavior until an admin actually edits the policy.
-        ttl_hours = get_studio_settings(db).download_link_ttl_hours
+        ttl_hours = get_studio_settings(db, job.studio_id).download_link_ttl_hours
         job.expires_at = job.completed_at + datetime.timedelta(hours=ttl_hours)
         db.commit()
 

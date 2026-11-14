@@ -16,6 +16,10 @@ class Media(Base, IdMixin, TimestampMixin):
     album_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("albums.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # Owning studio (tenant). Indexed, filtered on by every studio-admin query.
+    studio_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("studios.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     file_uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, index=True)
     file_name: Mapped[str] = mapped_column(String(500), nullable=False)
     # Optional admin-facing metadata, distinct from file_name (the actual
@@ -35,6 +39,11 @@ class Media(Base, IdMixin, TimestampMixin):
     # later means adding a `storage_provider` discriminator column + a new
     # id field, not touching the rest of the schema.
     google_drive_file_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Provider-neutral object key (e.g. studios/{studio_id}/albums/{album_id}/{media_id} on
+    # R2/S3). NULL for Google Drive media, which is addressed by google_drive_file_id.
+    storage_key: Mapped[str | None] = mapped_column(String(500), nullable=True, index=True)
+    # Which StorageService stored the object ("google_drive" | "r2"). Existing rows are Drive.
+    storage_provider: Mapped[str] = mapped_column(String(20), nullable=False, default="google_drive", server_default="google_drive")
     thumbnail_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Content-Type of the stored thumbnail (thumbnail_reference). Existing
     # rows predating this column are JPEG; everything stored going forward is

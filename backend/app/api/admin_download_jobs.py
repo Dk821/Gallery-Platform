@@ -37,8 +37,8 @@ def create_admin_album_download_job(
     # Admin bypasses expiry the same way every other admin album route
     # does - an expired album can still be bulk-downloaded by the studio
     # (Section: "Admin should still be able to manage the album").
-    album = get_album_or_404(db, album_id)
-    client = get_client_or_404(db, album.client_id)
+    album = get_album_or_404(db, album_id, admin.studio_id)
+    client = get_client_or_404(db, album.client_id, admin.studio_id)
     job = create_download_job(
         db, album, payload.media_ids, requested_by_type="admin", requested_by_id=admin.id
     )
@@ -52,7 +52,7 @@ def get_admin_download_job_status(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    job = get_download_job_or_404(db, job_id)
+    job = get_download_job_or_404(db, job_id, admin.studio_id)
     client = db.query(Client).filter(Client.id == job.client_id).first()
     return {"success": True, "data": download_job_to_response(job, client)}
 
@@ -63,7 +63,7 @@ def cancel_admin_download_job(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    job = get_download_job_or_404(db, job_id)
+    job = get_download_job_or_404(db, job_id, admin.studio_id)
     client = db.query(Client).filter(Client.id == job.client_id).first()
     job = cancel_download_job(db, job)
     return {"success": True, "data": download_job_to_response(job, client)}
@@ -75,7 +75,7 @@ def download_admin_job_file(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    job = get_download_job_or_404(db, job_id)
+    job = get_download_job_or_404(db, job_id, admin.studio_id)
     zip_path = get_ready_zip_path_or_error(job)
     return FileResponse(
         zip_path,

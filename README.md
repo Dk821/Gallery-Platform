@@ -1,6 +1,12 @@
 # LoveStory PH — Private Wedding Gallery Platform
 
-A private gallery platform for wedding photographers to manage clients, albums, and media. Two interfaces: an **admin panel** for the studio and a **client gallery** for viewing/downloading photos and videos.
+A private gallery platform for wedding photographers to manage clients, albums, and media. It is **multi-studio**: one backend and one database serve many photography studios, each fully isolated, with files stored in Cloudflare R2. Three interfaces, all in one React app:
+
+- a **Super Admin console** (`/super-admin/*`) for the platform owner: create studios, set storage quotas, manage each studio's single login (edit, change email, reset password, disable/enable), upload each studio's logo, see every studio's login and storage allowance (with a usage check), view the audit trail;
+- a **studio admin panel** (`/admin/*`) for each studio: clients, albums, uploads, downloads, settings (it shows the studio's own name and logo);
+- a **client gallery** (`/<studio name>/gallery/<link id>`; older `/gallery/<link id>` links redirect) for viewing/downloading photos and videos.
+
+More detail: `SUPER_ADMIN.md` (every Super Admin screen, option, data field and flow), `MULTI_STUDIO.md` (tenancy, quotas, super admin API, migration runbook), `STORAGE_STRUCTURE.md` (where each file lives in R2), `ARCHITECTURE.md`, `Upload-Pipeline.md`.
 
 ---
 
@@ -12,7 +18,7 @@ A private gallery platform for wedding photographers to manage clients, albums, 
 | Backend | Python 3.12, FastAPI 0.115, Uvicorn |
 | Database | MySQL 8 (via SQLAlchemy 2 + PyMySQL) |
 | Migrations | Alembic |
-| Storage | Google Drive v3 API (OAuth2 credentials) |
+| Storage | Cloudflare R2 (S3-compatible API via boto3; browsers upload straight to R2 with presigned URLs) |
 | Video Processing | FFmpeg (system binary — **optional**, see below) |
 | Image Processing | Pillow (server-side fallbacks/resizing) + HTML5 Canvas/WebP (client-side) |
 | Auth | Argon2 (passwords), itsdangerous (admin tokens), Fernet (reversible encryption) |
@@ -24,7 +30,7 @@ A private gallery platform for wedding photographers to manage clients, albums, 
 - **Python 3.12+**
 - **Node.js 20.19+** (or 22.12+) and npm (Vite 8's engine requirement)
 - **MySQL 8**
-- **Google Drive API** credentials (OAuth2 Desktop app credentials with Drive access)
+- A **Cloudflare R2** bucket (private) and an R2 API token with **Object Read & Write** on that bucket
 - **FFmpeg** (optional system binary — video poster frames are generated directly in the browser during upload; FFmpeg on the server is only used for administrative backfill tooling)
 
 ### FFmpeg (optional — server-side poster backfill tooling)
@@ -52,33 +58,41 @@ Verify: `ffmpeg -version` or check `GET /api/health` once running.
 final v2/
 ├── backend/
 │   ├── app/
-│   │   ├── api/              # Route handlers (admin, client, auth, media streaming)
+│   │   ├── api/              # Route handlers (admin_*, client_*, auth, media_streaming,
+│   │   │                     #   super_admin, studio, studio_branding)
 │   │   ├── config/           # pydantic-settings (.env loader)
 │   │   ├── database/         # SQLAlchemy engine, session, Base
-│   │   ├── models/           # 12 ORM models + shared mixins
+│   │   ├── models/           # ORM models (incl. studios, platform_storage) + shared mixins
 │   │   ├── schemas/          # Pydantic request/response models
 │   │   ├── security/         # Password hashing, sessions, encryption
-│   │   ├── services/         # Business logic layer (storage, direct upload, validation, etc.)
+│   │   ├── services/         # Business logic layer (storage, quota, direct upload, validation, etc.)
 │   │   ├── workers/          # Thumbnail worker (PIL + FFmpeg fallback)
 │   │   ├── main.py           # App factory, lifespan, middleware
-│   │   ├── create_admin.py   # First admin bootstrap
-│   │   ├── reconcile_orphans.py      # Cron: Drive orphan cleanup
+│   │   ├── create_super_admin.py     # Platform owner bootstrap
+│   │   ├── create_admin.py           # Legacy single-studio admin bootstrap
+│   │   ├── legacy_to_studio.py       # One-off: map pre-multi-studio data into a studio
+│   │   ├── consolidate_studio_logins.py  # One-off: report/fix studios that have more than one login (one login per studio)
+│   │   ├── reconcile_quota.py        # Cron: recompute/repair studio usage counters
+│   │   ├── reconcile_orphans.py      # Cron: unfinished-upload object cleanup
 │   │   ├── cleanup_download_jobs.py  # Cron: expired ZIP cleanup
-│   │   └── migrate_thumbnail_folders.py  # Ops: "Cover Images" -> "Thumbnails" rename
-│   ├── scripts/              # check_env.py, generate_drive_refresh_token.py
+│   │   └── migrate_thumbnail_folders.py  # Legacy ops pass (Google Drive era only)
+│   ├── scripts/              # check_env.py (env sanity gate), check_r2.py (R2 access test)
 │   ├── alembic/              # Database migrations
 │   ├── tests/                # pytest test files + conftest/fakes
 │   ├── .env.example          # Backend config template
 │   └── requirements.txt
-├── frontend/
+├── frontend/                 # ONE React app: studio admin, client gallery AND Super Admin console
 │   ├── src/
-│   │   ├── components/       # Shared UI (AdminLayout, Sidebar, Lightbox, GlobalUploadBadge,
-│   │   │                     #   PoweredBy credit line, RequireAdmin route guard)
+│   │   ├── components/       # Shared UI (AdminLayout, Sidebar, StudioBrandMark, Lightbox, GlobalUploadBadge,
+│   │   │   │                 #   PoweredBy credit line, RequireAdmin route guard)
+│   │   │   └── superadmin/   # Console UI (layout, modals, studio login account, logo field, toasts)
 │   │   ├── contexts/         # React Contexts (UploadContext - persistent background queue)
-│   │   ├── hooks/            # useWishlist (optimistic wishlist state)
+│   │   ├── hooks/            # useWishlist, useStudioBranding (studio name + logo)
 │   │   ├── pages/            # Admin + Client pages
-│   │   ├── services/         # Typed API client (auth, admin, gallery)
-│   │   ├── styles/           # Plain CSS (index.css, admin.css, gallery.css, book-view.css)
+│   │   │   └── superadmin/   # Console pages (dashboard, studios, studio detail, audit log, settings)
+│   │   ├── services/         # Typed API client (auth, admin, gallery, superAdmin, studioBranding)
+│   │   ├── styles/           # Plain CSS (index.css, admin.css, gallery.css, book-view.css,
+│   │   │                     #   super-admin.css - every rule `sa-` prefixed)
 │   │   ├── utils/            # format.ts, photoThumbnail.ts, videoPoster.ts
 │   │   ├── App.tsx           # Route definitions
 │   │   └── main.tsx          # Entry point
@@ -90,6 +104,8 @@ final v2/
 │   ├── .env.example          # Frontend config template
 │   └── package.json
 ├── ARCHITECTURE.md
+├── MULTI_STUDIO.md
+├── STORAGE_STRUCTURE.md
 ├── Upload-Pipeline.md
 └── README.md
 ```
@@ -118,7 +134,7 @@ pip install -r requirements.txt
 
 # Copy and edit environment config
 cp .env.example .env
-# Edit .env with your MySQL credentials, Google Drive API keys, and a random SECRET_KEY
+# Edit .env with your MySQL credentials, the R2 settings (step 4), and a random SECRET_KEY
 ```
 
 ### 3. Database
@@ -137,15 +153,53 @@ Run migrations:
 alembic upgrade head
 ```
 
-### 4. Google Drive Setup
+### 4. Storage Setup (Google Drive — default — or Cloudflare R2)
 
-1. Create a Google Cloud project with Drive API enabled
-2. Create OAuth2 credentials (Desktop app type)
-3. Run the token generator script to get a refresh token:
-   ```bash
-   python scripts/generate_drive_refresh_token.py
+As of **v0.5 (31/10/2026)** the backend stores media in **Google Drive** by default. Choose the backend with `STORAGE_PROVIDER` in `backend/.env` (`google_drive` or `r2`). Both use the same folder model: `studios/{studio-name}-{id}/albums/{client}_{albumId}/{file}`; on Drive these are real nested folders under `GOOGLE_DRIVE_ROOT_FOLDER_ID` (empty = My Drive root).
+
+**Google Drive**
+
+1. Create a Google Cloud OAuth client and obtain a refresh token with the `https://www.googleapis.com/auth/drive` scope.
+2. (Optional) Create a Drive folder to hold everything and copy its id from the URL.
+3. Put these in `backend/.env` (server-side only):
    ```
-4. Create a "Clients" root folder in Drive, grant the OAuth account access, and paste its folder ID into `GOOGLE_DRIVE_ROOT_FOLDER_ID` in `.env`
+   STORAGE_PROVIDER=google_drive
+   GOOGLE_DRIVE_CLIENT_ID=...
+   GOOGLE_DRIVE_CLIENT_SECRET=...
+   GOOGLE_DRIVE_REFRESH_TOKEN=...
+   GOOGLE_DRIVE_ROOT_FOLDER_ID=...
+   ```
+4. The browser uploads straight to Drive through a resumable session URL the backend opens; the final response carries the Drive file id, which the backend re-checks with Drive. No bucket CORS setup is needed.
+
+Media already stored in R2 is not readable under Drive (its rows hold R2 keys); keep `STORAGE_PROVIDER=r2` for such data or migrate it.
+
+**Cloudflare R2** (only when `STORAGE_PROVIDER=r2`)
+
+1. In Cloudflare, create a **private** R2 bucket.
+2. Create an R2 API token scoped to that bucket with **Object Read & Write** (read-only tokens fail on upload with `AccessDenied`).
+3. Put these in `backend/.env` (server-side only; never in a frontend `.env`, never committed):
+   ```
+   R2_ACCOUNT_ID=...
+   R2_ACCESS_KEY_ID=...
+   R2_SECRET_ACCESS_KEY=...
+   R2_BUCKET=...
+   ```
+4. Add a **CORS policy** on the bucket (R2 → bucket → Settings → CORS Policy). The browser uploads files straight to R2, so the bucket must allow your frontend origin to `PUT`:
+   ```json
+   [
+     {
+       "AllowedOrigins": ["http://localhost:5173"],
+       "AllowedMethods": ["PUT"],
+       "AllowedHeaders": ["*"],
+       "ExposeHeaders": ["ETag"],
+       "MaxAgeSeconds": 3600
+     }
+   ]
+   ```
+   Add your production frontend origin as well. Without this, uploads fail in the browser with a CORS error.
+5. Verify: `python -m scripts.check_r2` (add `--read-only` to avoid writing a test object).
+
+Where each file ends up in the bucket: see `STORAGE_STRUCTURE.md`.
 
 ### 5. Frontend
 
@@ -181,13 +235,16 @@ By default the app calls the backend directly through `VITE_API_BASE_URL`
 `VITE_API_URL` in `frontend/.env` to have the Vite dev server proxy `/api`
 requests to that origin (for example `http://localhost:8000`).
 
-### Create First Admin
+### Create the platform owner and the first studio
 
 ```bash
 cd backend
-python -m app.create_admin
+python -m app.create_super_admin     # prompts for name, email, password (min 4 characters)
 ```
-Password must be exactly 8 characters.
+
+Sign in at `/admin/login`; a super admin lands on `/super-admin/dashboard`. In the console, **Studios → New studio** creates a studio together with its first studio admin (a one-time temporary password is shown once, or you can set one). Studio admins sign in at the same `/admin/login` and land on `/admin/dashboard`.
+
+Upgrading an existing single-studio install? Follow the runbook in `MULTI_STUDIO.md` §3 (`alembic upgrade head`, then `python -m app.legacy_to_studio`). Existing data with more than one login in a studio: see `MULTI_STUDIO.md` §3b (`python -m app.consolidate_studio_logins`).
 
 ### Admin Route Protection
 
@@ -213,9 +270,10 @@ IS NULL` is the passwordless state.
 ### Pre-Deploy Sanity Check
 
 ```bash
-python scripts/check_env.py
+python scripts/check_env.py     # DB connectivity, R2 settings + bucket access, writable ZIP temp dir, FFmpeg
+python -m scripts.check_r2      # R2 only: keys, bucket, write/read-back, presigned upload URL
 ```
-Verifies DB connectivity, Drive token, writable ZIP temp dir, and FFmpeg availability. Exits nonzero on any failure.
+Both exit nonzero on any failure.
 
 ---
 
@@ -225,7 +283,7 @@ A per-album, client-facing presentation mode: instead of the normal photo grid,
 the album opens as a 3D book with an animated page turn. Reachable at
 
 ```
-/gallery/:galleryId/view/:albumId/book
+/:studioSlug/gallery/:galleryId/view/:albumId/book
 ```
 
 **Turning it on (admin):** Edit Album → **Book View** toggle, plus an **Album
@@ -309,14 +367,19 @@ one), and saving closes the sheet and turns to the next page.
 | Variable | Description | Default |
 |---|---|---|
 | `DATABASE_URL` | MySQL connection string | — |
-| `GOOGLE_DRIVE_CLIENT_ID` | OAuth2 client ID | — |
-| `GOOGLE_DRIVE_CLIENT_SECRET` | OAuth2 client secret | — |
-| `GOOGLE_DRIVE_REFRESH_TOKEN` | OAuth2 refresh token | — |
-| `GOOGLE_DRIVE_ROOT_FOLDER_ID` | Drive folder ID for client storage | — |
+| `R2_ACCOUNT_ID` | Cloudflare account id | — |
+| `R2_ACCESS_KEY_ID` | R2 API token access key | — |
+| `R2_SECRET_ACCESS_KEY` | R2 API token secret | — |
+| `R2_BUCKET` | Bucket name | — |
+| `R2_ENDPOINT_URL` | Override the endpoint | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` |
+| `R2_PRESIGN_TTL_SECONDS` | Lifetime of a presigned upload URL | `900` |
+| `PLATFORM_CAPACITY_BYTES` | Total storage the platform may hand out to studios | `1000000000000` (1 TB, decimal) |
+| `DEFAULT_STUDIO_QUOTA_BYTES` | Quota for a new studio | `10000000000` (10 GB) |
+| `UPLOAD_RESERVATION_TTL_MINUTES` | How long an unfinished upload may hold its quota reservation | `120` |
 | `SECRET_KEY` | Random string for session signing | — |
 | `SESSION_TTL_MINUTES` | Session lifetime | `1440` |
 | `CROSS_SITE_FRONTEND` | `true` if frontend on different origin | `false` |
-| `CORS_ORIGINS` | Comma-separated allowed origins (forwarded to Drive to authorize browser direct-PUTs) | — |
+| `CORS_ORIGINS` | Comma-separated allowed origins for API calls (the R2 bucket needs its own CORS rule, step 4 of Setup) | — |
 | `DEV_FRONTEND_ORIGIN` | Local frontend origin used as the CORS fallback when `CORS_ORIGINS` is empty | — |
 | `MAX_UPLOAD_SIZE_BYTES` | Max upload size | `10737418240` (10 GB) |
 | `ALLOWED_IMAGE_TYPES` | Accepted image extensions | `jpg,jpeg,png,webp,gif` |
@@ -325,28 +388,23 @@ one), and saving closes the sheet and turns to the next page.
 | `ZIP_JOB_TTL_HOURS` | ZIP download link TTL | `24` |
 | `ZIP_JOB_MAX_FILES` | Max files in one ZIP job | `5000` |
 | `ZIP_JOB_PARALLEL_DOWNLOADS` | Concurrent file fetches while building a ZIP | `4` |
-| `UPLOAD_MAX_CONCURRENT` | Max uploads actively transferring to Drive | `3` |
-| `UPLOAD_MAX_CONCURRENT_REQUESTS` | Max uploads holding an admission slot (must be ≥ `UPLOAD_MAX_CONCURRENT`) | `8` |
-| `UPLOAD_QUEUE_WAIT_SECONDS` | Wait for an admission slot before returning 503 | `45` |
-| `UPLOAD_CHUNK_SIZE_MB` | Resumable chunk size, rounded to a 256 KiB multiple | `8` |
-| `UPLOAD_MAX_RETRIES` | Retry attempts for transient Drive failures | `5` |
-| `UPLOAD_INITIAL_BACKOFF_SECONDS` | Initial retry backoff | `0.5` |
-| `UPLOAD_MAX_BACKOFF_SECONDS` | Maximum retry backoff | `20` |
 | `UPLOAD_MAX_FILE_SIZE_MB` | Per-file size ceiling (the smaller of this and `MAX_UPLOAD_SIZE_BYTES` wins) | `10240` |
-| `UPLOAD_MIN_FREE_DISK_GB` | Free disk required before accepting an upload | `5` |
-| `UPLOAD_CHUNK_TIMEOUT` | Per-chunk network timeout | `120` |
-| `UPLOAD_SESSION_TIMEOUT` | Overall transfer deadline for one upload | `3600` |
-| `ORPHAN_FILE_GRACE_PERIOD_HOURS` | Age before an unmatched Drive file is considered an orphan | `48` |
+| `UPLOAD_MIN_FREE_DISK_GB` | Free disk headroom on the server that the Storage page reports against (ZIP jobs are written to local disk) | `5` |
+| `UPLOAD_SESSION_TIMEOUT` | Seconds without progress before an unfinished upload session is considered stale | `3600` |
+| `ORPHAN_FILE_GRACE_PERIOD_HOURS` | Age before an unfinished upload's stored object is considered an orphan | `48` |
 | `THUMBNAIL_IMAGE_SOURCE_MAX_MB` | Largest photo the server will read back to build a fallback thumbnail | `25` |
 | `VIDEO_THUMBNAIL_UPLOAD_MAX_KB` | Max browser-uploaded video poster size | `2048` |
 | `ENVIRONMENT` | `development` or `production` | `development` |
 
 See `backend/app/config/settings.py` for the complete settings model and
-`backend/.env.example` for a starting template. Note that for direct-to-Drive
-uploads, your frontend origin (e.g. `http://localhost:5173`) must be present in
-`CORS_ORIGINS` (or supplied via `DEV_FRONTEND_ORIGIN` when `CORS_ORIGINS` is
-empty) so the backend can authorize the browser's origin with Google Drive when
-opening resumable upload sessions.
+`backend/.env.example` for a starting template. Old Google Drive variables
+(`GOOGLE_DRIVE_*`, `STORAGE_PROVIDER`) left in an existing `.env` are ignored; the same goes for
+the former resumable-upload tuning variables (`UPLOAD_MAX_CONCURRENT`, `UPLOAD_CHUNK_SIZE_MB`,
+`UPLOAD_MAX_RETRIES`, `UPLOAD_*_BACKOFF_SECONDS`, `UPLOAD_CHUNK_TIMEOUT`,
+`UPLOAD_MAX_CONCURRENT_REQUESTS`, `UPLOAD_QUEUE_WAIT_SECONDS`), which no longer have any effect.
+For direct-to-R2 uploads your frontend origin (e.g. `http://localhost:5173`) must be allowed by the
+**bucket's CORS policy**, and should also be in `CORS_ORIGINS` (or `DEV_FRONTEND_ORIGIN` when
+`CORS_ORIGINS` is empty) for the API itself.
 
 
 ### Frontend (`.env`)
@@ -366,8 +424,11 @@ Run these periodically via crontab or your process manager:
 # Clean up expired ZIP download files
 python -m app.cleanup_download_jobs
 
-# Delete orphaned Drive files (dry-run first, then --apply)
+# Delete stored objects of uploads that never finished (dry-run first, then --apply)
 python -m app.reconcile_orphans --apply
+
+# Check studio usage counters against the database (exit code 1 on drift; --apply repairs)
+python -m app.reconcile_quota
 ```
 
 ---
@@ -379,7 +440,7 @@ cd backend
 pytest
 ```
 
-23 test files covering auth (including the optional gallery-password flow),
+27 test files covering auth (including the optional gallery-password flow),
 authorization & cross-client isolation, client search & selection summaries,
 admin/client/album management, album expiry, media management (search,
 pagination, metadata edits, move, delete), bulk operations, gallery totals,
@@ -387,21 +448,24 @@ ZIP download jobs & analytics, upload hardening (idempotency, disk reservations,
 concurrency limits, stale-session recovery, orphan reconciliation), thumbnails &
 streaming (range requests, 416s, concurrency), the server-side thumbnail
 fallback, the thumbnail-folder migration, the dashboard, storage integration
-(Drive folder provisioning, storage overview), Drive folder naming, direct
-resumable uploads, FFmpeg availability, the httplib2 cleanup-bug regression,
+(folder provisioning, storage overview), folder naming, direct
+uploads, FFmpeg availability, the legacy Google Drive client's cleanup-bug regression,
+multi-studio behaviour (`tests/test_multi_studio_*.py`: super admin API incl. studio logos,
+tenant isolation, suspension, quota reserve/commit/release, R2 provider against a fake S3 client,
+legacy mapping),
 studio settings/security policy (incl. self-service admin password change),
 page notes (`test_comments.py`: upsert, cross-client isolation, validation,
 expiry, admin review, album counts), and book order (`test_media_order.py`:
 reorder, client-side ordering, complete-list validation, note renumbering,
 move-to-end, admin-only access).
 
-Tests use an in-memory SQLite database and `FakeStorageService` — no real Drive calls.
+Tests use an in-memory SQLite database and `FakeStorageService` / a fake S3 client — no real storage calls.
 
-> **Suite status:** 192 pass, 107 fail (299 total). A large part of the suite still drives the retired
-> byte-relay `POST /api/admin/media/upload` route, which no longer exists in
-> the direct-to-Drive app, so those tests currently fail. The original upload path under the current architecture is covered at
-> the storage layer (`test_drive_resumable_upload.py`) and the session/ledger
-> layer (`test_upload_hardening.py`).
+> **Suite status:** 322 pass, 106 fail (428 total). A large part of the older suite still drives the retired
+> byte-relay `POST /api/admin/media/upload` route and the old Google Drive resumable-upload helpers,
+> which no longer exist in the direct-to-R2 app, so those tests currently fail (the same 106 before and
+> after the multi-studio work). The current upload path is covered by `tests/test_multi_studio_*.py`
+> (quota, R2 key handling, ownership guards) and the session/ledger layer.
 >
 > Caveat: the suite runs on SQLite, so it will happily compile SQL that MySQL 8
 > rejects. `count(...) FILTER (WHERE ...)` passes here and returns a 1064 in
@@ -432,13 +496,15 @@ Serve the frontend static files from the same origin as the backend (via reverse
 | Frontend | `http://lovestoryphotography.in` |
 | Backend | `https://api.madgen.space` |
 
-They are on different origins, so `CROSS_SITE_FRONTEND=true` and the backend's `CORS_ORIGINS` must contain the frontend origin — that same allowlist is what authorizes the browser's direct PUTs to Google Drive during upload.
+They are on different origins, so `CROSS_SITE_FRONTEND=true` and the backend's `CORS_ORIGINS` must contain the frontend origin. The R2 bucket's own CORS policy must also list the production frontend origin, because the browser uploads originals straight to R2.
 
 `vercel.json` hosts the frontend (SPA rewrite, `/api` proxy to the backend, security headers). The frontend domain also appears in `public/sitemap.xml` and `public/robots.txt`; update all three together when it changes. Serve it over `https://` — sitemap `<loc>` and `robots.txt` `Sitemap:` entries are conventionally `https`, and search engines flag `http://` there.
 
 ### Branding
 
-`frontend/public/ls-logo.png` is the single studio logo. It is the favicon (`index.html`), the admin header avatar (`AdminDashboard.tsx`, replacing a hard-coded `L` initial), and the Home landing-page mark (`Home.tsx`) — referenced by absolute URL from `public/` rather than imported, so it isn't hashed or duplicated into the JS bundle.
+**Platform / landing page.** `frontend/public/ls-logo.png` is the platform logo. It is the favicon (`index.html`) and the Home landing-page mark (`Home.tsx`) — referenced by absolute URL from `public/` rather than imported, so it isn't hashed or duplicated into the JS bundle.
+
+**Per studio.** Each studio has its own brand logo, uploaded by the super admin in the console (Studios → Edit, or the studio's detail page; PNG/JPEG/WebP/GIF up to 5 MB, re-encoded to a 512 px PNG). It is stored in R2 (`studios/{studio-name}-{id}/branding/logo-{hash}.png`) and served publicly at `/api/studios/{id}/logo?v={hash}`. The studio admin area shows the studio's **name and logo** in the sidebar, the mobile top bar and the dashboard profile chip (read from `GET /api/studio/profile`); a studio without a logo shows its name. **Client galleries** show the sharing studio's brand too: a client opening the studio's link sees that studio's logo and name on the password page and in the gallery header, and its name plus contact email/phone in the footer (from the additive `studio` field of `GET /api/client/gallery/access/{id}` and `GET /api/client/gallery`); a studio without a logo shows its name, and a client not mapped to any studio keeps the Love Story look.
 
 The shared `PoweredBy` component renders the `Powered by madgen` credit line (with the build's
 version and date) on the Home footer, both login cards, and the base of the admin sidebar.

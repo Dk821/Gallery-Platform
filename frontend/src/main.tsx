@@ -6,6 +6,7 @@ import "./index.css";
 import "./styles/admin.css";
 import "./styles/gallery.css";
 import "./styles/book-view.css";
+import "./styles/super-admin.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

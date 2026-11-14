@@ -68,6 +68,7 @@ def record_download(job_id: int) -> None:
             logger.warning("record_download called with unknown job id %s", job_id)
             return
         record = DownloadRecord(
+            studio_id=job.studio_id,
             client_id=job.client_id,
             album_id=job.album_id,
             job_id=job.id,
@@ -83,12 +84,13 @@ def record_download(job_id: int) -> None:
         db.close()
 
 
-def get_download_summary(db: DbSession) -> dict:
-    total_downloads = db.query(func.count(DownloadRecord.id)).scalar() or 0
-    total_bytes = db.query(func.coalesce(func.sum(DownloadRecord.total_bytes), 0)).scalar() or 0
+def get_download_summary(db: DbSession, studio_id: int | None = None) -> dict:
+    scope = [DownloadRecord.studio_id == studio_id] if studio_id is not None else []
+    total_downloads = db.query(func.count(DownloadRecord.id)).filter(*scope).scalar() or 0
+    total_bytes = db.query(func.coalesce(func.sum(DownloadRecord.total_bytes), 0)).filter(*scope).scalar() or 0
     since = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
     recent_24h = db.query(func.count(DownloadRecord.id)).filter(
-        DownloadRecord.downloaded_at >= since
+        DownloadRecord.downloaded_at >= since, *scope
     ).scalar() or 0
     return {
         "total_downloads": total_downloads,
@@ -97,7 +99,8 @@ def get_download_summary(db: DbSession) -> dict:
     }
 
 
-def get_per_album_download_stats(db: DbSession) -> list[dict]:
+def get_per_album_download_stats(db: DbSession, studio_id: int | None = None) -> list[dict]:
+    scope = [DownloadRecord.studio_id == studio_id] if studio_id is not None else []
     rows = (
         db.query(
             Album.id.label("album_id"),
@@ -109,6 +112,7 @@ def get_per_album_download_stats(db: DbSession) -> list[dict]:
         )
         .join(DownloadRecord, DownloadRecord.album_id == Album.id)
         .join(Client, Client.id == DownloadRecord.client_id)
+        .filter(*scope)
         .group_by(Album.id, Album.album_name, Client.client_name)
         .order_by(func.count(DownloadRecord.id).desc())
         .all()
@@ -126,7 +130,8 @@ def get_per_album_download_stats(db: DbSession) -> list[dict]:
     ]
 
 
-def get_download_history(db: DbSession, limit: int = 50) -> list[dict]:
+def get_download_history(db: DbSession, limit: int = 50, studio_id: int | None = None) -> list[dict]:
+    scope = [DownloadRecord.studio_id == studio_id] if studio_id is not None else []
     # Left-join DownloadJob: a downloaded ZIP is a real, countable event even
     # if its job row was later purged (job_id is nullable / SET NULL).
     rows = (
@@ -142,6 +147,7 @@ def get_download_history(db: DbSession, limit: int = 50) -> list[dict]:
         .join(Album, Album.id == DownloadRecord.album_id)
         .join(Client, Client.id == DownloadRecord.client_id)
         .outerjoin(DownloadJob, DownloadJob.id == DownloadRecord.job_id)
+        .filter(*scope)
         .order_by(DownloadRecord.downloaded_at.desc())
         .limit(limit)
         .all()

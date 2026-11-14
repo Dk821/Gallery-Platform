@@ -1,5 +1,8 @@
 import { useLocation, useNavigate } from "react-router-dom";
+import { useGalleryBase } from "../hooks/useGalleryBase";
 import { authService } from "../services/auth";
+import { useClientBranding } from "../services/clientBranding";
+import ClientBrandMark from "./ClientBrandMark";
 
 interface ClientNavProps {
   galleryId: string;
@@ -7,7 +10,9 @@ interface ClientNavProps {
 
 export default function ClientNav({ galleryId }: ClientNavProps) {
   const navigate = useNavigate();
-  const onWishlistPage = useLocation().pathname === `/gallery/${galleryId}/wishlist`;
+  const galleryBase = useGalleryBase();
+  const branding = useClientBranding(galleryId);
+  const onWishlistPage = useLocation().pathname === `${galleryBase}/wishlist`;
 
   async function handleLogout() {
     try {
@@ -15,7 +20,7 @@ export default function ClientNav({ galleryId }: ClientNavProps) {
     } catch {
       // Ignore network / session errors on logout
     }
-    navigate(`/gallery/${galleryId}`, { replace: true });
+    navigate(`${galleryBase}`, { replace: true });
   }
 
   return (
@@ -23,11 +28,10 @@ export default function ClientNav({ galleryId }: ClientNavProps) {
       <button
         type="button"
         className="sam-nav__brand"
-        onClick={() => navigate(`/gallery/${galleryId}/view`)}
-        aria-label="Love Story Photography Home"
+        onClick={() => navigate(`${galleryBase}/view`)}
+        aria-label={`${branding.studio?.name ?? "Love Story Photography"} Home`}
       >
-        <span className="sam-nav__logo-script">Love Story</span>
-        <span className="sam-nav__logo-sub">PHOTOGRAPHY</span>
+        <ClientBrandMark studio={branding.studio} variant="nav" pending={branding.status === "loading"} />
       </button>
 
       <div className="sam-nav__right">
@@ -43,7 +47,7 @@ export default function ClientNav({ galleryId }: ClientNavProps) {
         <button
           type="button"
           className={`sam-nav__wishlist-btn${onWishlistPage ? " is-current" : ""}`}
-          onClick={() => navigate(`/gallery/${galleryId}/wishlist`)}
+          onClick={() => navigate(`${galleryBase}/wishlist`)}
           aria-label="My wishlist"
           aria-current={onWishlistPage ? "page" : undefined}
         >

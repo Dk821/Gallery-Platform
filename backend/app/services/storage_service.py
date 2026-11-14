@@ -31,6 +31,9 @@ class StoredFile:
     name: str
     size: int
     mime_type: str
+    # Provider-side custom tags (Google Drive appProperties), when the provider
+    # reports them. None means "the provider did not say" - NOT "no tags".
+    app_properties: dict | None = None
 
 
 class StorageError(Exception):
@@ -50,6 +53,66 @@ class StorageTimeoutError(StorageError):
 
 
 class StorageService(ABC):
+    # Stored on Media.storage_provider so a row always says which backend
+    # holds its object (the platform can run Drive and R2 side by side).
+    provider_name: str = "google_drive"
+
+    def owns_object(self, object_id: str, studio_id: int) -> bool:
+        """
+        True when `object_id` (a provider file id / object key reported by the
+        BROWSER at upload completion) is allowed to belong to `studio_id`.
+        Providers whose ids encode the tenant (R2: ``studios/{id}/...``)
+        override this; the default accepts everything and relies on the
+        upload-id tag check in media_service for providers that cannot.
+        """
+        return True
+
+    # True for providers that lay files out in readable per-studio / per-album
+    # folders chosen by the server (R2). Others keep their own folder handling.
+    uses_named_layout: bool = False
+
+    def object_key_for(
+        self,
+        studio_id: int,
+        album_id: int,
+        media_uuid: str,
+        *,
+        studio_prefix: str | None = None,
+        album_folder: str | None = None,
+    ) -> str | None:
+        """
+        Deterministic object key for providers that address objects by key:
+        ``{album_folder}/{media_uuid}`` when the album has a named folder, else
+        ``{studio_prefix or studios/<id>}/albums/{album_id}/{media_uuid}``.
+        None for providers (Google Drive) that issue their own opaque ids.
+        """
+        return None
+
+    def tenant_root_folder(self, studio_id: int, studio_prefix: str | None = None) -> str | None:
+        """
+        Parent folder every top-level (per-client) folder of `studio_id` is
+        created under, so ALL of a studio's objects share one prefix
+        (R2: ``studios/acme-photo-1``). None for providers with their own root.
+        """
+        return None
+
+    def album_originals_folder(self, studio_prefix: str, client_name: str, album_id: int) -> str | None:
+        """
+        Folder that holds an album's original files, e.g.
+        ``studios/acme-photo-1/albums/test-couple_25``. None when the provider
+        does not use a named layout.
+        """
+        return None
+
+    def put_bytes(self, key: str, data: bytes, content_type: str) -> None:
+        """
+        Stores a small in-memory object under an exact, caller-chosen key
+        (studio logos). Only key-addressed providers (R2) can do this; the
+        default refuses rather than guessing, so existing providers are
+        unaffected.
+        """
+        raise StorageError("This storage provider cannot store objects under a chosen key.")
+
     @abstractmethod
     def create_folder(self, name: str, parent_folder_id: str | None = None) -> str:
         """Creates a folder and returns its provider-specific folder id."""

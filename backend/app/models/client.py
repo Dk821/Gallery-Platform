@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import DateTime, Enum, String, Text
+from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.connection import Base
@@ -14,6 +14,11 @@ class Client(Base, IdMixin, TimestampMixin):
     # This is the unpredictable gallery id used in /gallery/<client_uuid>
     client_uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, index=True)
     client_name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Owning studio (tenant). Indexed, filtered on by every studio-admin query.
+    studio_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("studios.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     # Argon2 hash of the gallery password. NULL when the gallery has NO
     # password (admins may create clients without one) - such galleries let
     # clients straight in without a password prompt. When non-NULL, clients
@@ -36,7 +41,7 @@ class Client(Base, IdMixin, TimestampMixin):
 
     # Google Drive folder id for this client (root of their albums), stored so
     # it never needs to be recomputed / re-derived from name.
-    drive_folder_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    drive_folder_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # The dedicated "Thumbnails" Drive folder (a sibling of the album folders,
     # never inside one) holding every item thumbnail - video poster frames and
@@ -46,7 +51,7 @@ class Client(Base, IdMixin, TimestampMixin):
     # any client/admin response; thumbnails are only ever served through
     # GET /api/{client,admin}/media/{id}/thumbnail, which reads the file id
     # off the Media row.
-    thumbnail_folder_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    thumbnail_folder_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # Opaque, random suffix embedded in the Drive folder's display name
     # ("{client_name}_C_{folder_uid}"). Generated once and never changed -

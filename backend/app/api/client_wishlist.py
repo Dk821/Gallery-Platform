@@ -26,6 +26,7 @@ def _log(db: DbSession, client_id: int, action: str, media_id: int, request: Req
         AuditLog(
             user_type="client",
             user_id=client_id,
+            studio_id=db.query(Client.studio_id).filter(Client.id == client_id).scalar(),
             action=action,
             resource_type="media",
             resource_id=media_id,

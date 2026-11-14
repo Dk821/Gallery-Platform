@@ -51,7 +51,13 @@ export default function AdminLogin() {
     setError(null);
     setLoading(true);
     try {
-      await authService.adminLogin(email, password);
+      const result = await authService.adminLogin(email, password);
+      if (result.role === "super_admin") {
+        // Platform super admins land in their own console; only honour a
+        // return path that is inside it (the studio pages are not for them).
+        navigate(redirectTo?.startsWith("/super-admin") ? redirectTo : "/super-admin/dashboard", { replace: true });
+        return;
+      }
       navigate(redirectTo ?? "/admin/dashboard", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed.");
@@ -114,7 +120,7 @@ export default function AdminLogin() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             autoComplete="username"
-            placeholder="admin@lovestory.ph"
+            placeholder="Enter email address"
             autoFocus
             required
           />
@@ -126,7 +132,7 @@ export default function AdminLogin() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="current-password"
-            placeholder="••••••••"
+            placeholder="Enter password"
             required
           />
         </label>

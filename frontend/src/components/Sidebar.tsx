@@ -1,6 +1,7 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { authService } from "../services/auth";
 import PoweredBy from "./PoweredBy";
+import StudioBrandMark from "./StudioBrandMark";
 
 interface NavItem {
   id: string;
@@ -53,17 +54,6 @@ const navSections: NavSection[] = [
             <rect x="3" y="3" width="18" height="18" rx="2.5" strokeWidth="1.6" />
             <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />
             <path d="M21 15l-5-5L5 21" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        ),
-      },
-      {
-        id: "media",
-        to: "/admin/albums?filter=media",
-        label: "Media",
-        icon: (
-          <svg className="admin-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <rect x="3" y="3" width="18" height="18" rx="2.5" strokeWidth="1.6" />
-            <path d="M3 9h18M9 21V9" strokeWidth="1.6" strokeLinecap="round" />
           </svg>
         ),
       },
@@ -153,7 +143,6 @@ export default function Sidebar({ open, onNavigate }: SidebarProps) {
   function isItemActive(item: NavItem): boolean {
     const currentPath = location.pathname;
     const currentHash = location.hash;
-    const currentSearch = location.search;
 
     // 1. Dashboard: active ONLY when directly on /admin/dashboard without any hash anchor
     if (item.id === "dashboard") {
@@ -165,17 +154,9 @@ export default function Sidebar({ open, onNavigate }: SidebarProps) {
       return currentPath.startsWith("/admin/clients");
     }
 
-    // 3. Albums: active on /admin/albums when not specifically filtering for media
+    // 3. Albums: active on /admin/albums and on an album's media page (/admin/albums/:albumId)
     if (item.id === "albums") {
-      return currentPath === "/admin/albums" && !currentSearch.includes("filter=media");
-    }
-
-    // 4. Media: active on /admin/albums/:albumId or when explicitly browsing media
-    if (item.id === "media") {
-      return (
-        currentPath.startsWith("/admin/albums/") ||
-        (currentPath === "/admin/albums" && currentSearch.includes("filter=media"))
-      );
+      return currentPath.startsWith("/admin/albums");
     }
 
     // 5. Uploads: active on /admin/uploads
@@ -213,18 +194,12 @@ export default function Sidebar({ open, onNavigate }: SidebarProps) {
 
   return (
     <aside className={"admin-sidebar" + (open ? " admin-sidebar--open" : "")}>
-      <div className="admin-sidebar__brand">
-        <span className="admin-sidebar__logo-script">Love Story</span>
-        <span className="admin-sidebar__logo-sub">PHOTOGRAPHY</span>
-      </div>
+      <StudioBrandMark variant="sidebar" />
 
       <div className="admin-sidebar__scroll-area">
         <nav className="admin-sidebar__nav">
           {navSections.map((sec, sIdx) => (
             <div key={sIdx} className="admin-sidebar__group">
-              {sec.category && (
-                <div className="admin-sidebar__category">{sec.category}</div>
-              )}
               {sec.items.map((item) => {
                 const active = isItemActive(item);
                 return (

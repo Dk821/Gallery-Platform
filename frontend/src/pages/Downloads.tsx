@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import AdminLayout from "../components/AdminLayout";
 import { adminService, DownloadAnalytics, StorageOverview } from "../services/admin";
-import { formatBytes } from "../utils/format";
+import { formatAllocationBytes, formatBytes } from "../utils/format";
 
 type DownloadTypeFilter = "all" | "all-album" | "selected";
 
@@ -85,12 +85,12 @@ export default function Downloads() {
   function renderDriveCards() {
     if (!storage) return null;
     const meta = storage.our_metadata;
-    const quota =
-      storage.drive_quota.available === true ? storage.drive_quota : null;
+    // The studio's own allocation (set by the platform); falls back to what our records track.
+    const quota = storage.studio_quota;
 
-    const usageBytes = quota ? quota.usage_bytes : meta.total_bytes_tracked;
-    const limitBytes = quota?.limit_bytes ?? null;
-    const freeBytes = limitBytes != null ? Math.max(limitBytes - usageBytes, 0) : null;
+    const usageBytes = quota ? quota.used_bytes : meta.total_bytes_tracked;
+    const limitBytes = quota ? quota.quota_bytes : null;
+    const freeBytes = quota ? quota.remaining_bytes : null;
 
     return (
       <div className="stat-strip downloads-stats">
@@ -111,19 +111,19 @@ export default function Downloads() {
           </div>
         </div>
         <div className="stat-strip__item">
-          <div className="stat-strip__value">{formatBytes(usageBytes)}</div>
-          <div className="stat-strip__label">Drive used</div>
+          <div className="stat-strip__value">{formatAllocationBytes(usageBytes)}</div>
+          <div className="stat-strip__label">Storage used</div>
           <div className="stat-strip__meta">
-            {quota ? "on Google Drive" : "tracked in our records"}
+            {quota ? "of your allocation" : "tracked in our records"}
           </div>
         </div>
         <div className="stat-strip__item">
-          <div className="stat-strip__value">{freeBytes != null ? formatBytes(freeBytes) : "Unlimited"}</div>
-          <div className="stat-strip__label">Drive available</div>
+          <div className="stat-strip__value">{freeBytes != null ? formatAllocationBytes(freeBytes) : "—"}</div>
+          <div className="stat-strip__label">Storage remaining</div>
           <div className="stat-strip__meta">
             {limitBytes != null
-              ? `${formatBytes(usageBytes)} of ${formatBytes(limitBytes)}`
-              : "no fixed plan limit"}
+              ? `${formatAllocationBytes(usageBytes)} of ${formatAllocationBytes(limitBytes)}`
+              : "no allocation set"}
           </div>
         </div>
       </div>
@@ -144,7 +144,7 @@ export default function Downloads() {
     <AdminLayout>
       <h1 className="admin-page-title">Downloads</h1>
       <p className="admin-page-subtitle">
-        Download activity, upload volume, and Google Drive storage usage.
+        Download activity, upload volume, and your storage allocation.
       </p>
 
       {error && <p className="auth-error">{error}</p>}

@@ -153,25 +153,11 @@ def test_storage_overview_endpoint(client, seeded_admin):
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert "our_metadata" in data
-    assert "drive_quota" in data
-    assert data["drive_quota"]["available"] is True  # FakeStorageService always reports available
-
-
-def test_storage_overview_includes_vps_disk_headroom(client, seeded_admin):
-    # This is the actual local disk on the server (where uploads are
-    # spooled / ZIPs are written), distinct from drive_quota above which
-    # is Google Drive's own storage quota.
-    login_as_admin(client, seeded_admin)
-    resp = client.get("/api/admin/storage")
-    assert resp.status_code == 200
-    vps_disk = resp.json()["data"]["vps_disk"]
-
-    assert vps_disk["total_bytes"] > 0
-    assert vps_disk["free_bytes"] >= 0
-    assert vps_disk["used_bytes"] >= 0
-    assert vps_disk["reserved_bytes"] == 0  # nothing mid-upload during this test
-    assert 0 <= vps_disk["percent_used"] <= 100
-    assert vps_disk["effective_available_bytes"] >= 0
+    # The studio sees ITS allocation, not the platform's server disk or the provider's account quota.
+    assert "drive_quota" not in data and "vps_disk" not in data
+    quota = data["studio_quota"]
+    assert quota["quota_bytes"] > 0 and quota["used_bytes"] >= 0 and quota["reserved_bytes"] == 0
+    assert quota["remaining_bytes"] == quota["quota_bytes"] - quota["used_bytes"] - quota["reserved_bytes"]
 
 
 def test_disk_headroom_accounts_for_active_reservations():

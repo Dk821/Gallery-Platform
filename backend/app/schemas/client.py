@@ -54,7 +54,7 @@ class ClientResponse(BaseModel):
     has_download_password: bool
     created_at: datetime.datetime
     last_login_at: datetime.datetime | None
-    gallery_url_path: str  # e.g. /gallery/<uuid> - frontend prepends its own domain
+    gallery_url_path: str  # e.g. /<studio-slug>/gallery/<uuid> (or /gallery/<uuid> without a slug) - frontend prepends its own domain
 
     model_config = {"from_attributes": True}
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, MouseEvent as ReactMouseEvent, TouchEvent as ReactTouchEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useGalleryBase } from "../hooks/useGalleryBase";
 import BookCommentPanel from "../components/BookCommentPanel";
 import { AlbumComment, ApiRequestError } from "../services/api";
 import { GalleryAlbum, GalleryMedia, galleryService } from "../services/gallery";
@@ -21,8 +22,13 @@ const AUTOPLAY_INTERVAL_MS = 5000;
 // How many items ahead/behind of the current page get their full-size
 // image warmed in the browser cache, so the next couple of turns never
 // wait on a network round trip.
-const PRELOAD_AHEAD = 3;
-const PRELOAD_BEHIND = 2;
+const PRELOAD_AHEAD = 6;
+const PRELOAD_BEHIND = 3;
+// The turning leaf's own <img> elements are decoded before it moves. Photos
+// that are already downloaded decode in a few ms; this caps the wait so a slow
+// decode can never hold a page turn for seconds - the turn starts anyway and
+// the pictures paint as soon as they are ready.
+const LEAF_DECODE_MAX_WAIT_MS = 400;
 // Minimum horizontal drag, in px, that counts as a swipe rather than a tap.
 const SWIPE_THRESHOLD_PX = 40;
 
@@ -254,6 +260,7 @@ function LeafSegment({
 
 export default function BookView() {
   const { galleryId = "", albumId = "" } = useParams();
+  const galleryBase = useGalleryBase();
   const navigate = useNavigate();
   const albumIdNum = Number(albumId);
 
@@ -409,7 +416,7 @@ export default function BookView() {
         if (cancelled) return;
 
         if (!albumData.book_view_enabled) {
-          navigate(`/gallery/${galleryId}/view/${albumId}`, { replace: true });
+          navigate(`${galleryBase}/view/${albumId}`, { replace: true });
           return;
         }
         setAlbum(albumData);
@@ -435,7 +442,7 @@ export default function BookView() {
       } catch (err) {
         if (cancelled) return;
         if (err instanceof ApiRequestError && (err.code === "ALBUM_EXPIRED" || err.code === "ALBUM_FORBIDDEN")) {
-          navigate(`/gallery/${galleryId}`, { replace: true });
+          navigate(`${galleryBase}`, { replace: true });
         } else {
           setError(err instanceof Error ? err.message : "Could not load this album.");
         }
@@ -672,7 +679,7 @@ export default function BookView() {
       // mounted on the turning leaf also need to decode before it moves.
       const leafImages = Array.from(book.querySelectorAll<HTMLImageElement>(".book-leaf img"));
       try {
-        await Promise.all(leafImages.map((img) => {
+        const decoded = Promise.all(leafImages.map((img) => {
           if (typeof img.decode === "function") return img.decode();
           if (img.complete && img.naturalWidth > 0) return Promise.resolve();
           return new Promise<void>((resolve, reject) => {
@@ -680,6 +687,13 @@ export default function BookView() {
             img.onerror = () => reject(new Error("Page image failed to load"));
           });
         }));
+        // A real load failure still rejects (and shows the toast); a merely
+        // slow decode just stops holding the turn after the cap.
+        await Promise.race([
+          decoded,
+          new Promise<void>((resolve) => window.setTimeout(resolve, LEAF_DECODE_MAX_WAIT_MS)),
+        ]);
+        decoded.catch(() => undefined);
       } catch {
         if (cancelled) return;
         flipLock.current = false;
@@ -783,7 +797,7 @@ export default function BookView() {
       if (commentOpen) return;
       if (e.key === "ArrowRight") goNext();
       else if (e.key === "ArrowLeft") goPrev();
-      else if (e.key === "Escape") navigate(`/gallery/${galleryId}/view/${albumId}`);
+      else if (e.key === "Escape") navigate(`${galleryBase}/view/${albumId}`);
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
@@ -935,7 +949,7 @@ export default function BookView() {
       <div className="book-shell">
         <div className="book-error">
           <p>{error}</p>
-          <button className="btn-secondary" onClick={() => navigate(`/gallery/${galleryId}/view/${albumId}`)}>
+          <button className="btn-secondary" onClick={() => navigate(`${galleryBase}/view/${albumId}`)}>
             Back to album
           </button>
         </div>
@@ -948,7 +962,7 @@ export default function BookView() {
       <div className="book-shell">
         <div className="book-error">
           <p>This album has no pages yet.</p>
-          <button className="btn-secondary" onClick={() => navigate(`/gallery/${galleryId}/view/${albumId}`)}>
+          <button className="btn-secondary" onClick={() => navigate(`${galleryBase}/view/${albumId}`)}>
             Back to album
           </button>
         </div>
@@ -972,7 +986,7 @@ export default function BookView() {
       <button
         type="button"
         className="book-close-btn"
-        onClick={() => navigate(`/gallery/${galleryId}/view/${albumId}`)}
+        onClick={() => navigate(`${galleryBase}/view/${albumId}`)}
         aria-label="Close Book View"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">

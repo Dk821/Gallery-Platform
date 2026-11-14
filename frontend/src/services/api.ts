@@ -12,6 +12,15 @@
 // find-and-replace across the codebase.
 export const API_BASE_URL: string = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
+// A picture the backend serves (e.g. a studio logo) comes back as a path like
+// "/api/studios/3/logo?v=ab12...". Resolve it against the same backend base as
+// every API call, so it also works when the frontend is hosted on another
+// origin. Absolute URLs (an old https:// logo) pass through untouched.
+export function assetUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  return url.startsWith("/") ? `${API_BASE_URL}${url}` : url;
+}
+
 export interface ApiError {
   code: string;
   message: string;
@@ -136,7 +145,10 @@ const ADMIN_LOGIN_PATH = "/admin/login";
 // admin login screen - it should just surface as a normal ApiRequestError
 // for that UI to handle itself.
 function isAdminContext(): boolean {
-  return window.location.pathname.startsWith("/admin");
+  // The platform console (/super-admin/*) signs in through the same admin
+  // login page, so it shares the same session-expired handling.
+  const path = window.location.pathname;
+  return path.startsWith("/admin") || path.startsWith("/super-admin");
 }
 
 let redirectingToLogin = false;

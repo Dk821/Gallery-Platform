@@ -22,6 +22,11 @@ class DownloadRecord(Base, IdMixin):
 
     __tablename__ = "download_records"
 
+    # Owning studio (tenant). Indexed, filtered on by every studio-admin query.
+    studio_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("studios.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+
     client_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("clients.id", ondelete="CASCADE"), nullable=False, index=True
     )

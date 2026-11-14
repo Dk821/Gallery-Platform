@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useGalleryBase } from "../hooks/useGalleryBase";
 import ClientNav from "../components/ClientNav";
 import DownloadPasswordModal from "../components/DownloadPasswordModal";
 import MediaLightbox from "../components/MediaLightbox";
@@ -21,6 +22,7 @@ const PAGE_SIZE = 60;
 // next time the page is loaded.
 export default function Wishlist() {
   const { galleryId = "" } = useParams();
+  const galleryBase = useGalleryBase();
   const navigate = useNavigate();
 
   const [items, setItems] = useState<GalleryMedia[]>([]);
@@ -74,7 +76,7 @@ export default function Wishlist() {
           setItems([]);
         } else if (err instanceof ApiRequestError && err.status === 401) {
           // Session gone -> back to the password screen, like every other client page.
-          navigate(`/gallery/${galleryId}`, { replace: true });
+          navigate(`${galleryBase}`, { replace: true });
         } else {
           setError("We couldn't load your wishlist. Please try again.");
         }
@@ -142,7 +144,7 @@ export default function Wishlist() {
             <button
               type="button"
               className="btn-secondary wishlist-page__back"
-              onClick={() => navigate(`/gallery/${galleryId}/view`)}
+              onClick={() => navigate(`${galleryBase}/view`)}
             >
               ← All albums
             </button>

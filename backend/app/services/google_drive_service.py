@@ -189,8 +189,146 @@ class GoogleDriveStorage(StorageService):
         self._session_timeout = settings.upload_session_timeout
         self._limiter = get_upload_limiter(settings.upload_max_concurrent)
 
+    # ---- named layout (same folder model as the R2 keys) -----------------
+    #
+    # R2 stores ``studios/{name}-{id}/albums/{client}_{album id}/{file}`` as a key
+    # prefix. Drive has no prefixes, so the same path is built out of REAL nested
+    # folders (find-or-create, one level at a time) and the resulting Drive folder
+    # id is what the database stores in drive_folder_id. Files keep Drive ids; only
+    # small branding files (logos) are addressed by a "a/b/c.png" path, which
+    # _resolve_key() turns into a Drive id.
 
+    uses_named_layout = True
+    provider_name = "google_drive"
 
+    @staticmethod
+    def _q(value: str) -> str:
+        """Escapes a value for use inside a single-quoted Drive query string."""
+        return value.replace("\\", "\\\\").replace("'", "\\'")
+
+    def _execute(self, request):
+        """Runs a request on its own HTTP client (httplib2 is not thread-safe when shared)."""
+        raw_http = httplib2.Http(timeout=self._chunk_timeout)
+        request.http = AuthorizedHttp(self._credentials, http=raw_http)
+        try:
+            return request.execute()
+        finally:
+            raw_http.close()
+
+    def _call(self, fn):
+        try:
+            return self._retry(fn)
+        except HttpError as exc:
+            raise _translate_http_error(exc) from exc
+        except RefreshError as exc:
+            raise StorageError(f"Google Drive authentication failed: {exc}") from exc
+
+    def _find_child(self, parent_id: str, name: str, *, folder: bool) -> str | None:
+        mime_clause = (
+            f"mimeType = '{FOLDER_MIME_TYPE}'" if folder else f"mimeType != '{FOLDER_MIME_TYPE}'"
+        )
+        query = f"'{parent_id}' in parents and name = '{self._q(name)}' and {mime_clause} and trashed = false"
+
+        def _do():
+            return self._execute(
+                self._service.files().list(
+                    q=query,
+                    fields="files(id)",
+                    pageSize=1,
+                    orderBy="createdTime",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                )
+            )
+
+        files = self._call(_do).get("files") or []
+        return files[0]["id"] if files else None
+
+    def _ensure_path(self, path: str) -> str:
+        """Finds or creates the nested folders of ``a/b/c`` under the root; returns the last folder's id."""
+        current = self._root_folder_id or "root"
+        for part in (p for p in path.split("/") if p):
+            found = self._find_child(current, part, folder=True)
+            if found is None:
+                body = {"name": part, "mimeType": FOLDER_MIME_TYPE, "parents": [current]}
+                created = self._call(
+                    lambda body=body: self._execute(
+                        self._service.files().create(body=body, fields="id", supportsAllDrives=True)
+                    )
+                )
+                found = created["id"]
+            current = found
+        return current
+
+    def _find_path(self, path: str) -> str | None:
+        """The Drive id of the FILE at ``a/b/c.png`` (never creates anything), or None."""
+        parts = [p for p in path.split("/") if p]
+        if not parts:
+            return None
+        current = self._root_folder_id or "root"
+        for part in parts[:-1]:
+            current = self._find_child(current, part, folder=True)
+            if current is None:
+                return None
+        return self._find_child(current, parts[-1], folder=False)
+
+    def _resolve_key(self, key: str) -> str:
+        """A path key becomes a Drive file id; a plain Drive id is returned unchanged."""
+        if "/" not in key:
+            return key
+        if ".." in key or key.startswith("/"):
+            raise StorageNotFoundError(key)
+        file_id = self._find_path(key)
+        if file_id is None:
+            raise StorageNotFoundError(key)
+        return file_id
+
+    def owns_object(self, object_id: str, studio_id: int) -> bool:
+        # Drive file/folder ids are opaque (the upload itself is bound to the
+        # studio by the upload-id tag, see media_service). Only path keys can be
+        # checked here, with the same rule as R2: "studios/<name>-<id>/...".
+        if "/" not in object_id:
+            return bool(object_id)
+        if ".." in object_id or object_id.startswith("/"):
+            return False
+        parts = object_id.split("/")
+        if len(parts) < 3 or parts[0] != "studios":
+            return False
+        return parts[1].rsplit("-", 1)[-1] == str(studio_id)
+
+    def tenant_root_folder(self, studio_id: int, studio_prefix: str | None = None) -> str | None:
+        return self._ensure_path((studio_prefix or f"studios/{studio_id}").rstrip("/"))
+
+    def album_originals_folder(self, studio_prefix: str, client_name: str, album_id: int) -> str | None:
+        from app.services.storage_paths import slugify
+
+        return self._ensure_path(
+            f"{studio_prefix.rstrip('/')}/albums/{slugify(client_name, 'client')}_{album_id}"
+        )
+
+    def put_bytes(self, key: str, data: bytes, content_type: str) -> None:
+        if not key or ".." in key or key.startswith("/") or "/" not in key:
+            raise StorageError("Invalid object key.")
+        folder_path, _, name = key.rpartition("/")
+        parent_id = self._ensure_path(folder_path)
+        existing = self._find_child(parent_id, name, folder=False)
+
+        def _do():
+            media = MediaIoBaseUpload(io.BytesIO(data), mimetype=content_type, resumable=False)
+            if existing:
+                request = self._service.files().update(
+                    fileId=existing, media_body=media, fields="id", supportsAllDrives=True
+                )
+            else:
+                request = self._service.files().create(
+                    body={"name": name, "parents": [parent_id]},
+                    media_body=media,
+                    fields="id",
+                    supportsAllDrives=True,
+                )
+            return self._execute(request)
+
+        self._call(_do)
 
     def _retry(self, fn, *, on_retry=None):
         # Fail fast, before even attempting the network call, if Drive has
@@ -635,6 +773,7 @@ class GoogleDriveStorage(StorageService):
         # session each time - gentler on flaky/inspected connections (see
         # _is_httplib2_cleanup_bug). The explicit timeout closes the same
         # "silent hang" gap described on self._service's construction above.
+        provider_file_id = self._resolve_key(provider_file_id)
         raw_http = httplib2.Http(timeout=self._chunk_timeout)
         download_http = AuthorizedHttp(self._credentials, http=raw_http)
         try:
@@ -742,6 +881,11 @@ class GoogleDriveStorage(StorageService):
         # the time it got here (it had to have write access to create the
         # file in the first place). The human owner can empty their own
         # trash, or Drive auto-purges it after 30 days.
+        try:
+            provider_file_id = self._resolve_key(provider_file_id)
+        except StorageNotFoundError:
+            return  # a path key that no longer exists is already deleted
+
         def _do():
             # Per-call client isolation (same reasoning as upload()/download():
             # self._service is shared and httplib2 is not thread-safe under
@@ -767,6 +911,8 @@ class GoogleDriveStorage(StorageService):
             raise StorageError(f"Google Drive authentication failed: {exc}") from exc
 
     def get_file(self, provider_file_id: str) -> StoredFile:
+        provider_file_id = self._resolve_key(provider_file_id)
+
         def _do():
             # Per-call client isolation, same pattern as upload()/download()/
             # create_resumable_session(). httplib2 keeps ONE connection cache
@@ -781,7 +927,7 @@ class GoogleDriveStorage(StorageService):
             # authorized client.
             request = self._service.files().get(
                 fileId=provider_file_id,
-                fields="id,name,size,mimeType",
+                fields="id,name,size,mimeType,appProperties",
                 supportsAllDrives=True,
             )
             raw_http = httplib2.Http(timeout=self._chunk_timeout)
@@ -828,6 +974,7 @@ class GoogleDriveStorage(StorageService):
             name=result.get("name", ""),
             size=int(result.get("size", 0) or 0),
             mime_type=result.get("mimeType", ""),
+            app_properties=dict(result.get("appProperties") or {}),
         )
 
     def list_folder_contents(self, folder_id: str) -> list[StoredFile]:

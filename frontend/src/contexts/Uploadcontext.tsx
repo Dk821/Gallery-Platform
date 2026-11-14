@@ -3,6 +3,7 @@ import { adminService, UploadSessionListItem } from "../services/admin";
 import { ApiRequestError } from "../services/api";
 import { extractPhotoThumbnail } from "../utils/photoThumbnail";
 import { extractVideoPoster, isVideoFile } from "../utils/videoPoster";
+import QuotaWarningModal, { parseQuotaMessage, QuotaWarning } from "../components/QuotaWarningModal";
 
 // Generates a short, DB-safe unique id for an upload attempt. Deliberately
 // does NOT embed the filename (unlike the old `${file.name}-${file.size}-...`
@@ -185,6 +186,17 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   const [paused, setPaused] = useState(false);
   const [toast, setToast] = useState<{ text: string; kind: "success" | "warn" } | null>(null);
   const toastShownRef = useRef(false);
+  // Set when the server refuses an upload because the studio (or the platform) is out of storage; the
+  // pop-up asks the administrator to extend it. Several files refused in one batch share one pop-up.
+  const [quotaWarning, setQuotaWarning] = useState<QuotaWarning | null>(null);
+
+  function noteQuotaRefusal(err: unknown, filename: string) {
+    if (!(err instanceof ApiRequestError)) return;
+    if (err.code !== "STUDIO_QUOTA_EXCEEDED" && err.code !== "PLATFORM_CAPACITY_EXCEEDED") return;
+    const kind = err.code === "STUDIO_QUOTA_EXCEEDED" ? "studio" : "platform";
+    const { needed, remaining } = parseQuotaMessage(err.message);
+    setQuotaWarning((prev) => (prev && prev.kind === kind ? { ...prev, count: prev.count + 1 } : { kind, filename, count: 1, needed, remaining }));
+  }
 
   // Refresh-recovery (Section 4): only restore ACTIVE uploads (queued /
   // uploading). Runs ONCE for the life of the app (this provider never
@@ -316,7 +328,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     try {
       driveResult = await promise;
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Upload to Google Drive failed.";
+      const message = err instanceof Error ? err.message : "Upload to storage failed.";
       const wasCancelled = message === "Upload cancelled.";
       if (!wasCancelled) {
         // This server never saw the failure (the browser talked to Drive
@@ -428,8 +440,14 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       // backend so it can create the Media record.
       await runDirectUpload(item, session.upload_url);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Upload failed.";
-      const wasCancelled = message === "Upload cancelled." || cancelledEarly;
+      const rawMessage = err instanceof Error ? err.message : "Upload failed.";
+      const wasCancelled = rawMessage === "Upload cancelled." || cancelledEarly;
+      if (!wasCancelled) noteQuotaRefusal(err, item.filename);
+      // The list shows a plain sentence instead of the server's byte counts (the pop-up has the sizes).
+      const message =
+        err instanceof ApiRequestError && err.code === "STUDIO_QUOTA_EXCEEDED"
+          ? "Not enough storage left in your studio. Ask your administrator to extend it, then Retry."
+          : rawMessage;
       setItems((prev) =>
         prev.map((i) =>
           i.id === item.id
@@ -605,6 +623,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
           startUpload(item);
           return;
         }
+        noteQuotaRefusal(err, item.filename);
         const message = err instanceof Error ? err.message : "Could not confirm the upload.";
         setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "error", error: message } : i)));
       });
@@ -668,7 +687,12 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     clearList,
   };
 
-  return <UploadContext.Provider value={value}>{children}</UploadContext.Provider>;
+  return (
+    <UploadContext.Provider value={value}>
+      {children}
+      {quotaWarning && <QuotaWarningModal warning={quotaWarning} onClose={() => setQuotaWarning(null)} />}
+    </UploadContext.Provider>
+  );
 }
 
 export function useUploads(): UploadContextValue {

@@ -16,6 +16,11 @@ class Album(Base, IdMixin, TimestampMixin):
     )
     album_uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, index=True)
     album_name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Owning studio (tenant). Indexed, filtered on by every studio-admin query.
+    studio_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("studios.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         Enum("active", "disabled", name="album_status"), default="active", nullable=False
@@ -28,7 +33,7 @@ class Album(Base, IdMixin, TimestampMixin):
     expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True, index=True)
 
     # Google Drive subfolder id for this album
-    drive_folder_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    drive_folder_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # Opaque, random suffix embedded in the Drive folder's display name
     # ("{album_name}_A_{folder_uid}"). Generated once and never changed -

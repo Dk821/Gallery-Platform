@@ -47,6 +47,7 @@ from sqlalchemy.orm import Session as DbSession
 
 from app.models.media import Media
 from app.models.upload_session import UploadSession
+from app.services import quota_service
 from app.services.storage_service import StorageError, StorageService
 from app.services.upload_logging import log_event
 
@@ -60,7 +61,16 @@ def _has_drive_file_clause():
     return or_(UploadSession.drive_file_id.isnot(None), UploadSession.thumbnail_drive_file_id.isnot(None))
 
 
-def find_orphan_candidates(db: DbSession, grace_period_hours: int) -> list[UploadSession]:
+def _studio_clause(studio_id: int | None):
+    # None = platform-wide (the CLI run by the operator); a studio admin's
+    # request ALWAYS passes its own studio so it can only ever see - and
+    # delete - files that belong to its own upload sessions.
+    return [UploadSession.studio_id == studio_id] if studio_id is not None else []
+
+
+def find_orphan_candidates(
+    db: DbSession, grace_period_hours: int, studio_id: int | None = None
+) -> list[UploadSession]:
     cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=grace_period_hours)
     return (
         db.query(UploadSession)
@@ -68,12 +78,13 @@ def find_orphan_candidates(db: DbSession, grace_period_hours: int) -> list[Uploa
             _has_drive_file_clause(),
             UploadSession.status != "completed",
             UploadSession.created_at < cutoff,
+            *_studio_clause(studio_id),
         )
         .all()
     )
 
 
-def count_orphan_candidates(db: DbSession, grace_period_hours: int) -> int:
+def count_orphan_candidates(db: DbSession, grace_period_hours: int, studio_id: int | None = None) -> int:
     """
     Same query as find_orphan_candidates(), just a count instead of full
     rows - cheap enough (DB-only, no Drive API calls) to include in every
@@ -87,13 +98,19 @@ def count_orphan_candidates(db: DbSession, grace_period_hours: int) -> int:
             _has_drive_file_clause(),
             UploadSession.status != "completed",
             UploadSession.created_at < cutoff,
+            *_studio_clause(studio_id),
         )
         .count()
     )
 
 
 def reconcile_orphans(
-    db: DbSession, storage: StorageService, grace_period_hours: int, *, dry_run: bool = True
+    db: DbSession,
+    storage: StorageService,
+    grace_period_hours: int,
+    *,
+    dry_run: bool = True,
+    studio_id: int | None = None,
 ) -> dict:
     """
     Returns a summary dict: {"candidates": n, "confirmed": [...], "deleted": [...], "still_valid": [...]}.
@@ -101,7 +118,7 @@ def reconcile_orphans(
     only logged, exactly as Section 9 requires ("do not immediately
     delete").
     """
-    candidates = find_orphan_candidates(db, grace_period_hours)
+    candidates = find_orphan_candidates(db, grace_period_hours, studio_id)
     confirmed: list[str] = []
     still_valid: list[str] = []
     deleted: list[str] = []
@@ -149,6 +166,7 @@ def reconcile_orphans(
             if session.thumbnail_drive_file_id:
                 storage.delete(session.thumbnail_drive_file_id)
             session.status = "cancelled"
+            quota_service.release(db, session.id)
             session.error_code = "ORPHAN_CLEANED_UP"
             session.error_message = "Drive file had no matching database record after the grace period."
             db.commit()

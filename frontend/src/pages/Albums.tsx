@@ -135,7 +135,7 @@ export default function Albums() {
       return;
     }
     // Direct album gallery link
-    const url = `${window.location.origin}/gallery/${client.client_uuid}/view/${album.id}`;
+    const url = `${window.location.origin}${client.gallery_url_path}/view/${album.id}`;
     try {
       await navigator.clipboard.writeText(url);
       showToast("Gallery link copied to clipboard.");
@@ -1006,7 +1006,7 @@ function CreateAlbumModal({
             onChange={(e) => setAlbumName(e.target.value)}
             required
             autoFocus
-            placeholder="e.g. Wedding Ceremony, Reception, Portraits"
+            placeholder="Enter album name"
           />
         </label>
 
@@ -1015,7 +1015,7 @@ function CreateAlbumModal({
           <input
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Brief notes about this album"
+            placeholder="Enter album description"
           />
         </label>
 
@@ -1131,6 +1131,7 @@ function EditAlbumModal({
             onChange={(e) => setAlbumName(e.target.value)}
             required
             autoFocus
+            placeholder="Enter album name"
           />
         </label>
 
@@ -1139,7 +1140,7 @@ function EditAlbumModal({
           <input
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Brief notes about this album"
+            placeholder="Enter album description"
           />
         </label>
 

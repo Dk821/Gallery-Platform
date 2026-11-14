@@ -6,6 +6,19 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`;
 }
 
+/**
+ * Sizes of the studio's storage ALLOCATION, in decimal units (1 GB = 1,000,000,000 bytes) - the same
+ * units the platform uses when it sets the quota, so "5 GB allocated" reads as 5 GB here too.
+ */
+export function formatAllocationBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const exp = Math.min(Math.floor(Math.log10(bytes) / 3), units.length - 1);
+  const value = bytes / Math.pow(1000, exp);
+  const digits = exp === 0 ? 0 : value >= 100 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} ${units[exp]}`;
+}
+
 export interface ExpiryInfo {
   isExpired: boolean;
   daysUntil: number;

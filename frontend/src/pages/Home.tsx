@@ -144,7 +144,7 @@ export default function Home() {
                   setGalleryLink(e.target.value);
                   if (linkError) setLinkError(null);
                 }}
-                placeholder="https://…/gallery/your-link"
+                placeholder="Enter gallery link"
                 autoComplete="off"
                 spellCheck={false}
                 ref={galleryInputRef}

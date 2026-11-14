@@ -11,7 +11,9 @@ import {
   StorageOverview,
 } from "../services/admin";
 import { authService } from "../services/auth";
-import { formatBytes } from "../utils/format";
+import { assetUrl } from "../services/api";
+import { useStudioBranding } from "../hooks/useStudioBranding";
+import { formatAllocationBytes, formatBytes } from "../utils/format";
 
 interface ChartDataPoint {
   date: Date;
@@ -46,6 +48,8 @@ function smoothPath(points: { x: number; y: number }[]): string {
 export default function AdminDashboard() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { studio: studioBrand, status: brandStatus } = useStudioBranding();
+  const [brandLogoFailed, setBrandLogoFailed] = useState(false);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [analytics, setAnalytics] = useState<DownloadAnalytics | null>(null);
   const [storage, setStorage] = useState<StorageOverview | null>(null);
@@ -178,13 +182,13 @@ export default function AdminDashboard() {
   // Storage calculation
   const storageMetrics = useMemo(() => {
     const totalUsedBytes = summary?.storage_used_bytes || 0;
-    // Standard studio cloud allocation baseline: 500 GB, or Google Drive limit if available
-    let limitBytes = 500 * 1024 * 1024 * 1024; // 500 GB default
-    if (storage?.drive_quota.available && storage.drive_quota.limit_bytes) {
-      limitBytes = storage.drive_quota.limit_bytes;
-    }
+    // The studio's own allocation, set by the platform. (Used to be a fixed 500 GB / the Drive plan.)
+    const allocation = summary?.studio_quota ?? storage?.studio_quota ?? null;
+    const limitBytes = allocation?.quota_bytes ?? 0;
+    const remainingBytes = allocation?.remaining_bytes ?? 0;
 
-    const percentage = Math.min(100, Math.max(0, Math.round((totalUsedBytes / limitBytes) * 100)));
+    const percentage =
+      limitBytes > 0 ? Math.min(100, Math.max(0, Math.round((totalUsedBytes / limitBytes) * 100))) : 0;
 
     // Approximate photo vs video storage based on counts
     const totalFiles = (summary?.total_photos || 0) + (summary?.total_videos || 0);
@@ -198,7 +202,9 @@ export default function AdminDashboard() {
       percentage: percentage || (totalUsedBytes > 0 ? 9 : 0),
       photoBytes,
       videoBytes,
-      formattedLimit: formatBytes(limitBytes),
+      formattedLimit: limitBytes > 0 ? formatAllocationBytes(limitBytes) : "—",
+      remainingBytes,
+      hasAllocation: limitBytes > 0,
     };
   }, [summary, storage]);
 
@@ -451,8 +457,10 @@ export default function AdminDashboard() {
                   <div className="admin-popover-item">
                     <span className="admin-popover-dot admin-popover-dot--gold" />
                     <div>
-                      <div className="admin-popover-text">Google Drive Quota Verified</div>
-                      <div className="admin-popover-time">{storageMetrics.formattedLimit} Available</div>
+                      <div className="admin-popover-text">Your storage allocation</div>
+                      <div className="admin-popover-time">
+                        {storageMetrics.hasAllocation ? `${formatAllocationBytes(storageMetrics.remainingBytes)} remaining of ${storageMetrics.formattedLimit}` : "Not set yet"}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -479,9 +487,17 @@ export default function AdminDashboard() {
               aria-label="Admin menu"
             >
               <div className="admin-profile-avatar">
-                <img src="/ls-logo.png" alt="Love Story Photography" />
+                {brandStatus === "ready" && studioBrand ? (
+                  assetUrl(studioBrand.logo_url) && !brandLogoFailed ? (
+                    <img src={assetUrl(studioBrand.logo_url)!} alt={`${studioBrand.name} logo`} onError={() => setBrandLogoFailed(true)} />
+                  ) : (
+                    <span className="admin-profile-avatar__initial">{studioBrand.name.trim().charAt(0).toUpperCase() || "S"}</span>
+                  )
+                ) : brandStatus === "failed" ? (
+                  <img src="/ls-logo.png" alt="Love Story Photography" />
+                ) : null}
               </div>
-              <span className="admin-profile-name">Studio Admin</span>
+              <span className="admin-profile-name">{studioBrand?.name ?? "Studio Admin"}</span>
               <svg className="admin-profile-caret" viewBox="0 0 20 20" fill="currentColor">
                 <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
               </svg>
@@ -492,7 +508,7 @@ export default function AdminDashboard() {
               <div className="admin-popover-menu admin-profile-popover">
                 <div className="admin-popover-user-info">
                   <div className="admin-popover-user-name">Studio Admin</div>
-                  <div className="admin-popover-user-sub">Love Story Photography Suite</div>
+                  <div className="admin-popover-user-sub">{studioBrand?.name ?? "Love Story Photography Suite"}</div>
                 </div>
                 <hr className="admin-popover-divider" />
                 <Link
@@ -699,7 +715,7 @@ export default function AdminDashboard() {
 
           <div className="admin-kpi-content admin-kpi-content--storage">
             <div className="admin-kpi-value">
-              {loading ? "..." : formatBytes(storageMetrics.totalUsedBytes)}
+              {loading ? "..." : formatAllocationBytes(storageMetrics.totalUsedBytes)}
             </div>
             <div className="admin-kpi-label">Storage Used</div>
             <div className="admin-kpi-subtext">of {storageMetrics.formattedLimit}</div>
@@ -1110,7 +1126,7 @@ export default function AdminDashboard() {
 
             <div className="admin-storage-info">
               <div className="admin-storage-headline">
-                <strong>{formatBytes(storageMetrics.totalUsedBytes)}</strong> used
+                <strong>{formatAllocationBytes(storageMetrics.totalUsedBytes)}</strong> used
               </div>
               <div className="admin-storage-sub">of {storageMetrics.formattedLimit}</div>
 
@@ -1118,12 +1134,12 @@ export default function AdminDashboard() {
                 <div className="admin-storage-legend-item">
                   <span className="admin-legend-dot admin-legend-dot--photos" />
                   <span className="admin-legend-label">Photos</span>
-                  <span className="admin-legend-val">{formatBytes(storageMetrics.photoBytes)}</span>
+                  <span className="admin-legend-val">{formatAllocationBytes(storageMetrics.photoBytes)}</span>
                 </div>
                 <div className="admin-storage-legend-item">
                   <span className="admin-legend-dot admin-legend-dot--videos" />
                   <span className="admin-legend-label">Videos</span>
-                  <span className="admin-legend-val">{formatBytes(storageMetrics.videoBytes)}</span>
+                  <span className="admin-legend-val">{formatAllocationBytes(storageMetrics.videoBytes)}</span>
                 </div>
                 <div className="admin-storage-legend-item">
                   <span className="admin-legend-dot admin-legend-dot--other" />

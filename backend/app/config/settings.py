@@ -10,7 +10,12 @@ class Settings(BaseSettings):
     # Database
     database_url: str
 
-    # Google Drive
+    # Which backend holds the media: "google_drive" (default) or "r2". Both use
+    # the same folder model: studios/<name>-<id>/albums/<client>_<album id>/...
+    storage_provider: str = "google_drive"
+
+    # Google Drive (OAuth refresh-token credentials). GOOGLE_DRIVE_ROOT_FOLDER_ID is
+    # the Drive folder the "studios/" tree is created under (empty = My Drive root).
     google_drive_client_id: str = ""
     google_drive_client_secret: str = ""
     google_drive_refresh_token: str = ""
@@ -103,6 +108,31 @@ class Settings(BaseSettings):
     # generous while still bounding what a single request can make this
     # server buffer and forward to Drive.
     video_thumbnail_upload_max_kb: int = 2048
+
+    # --- Multi-studio storage quota ----------------------------------------
+    # Total bytes the whole platform may hold across ALL studios. Deliberately
+    # configuration, not a constant: raise it when you buy more storage.
+    # DECIMAL by default: 1 TB = 1_000_000_000_000 bytes (what storage vendors
+    # bill by). 1 TiB would be 1_099_511_627_776 bytes - set the env var to
+    # that number if you want binary units. See docs/MULTI_STUDIO.md.
+    platform_capacity_bytes: int = 1_000_000_000_000
+    # Quota given to a new studio when the super admin doesn't specify one.
+    # 10 GB decimal = 10_000_000_000 bytes.
+    default_studio_quota_bytes: int = 10_000_000_000
+    # A reservation older than this with no completion is treated as dead and
+    # released by the stale-upload sweep.
+    upload_reservation_ttl_minutes: int = 120
+
+    # --- Storage: Cloudflare R2 (any S3-compatible store) -------------------
+    # The only storage backend. Credentials come ONLY from these env vars and
+    # are never returned by any API.
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket: str = ""
+    # Optional override; defaults to https://<account_id>.r2.cloudflarestorage.com
+    r2_endpoint_url: str = ""
+    r2_presign_ttl_seconds: int = 900
 
     environment: str = "development"
 

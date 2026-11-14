@@ -4,9 +4,12 @@ import tempfile
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
 os.environ.setdefault("ZIP_TEMP_DIR", os.path.join(tempfile.gettempdir(), "gallery_zip_jobs_test"))
+# Required by Settings (normally supplied by .env); defaulted so the suite runs on a clean checkout / CI.
+os.environ.setdefault("CORS_ORIGINS", "http://localhost:5173")
+os.environ.setdefault("DEV_FRONTEND_ORIGIN", "http://localhost:5173")
 
 import pytest
-from sqlalchemy import BigInteger, create_engine
+from sqlalchemy import BigInteger, create_engine, event
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -18,7 +21,11 @@ from app.main import app
 from app.models.admin import Admin
 from app.models.album import Album
 from app.models.client import Client
+from app.models.download_job import DownloadJob
+from app.models.download_record import DownloadRecord
 from app.models.media import Media
+from app.models.studio import Studio
+from app.models.upload_session import UploadSession
 from app.security.password import hash_password
 from app.services.circuit_breaker import get_drive_circuit_breaker
 from app.services.storage_provider import get_storage_service
@@ -38,6 +45,30 @@ def _big_integer_as_sqlite_integer(type_, compiler, **kw):
     return "INTEGER"
 
 
+# --- Multi-studio test shim ---------------------------------------------------
+# The pre-multi-studio test suite builds Admin / Client / Album / Media /
+# UploadSession rows directly, with no notion of a studio. Rather than edit
+# hundreds of fixtures, rows created WITHOUT an explicit studio_id are placed in
+# one default studio (id=1) at INSERT time. This is test-only: production code
+# never does this (legacy rows are mapped explicitly by app.legacy_to_studio).
+# Rows created with an explicit studio_id (all the new multi-studio tests) are
+# left alone, and a test can create a genuinely unmapped legacy row by setting
+# studio_id to NULL after the insert.
+DEFAULT_TEST_STUDIO_ID = 1
+
+
+def _assign_default_studio(mapper, connection, target):
+    if getattr(target, "studio_id", None) is not None:
+        return
+    if isinstance(target, Admin) and target.role == "super_admin":
+        return
+    target.studio_id = DEFAULT_TEST_STUDIO_ID
+
+
+for _model in (Admin, Client, Album, Media, UploadSession, DownloadJob, DownloadRecord):
+    event.listen(_model, "before_insert", _assign_default_studio)
+
+
 TEST_ENGINE = create_engine(
     "sqlite:///:memory:",
     connect_args={"check_same_thread": False},
@@ -50,6 +81,19 @@ TestSessionLocal = sessionmaker(bind=TEST_ENGINE, autoflush=False, autocommit=Fa
 def db_session():
     Base.metadata.create_all(TEST_ENGINE)
     session = TestSessionLocal()
+    # The default studio the shim above points legacy-style test rows at.
+    # Quota is far above anything the older tests upload, so it never interferes.
+    session.add(
+        Studio(
+            id=DEFAULT_TEST_STUDIO_ID,
+            name="Default Test Studio",
+            status="active",
+            quota_bytes=900_000_000_000,
+            used_bytes=0,
+            reserved_bytes=0,
+        )
+    )
+    session.commit()
     try:
         yield session
     finally:

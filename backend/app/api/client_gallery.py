@@ -15,6 +15,7 @@ from app.services.album_service import (
     get_album_media_stats,
     list_albums_for_client,
 )
+from app.services import studio_service
 from app.services.comment_service import get_album_comment_count
 from app.services.media_service import (
     get_client_media_totals,
@@ -49,6 +50,9 @@ def get_gallery_access(
         "data": {
             "requires_password": client.password_hash is not None,
             "client_name": client.client_name,
+            # The studio that shared this link: its name, logo and contact details, so the
+            # landing page is branded as THAT studio before the visitor even signs in.
+            "studio": studio_service.client_facing_branding(db, client.studio_id),
         },
     }
 
@@ -69,6 +73,7 @@ def get_gallery(
             "client_name": client.client_name,
             "client_uuid": client.client_uuid,
             "has_download_password": bool(client.download_password_hash),
+            "studio": studio_service.client_facing_branding(db, client.studio_id),
             **get_client_media_totals(db, client.id),
         },
     }

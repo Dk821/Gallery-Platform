@@ -8,6 +8,8 @@ from app.models.download_record import DownloadRecord
 from app.models.media import Media
 from app.models.media_wishlist import MediaWishlist
 from app.models.session import ClientSession
+from app.models.platform_storage import PlatformStorage
+from app.models.studio import Studio
 from app.models.studio_settings import StudioSettings
 from app.models.upload_session import UploadSession
 
@@ -24,4 +26,6 @@ __all__ = [
     "DownloadRecord",
     "UploadSession",
     "StudioSettings",
+    "Studio",
+    "PlatformStorage",
 ]

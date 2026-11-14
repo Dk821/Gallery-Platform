@@ -1,8 +1,11 @@
 import { CSSProperties, FormEvent, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useGalleryBase } from "../hooks/useGalleryBase";
 import { authService } from "../services/auth";
 import { galleryService } from "../services/gallery";
 import PoweredBy from "../components/PoweredBy";
+import ClientBrandMark from "../components/ClientBrandMark";
+import { primeClientBranding, useClientBranding } from "../services/clientBranding";
 
 type FloatStyle = CSSProperties & Record<`--${string}`, string | number>;
 
@@ -23,6 +26,7 @@ const PETALS: { left: string; top: string; size: number; duration: number; delay
 
 export default function ClientLogin() {
   const { galleryId = "" } = useParams();
+  const galleryBase = useGalleryBase();
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -32,6 +36,7 @@ export default function ClientLogin() {
   // visitor first.
   const [checking, setChecking] = useState(true);
   const navigate = useNavigate();
+  const branding = useClientBranding(galleryId);
 
   useEffect(() => {
     let cancelled = false;
@@ -39,6 +44,7 @@ export default function ClientLogin() {
       .checkGalleryAccess(galleryId)
       .then((access) => {
         if (cancelled) return;
+        primeClientBranding(galleryId, access.studio);
         if (!access.requires_password) {
           // No password on this gallery -> straight to the gallery. Login
           // with an empty password still creates the normal server-side
@@ -47,7 +53,7 @@ export default function ClientLogin() {
             .clientLogin(galleryId, "")
             .then(() => {
               if (!cancelled) {
-                navigate(`/gallery/${galleryId}/view`, { state: { name: access.client_name } });
+                navigate(`${galleryBase}/view`, { state: { name: access.client_name } });
               }
             })
             .catch(() => {
@@ -75,7 +81,7 @@ export default function ClientLogin() {
     setLoading(true);
     try {
       const client = await authService.clientLogin(galleryId, password);
-      navigate(`/gallery/${galleryId}/view`, { state: { name: client.name } });
+      navigate(`${galleryBase}/view`, { state: { name: client.name } });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed.");
     } finally {
@@ -113,8 +119,7 @@ export default function ClientLogin() {
 
       <div className="entrance-card">
         <div className="login-brand">
-          <span className="login-brand__script">Love Story</span>
-          <span className="login-brand__sub">Photography</span>
+          <ClientBrandMark studio={branding.studio} variant="login" pending={branding.status === "loading"} />
         </div>
 
         <p className="entrance-kicker">A private collection</p>

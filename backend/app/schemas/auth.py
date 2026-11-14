@@ -18,5 +18,13 @@ class CurrentUser(BaseModel):
     user_type: str  # "admin" | "client"
     id: int
     name: str
+    # Additive (multi-studio). Present for admins: "super_admin" | "studio_admin".
+    role: str | None = None
+    studio_id: int | None = None
+    studio_name: str | None = None
+    studio_status: str | None = None
+    # Super admins only: the company name and logo shown in the console sidebar.
+    company_name: str | None = None
+    logo_url: str | None = None
 
     model_config = {"from_attributes": True}

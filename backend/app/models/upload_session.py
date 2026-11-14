@@ -28,6 +28,11 @@ class UploadSession(Base, IdMixin, TimestampMixin):
     __tablename__ = "upload_sessions"
     __table_args__ = (UniqueConstraint("admin_id", "upload_id", name="uq_upload_session_admin_upload"),)
 
+    # Owning studio (tenant). Indexed, filtered on by every studio-admin query.
+    studio_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("studios.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+
     upload_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     admin_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("admins.id", ondelete="CASCADE"), nullable=False, index=True
@@ -49,8 +54,8 @@ class UploadSession(Base, IdMixin, TimestampMixin):
 
     # Set as soon as the corresponding Drive upload succeeds - never
     # exposed to the frontend (same rule as Media.google_drive_file_id).
-    drive_file_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    thumbnail_drive_file_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    drive_file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    thumbnail_drive_file_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # The provider-issued resumable upload session URL handed to the
     # browser so it can PUT bytes DIRECTLY to Google Drive (this server
@@ -69,3 +74,18 @@ class UploadSession(Base, IdMixin, TimestampMixin):
 
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # --- Storage-quota reservation ledger -----------------------------------
+    # Bytes held against the studio quota (and platform capacity) for this
+    # upload while it is in flight. none -> reserved -> committed (converted to
+    # used after a verified upload) or released (failed / cancelled / stale).
+    # Every transition is a compare-and-set UPDATE so a duplicate completion or
+    # abandon can never apply it twice.
+    reserved_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    reservation_status: Mapped[str] = mapped_column(
+        Enum("none", "reserved", "committed", "released", name="upload_reservation_status"),
+        default="none",
+        server_default="none",
+        nullable=False,
+        index=True,
+    )

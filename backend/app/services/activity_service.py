@@ -26,10 +26,12 @@ from app.models.download_record import DownloadRecord
 from app.models.media import Media
 
 
-def _media_upload_items(db: DbSession) -> list[dict]:
+def _media_upload_items(db: DbSession, studio_id: int) -> list[dict]:
     logs = (
         db.query(AuditLog)
-        .filter(AuditLog.action == "media_uploaded", AuditLog.user_type == "admin")
+        .filter(
+            AuditLog.studio_id == studio_id, AuditLog.action == "media_uploaded", AuditLog.user_type == "admin"
+        )
         .order_by(AuditLog.created_at.desc())
         .all()
     )
@@ -78,10 +80,12 @@ def _media_upload_items(db: DbSession) -> list[dict]:
     return items
 
 
-def _client_created_items(db: DbSession) -> list[dict]:
+def _client_created_items(db: DbSession, studio_id: int) -> list[dict]:
     logs = (
         db.query(AuditLog)
-        .filter(AuditLog.action == "client_created", AuditLog.user_type == "admin")
+        .filter(
+            AuditLog.studio_id == studio_id, AuditLog.action == "client_created", AuditLog.user_type == "admin"
+        )
         .order_by(AuditLog.created_at.desc())
         .all()
     )
@@ -111,10 +115,12 @@ def _client_created_items(db: DbSession) -> list[dict]:
     return items
 
 
-def _album_created_items(db: DbSession) -> list[dict]:
+def _album_created_items(db: DbSession, studio_id: int) -> list[dict]:
     logs = (
         db.query(AuditLog)
-        .filter(AuditLog.action == "album_created", AuditLog.user_type == "admin")
+        .filter(
+            AuditLog.studio_id == studio_id, AuditLog.action == "album_created", AuditLog.user_type == "admin"
+        )
         .order_by(AuditLog.created_at.desc())
         .all()
     )
@@ -154,7 +160,7 @@ def _album_created_items(db: DbSession) -> list[dict]:
     return items
 
 
-def _download_items(db: DbSession) -> list[dict]:
+def _download_items(db: DbSession, studio_id: int) -> list[dict]:
     rows = (
         db.query(
             DownloadRecord.id,
@@ -167,6 +173,7 @@ def _download_items(db: DbSession) -> list[dict]:
         )
         .join(Album, Album.id == DownloadRecord.album_id)
         .join(Client, Client.id == DownloadRecord.client_id)
+        .filter(DownloadRecord.studio_id == studio_id)
         .order_by(DownloadRecord.downloaded_at.desc())
         .all()
     )
@@ -225,6 +232,7 @@ def _in_date_range(item: dict, date_from: datetime.date | None, date_to: datetim
 
 def get_activity_feed(
     db: DbSession,
+    studio_id: int,
     search: str | None = None,
     activity_type: str | None = None,
     date_from: datetime.date | None = None,
@@ -232,10 +240,10 @@ def get_activity_feed(
     limit: int = 200,
 ) -> dict:
     raw = (
-        _media_upload_items(db)
-        + _client_created_items(db)
-        + _album_created_items(db)
-        + _download_items(db)
+        _media_upload_items(db, studio_id)
+        + _client_created_items(db, studio_id)
+        + _album_created_items(db, studio_id)
+        + _download_items(db, studio_id)
     )
 
     query = (search or "").lower().strip()

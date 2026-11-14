@@ -115,8 +115,8 @@ export default function Clients() {
     setStatusFilter("all");
   }
 
-  async function handleCopyUrl(clientUuid: string) {
-    const url = `${window.location.origin}/gallery/${clientUuid}`;
+  async function handleCopyUrl(galleryPath: string) {
+    const url = `${window.location.origin}${galleryPath}`;
     try {
       await navigator.clipboard.writeText(url);
       showToast("Gallery link copied.");
@@ -296,7 +296,7 @@ export default function Clients() {
                           <button
                             className="copy-link-btn"
                             title="Copy gallery link"
-                            onClick={() => handleCopyUrl(c.client_uuid)}
+                            onClick={() => handleCopyUrl(c.gallery_url_path)}
                           >
                             Copy link
                           </button>
@@ -332,7 +332,7 @@ export default function Clients() {
                                 onClick={() => {
                                   closeMenu();
                                   window.open(
-                                    `/gallery/${c.client_uuid}`,
+                                    c.gallery_url_path,
                                     "_blank"
                                   );
                                 }}
@@ -599,6 +599,7 @@ function CreateClientModal({
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
+            placeholder="Enter client name"
             required
             autoFocus
           />
@@ -684,7 +685,7 @@ function ClientDetailsModal({
     };
   }, [client.id]);
 
-  const galleryUrl = `${window.location.origin}/gallery/${client.client_uuid}`;
+  const galleryUrl = `${window.location.origin}${client.gallery_url_path}`;
 
   async function handleCopy() {
     try {
@@ -697,7 +698,7 @@ function ClientDetailsModal({
   }
 
   function handleOpenGallery() {
-    window.open(`/gallery/${client.client_uuid}`, "_blank");
+    window.open(client.gallery_url_path, "_blank");
   }
 
   function formatDate(iso: string) {
@@ -871,6 +872,7 @@ function EditClientModal({
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
+            placeholder="Enter client name"
             required
             autoFocus
           />

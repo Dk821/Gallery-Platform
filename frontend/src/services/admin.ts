@@ -3,6 +3,8 @@ import { AlbumComment, api, API_BASE_URL, DownloadJob, MediaItem, Page } from ".
 export interface ClientListItem {
   id: number;
   client_uuid: string;
+  // The link to share: /<studio-slug>/gallery/<client_uuid> (the older /gallery/<client_uuid> without a slug).
+  gallery_url_path: string;
   client_name: string;
   status: "active" | "disabled";
   has_password: boolean;
@@ -31,6 +33,7 @@ export interface DashboardSummary {
   total_photos: number;
   total_videos: number;
   storage_used_bytes: number;
+  studio_quota?: StudioQuota | null;
   downloads_summary: DownloadSummary;
   recent_clients: {
     id: number;
@@ -382,21 +385,26 @@ export const adminService = {
       });
       xhr.addEventListener("load", () => {
         if (xhr.status < 200 || xhr.status >= 300) {
-          reject(new Error(`Upload to Google Drive failed (status ${xhr.status}).`));
+          reject(new Error(`Upload to storage failed (status ${xhr.status}).`));
           return;
         }
+        // Google Drive answers the final PUT of a resumable upload with the
+        // created file's JSON metadata; its `id` is what the backend confirms
+        // with Drive. Cloudflare R2 answers with an empty body: the object key
+        // was chosen by the server and it ignores the id reported here, so a
+        // non-empty placeholder is enough.
+        let driveFileId = "r2-direct-upload";
         try {
-          const body = JSON.parse(xhr.responseText);
-          resolve({
-            driveFileId: body.id as string,
-            size: Number(body.size ?? file.size),
-            mimeType: (body.mimeType as string) ?? file.type,
-          });
+          const body = JSON.parse(xhr.responseText || "{}");
+          if (typeof body.id === "string" && body.id) driveFileId = body.id;
         } catch {
-          reject(new Error("Upload to Google Drive succeeded but the response could not be read."));
+          /* empty / non-JSON body (R2) */
         }
+        resolve({ driveFileId, size: file.size, mimeType: file.type });
       });
-      xhr.addEventListener("error", () => reject(new Error("Network error while uploading to Google Drive.")));
+      xhr.addEventListener("error", () =>
+        reject(new Error("Network error while uploading to storage. Check your connection and the bucket's CORS rules."))
+      );
       xhr.addEventListener("abort", () => reject(new Error("Upload cancelled.")));
 
       xhr.open("PUT", uploadUrl);
@@ -473,11 +481,20 @@ export const adminService = {
 
   getSettings: () => api.get<SettingsResponse>("/admin/settings"),
 
-  updateStudioProfile: (studioName: string, contactEmail: string) =>
-    api.put<StudioSettings>("/admin/settings/profile", {
+  updateStudioProfile: (studioName: string, contactEmail: string, contactPhone: string) =>
+    api.put<StudioSettings & { profile: StudioProfile }>("/admin/settings/profile", {
       studio_name: studioName.trim() ? studioName : null,
       contact_email: contactEmail.trim() ? contactEmail : null,
+      contact_phone: contactPhone.trim(),
     }),
+
+  uploadStudioLogo: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return api.postForm<StudioProfile>("/admin/settings/logo", form);
+  },
+
+  removeStudioLogo: () => api.delete<StudioProfile>("/admin/settings/logo"),
 
   updateSecurityPolicy: (minClientPasswordLength: number, downloadLinkTtlHours: number) =>
     api.put<StudioSettings>("/admin/settings/security", {
@@ -502,6 +519,13 @@ export interface BulkMoveResult {
   failed: { id: number; code: string; message: string }[];
 }
 
+export interface StudioQuota {
+  quota_bytes: number;
+  used_bytes: number;
+  reserved_bytes: number;
+  remaining_bytes: number;
+}
+
 export interface StorageOverview {
   our_metadata: {
     total_files: number;
@@ -509,19 +533,8 @@ export interface StorageOverview {
     total_videos: number;
     total_bytes_tracked: number;
   };
-  drive_quota:
-    | { available: false }
-    | { available: true; usage_bytes: number; limit_bytes: number | null };
-  vps_disk: {
-    path: string;
-    total_bytes: number;
-    used_bytes: number;
-    free_bytes: number;
-    reserved_bytes: number;
-    min_free_bytes: number;
-    effective_available_bytes: number;
-    percent_used: number;
-  };
+  // The studio's own allocation (set by the platform): quota / used / reserved by in-progress uploads / remaining.
+  studio_quota: StudioQuota | null;
   daily_transfer: {
     date: string;
     upload_bytes: number;
@@ -582,7 +595,16 @@ export interface StudioSettings {
   updated_at: string;
 }
 
+// The studio's public face, as clients see it (read from the studio record).
+export interface StudioProfile {
+  name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  logo_url: string | null;
+}
+
 export interface SettingsResponse {
   studio: StudioSettings;
+  profile: StudioProfile;
   admin: { id: number; name: string; email: string };
 }

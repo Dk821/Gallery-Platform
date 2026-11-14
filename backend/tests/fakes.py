@@ -115,6 +115,18 @@ class FakeStorageService(StorageService):
         finally:
             self.uploads_in_flight -= 1
 
+    def put_bytes(self, key: str, data: bytes, content_type: str) -> None:
+        if getattr(self, "fail_next_put_bytes", False):
+            self.fail_next_put_bytes = False
+            raise StorageError("simulated put_bytes failure")
+        self.files[key] = {
+            "name": key.rsplit("/", 1)[-1],
+            "mime_type": content_type,
+            "parent_folder_id": None,
+            "content": data,
+            "upload_id": None,
+        }
+
     def download(
         self,
         provider_file_id: str,

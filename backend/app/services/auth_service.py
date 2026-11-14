@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session as DbSession
 from app.models.admin import Admin
 from app.models.client import Client
 from app.models.session import ClientSession
+from app.models.studio import Studio
 from app.schemas.errors import unauthorized
 from app.security.password import verify_password
 from app.security.session import (
@@ -12,6 +13,16 @@ from app.security.session import (
     hash_session_token,
     session_expiry,
 )
+
+
+def _studio_allows_client(db: DbSession, client: Client) -> bool:
+    # Suspended studio => its clients cannot log in or keep using a session.
+    # Unmapped legacy clients (studio_id NULL) are allowed - see
+    # app.api.deps.client_studio_is_active.
+    if client.studio_id is None:
+        return True
+    studio = db.get(Studio, client.studio_id)
+    return studio is not None and studio.status == "active"
 
 
 def authenticate_admin(db: DbSession, email: str, password: str) -> Admin:
@@ -36,7 +47,7 @@ def authenticate_client(db: DbSession, gallery_id: str, password: str | None) ->
     protection is never bypassed.
     """
     client = db.query(Client).filter(Client.client_uuid == gallery_id).first()
-    if client is None or client.status != "active":
+    if client is None or client.status != "active" or not _studio_allows_client(db, client):
         raise unauthorized("Invalid gallery link or password.", code="INVALID_CREDENTIALS")
 
     if client.password_hash is not None and not verify_password(password or "", client.password_hash):
@@ -63,7 +74,7 @@ def resolve_client_from_token(db: DbSession, raw_token: str) -> Client | None:
     if session is None:
         return None
     client = db.query(Client).filter(Client.id == session.client_id).first()
-    if client is None or client.status != "active":
+    if client is None or client.status != "active" or not _studio_allows_client(db, client):
         return None
     return client
 

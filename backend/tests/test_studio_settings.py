@@ -99,3 +99,18 @@ def test_security_policy_persists_ttl(client, seeded_admin):
     )
     assert resp.status_code == 200
     assert resp.json()["data"]["download_link_ttl_hours"] == 72
+
+
+def test_profile_phone_is_validated_and_saved(client, seeded_admin):
+    login_as_admin(client, seeded_admin)
+
+    bad = client.put("/api/admin/settings/profile", json={"studio_name": "S", "contact_phone": "abc"})
+    assert bad.status_code == 422
+
+    ok = client.put(
+        "/api/admin/settings/profile",
+        json={"studio_name": "S", "contact_email": "a@b.co", "contact_phone": "+91 98765 43210"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["data"]["profile"]["contact_phone"] == "+91 98765 43210"
+    assert client.get("/api/admin/settings").json()["data"]["profile"]["contact_phone"] == "+91 98765 43210"

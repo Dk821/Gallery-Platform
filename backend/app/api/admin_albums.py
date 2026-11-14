@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session as DbSession
 from app.api.deps import get_current_admin
 from app.database.connection import get_db
 from app.models.admin import Admin
-from app.models.audit_log import AuditLog
+from app.services import audit_service
 from app.api.presenters import album_to_response, media_to_response
 from app.schemas.album import AlbumCreateRequest, AlbumResponse, AlbumUpdateRequest
 from app.schemas.media import MediaOrderRequest
@@ -34,18 +34,10 @@ from app.services.wishlist_service import (
 router = APIRouter(prefix="/api/admin/albums", tags=["admin-albums"])
 
 
-def _log(db: DbSession, admin_id: int, action: str, resource_id: int, request: Request) -> None:
-    db.add(
-        AuditLog(
-            user_type="admin",
-            user_id=admin_id,
-            action=action,
-            resource_type="album",
-            resource_id=resource_id,
-            ip_address=request.client.host if request.client else None,
-        )
+def _log(db: DbSession, admin: Admin, action: str, resource_id: int, request: Request) -> None:
+    audit_service.record_admin(
+        db, admin, action, request=request, resource_type="album", resource_id=resource_id
     )
-    db.commit()
 
 
 @router.get("")
@@ -56,7 +48,7 @@ def list_albums_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    items, total, page, limit = list_albums_for_admin(db, client_id, page, limit)
+    items, total, page, limit = list_albums_for_admin(db, client_id, page, limit, studio_id=admin.studio_id)
     return {
         "success": True,
         "data": build_page(items, page, limit, total),
@@ -69,7 +61,7 @@ def get_album_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    album = get_album_or_404(db, album_id)
+    album = get_album_or_404(db, album_id, admin.studio_id)
     return {
         "success": True,
         "data": album_to_response(
@@ -93,7 +85,7 @@ def list_album_media_route(
     # Confirms the album itself exists before listing its media - admin
     # access isn't scoped to a single client, but a bogus album_id should
     # still 404 rather than silently returning an empty page.
-    album = get_album_or_404(db, album_id)
+    album = get_album_or_404(db, album_id, admin.studio_id)
     wishlist_filter = validate_wishlist_filter(wishlist)
     rows, total, page, limit = list_media_for_album_admin(db, album_id, page, limit, search, wishlist_filter)
     # The wishlist filter is an SQL EXISTS in the query above; the per-item
@@ -116,9 +108,9 @@ def reorder_album_media_route(
     Saves the studio's drag-and-drop book order for one album. The body is
     the complete ordered list of media ids; page notes follow their photo.
     """
-    album = get_album_or_404(db, album_id)
+    album = get_album_or_404(db, album_id, admin.studio_id)
     reorder_album_media(db, album.id, payload.media_ids)
-    _log(db, admin.id, "media_reordered", album.id, request)
+    _log(db, admin, "media_reordered", album.id, request)
     return {"success": True, "data": None}
 
 
@@ -130,7 +122,7 @@ def get_album_media_selection_summary_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    get_album_or_404(db, album_id)
+    get_album_or_404(db, album_id, admin.studio_id)
     # Must mirror the grid's filter: "Select All" feeds bulk delete/move, so
     # under the Wishlist tab it may only ever select the wishlisted items.
     summary = get_album_media_selection_summary(db, album_id, search, validate_wishlist_filter(wishlist))
@@ -146,7 +138,7 @@ def get_album_wishlist_counts_route(
 ):
     # Backs the filter tabs' counts ("All 250 / Wishlist 38 / Not wishlisted
     # 212") - a single aggregate query, not one count per tab.
-    get_album_or_404(db, album_id)
+    get_album_or_404(db, album_id, admin.studio_id)
     return {"success": True, "data": get_album_wishlist_counts(db, album_id, search)}
 
 
@@ -158,8 +150,8 @@ def create_album_route(
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
 ):
-    album = create_album(db, payload, storage)
-    _log(db, admin.id, "album_created", album.id, request)
+    album = create_album(db, payload, storage, admin.studio_id)
+    _log(db, admin, "album_created", album.id, request)
     return {"success": True, "data": album_to_response(album)}
 
 
@@ -172,9 +164,9 @@ def update_album_route(
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
 ):
-    album = get_album_or_404(db, album_id)
+    album = get_album_or_404(db, album_id, admin.studio_id)
     album = update_album(db, album, payload, storage)
-    _log(db, admin.id, "album_updated", album.id, request)
+    _log(db, admin, "album_updated", album.id, request)
     return {"success": True, "data": album_to_response(album)}
 
 
@@ -186,7 +178,7 @@ def delete_album_route(
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
 ):
-    album = get_album_or_404(db, album_id)
+    album = get_album_or_404(db, album_id, admin.studio_id)
     delete_album(db, album, storage)
-    _log(db, admin.id, "album_deleted", album_id, request)
+    _log(db, admin, "album_deleted", album_id, request)
     return {"success": True, "data": None}

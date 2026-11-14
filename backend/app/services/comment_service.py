@@ -74,9 +74,14 @@ def _resolve_media_for_client(db: DbSession, media_id: int, album: Album, client
     return media
 
 
-def get_album_comment_or_404(db: DbSession, comment_id: int) -> AlbumComment:
-    """Admin-side lookup. A note that doesn't exist is a plain 404."""
-    comment = db.query(AlbumComment).filter(AlbumComment.id == comment_id).first()
+def get_album_comment_or_404(db: DbSession, comment_id: int, studio_id: int) -> AlbumComment:
+    """Admin-side lookup. A note that doesn't exist - or lives in another studio - is a plain 404."""
+    comment = (
+        db.query(AlbumComment)
+        .join(Album, Album.id == AlbumComment.album_id)
+        .filter(AlbumComment.id == comment_id, Album.studio_id == studio_id)
+        .first()
+    )
     if comment is None:
         raise not_found("Comment not found.", code="COMMENT_NOT_FOUND")
     return comment

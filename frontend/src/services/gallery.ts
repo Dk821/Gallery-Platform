@@ -1,9 +1,12 @@
 import { AlbumComment, api, API_BASE_URL, DownloadJob, MediaItem, Page } from "./api";
+import type { ClientStudio } from "./clientBranding";
 
 export interface GalleryInfo {
   client_name: string;
   client_uuid: string;
   has_download_password: boolean;
+  // The studio that shared this gallery (name, logo, contact); null for an unmapped legacy gallery.
+  studio?: ClientStudio | null;
   // Whole-gallery totals, aggregated in SQL by the backend
   // (media_service.get_client_media_totals) rather than counted from the
   // album pages the landing page happened to load - a page of rows would
@@ -60,7 +63,7 @@ export const galleryService = {
   // its entrance without keeping the caller waiting on extra round-trips.
   // 404 => unknown gallery link.
   checkGalleryAccess: (galleryId: string) =>
-    api.get<{ requires_password: boolean; client_name: string }>(
+    api.get<{ requires_password: boolean; client_name: string; studio?: ClientStudio | null }>(
       `/client/gallery/access/${galleryId}`
     ),
 

@@ -55,6 +55,10 @@ from app.api.admin_media import router as admin_media_router
 from app.api.admin_settings import router as admin_settings_router
 from app.api.admin_storage import router as admin_storage_router
 from app.api.auth import router as auth_router
+from app.api.studio import router as studio_router
+from app.api.studio_branding import router as studio_branding_router
+from app.api.platform_branding import router as platform_branding_router
+from app.api.super_admin import router as super_admin_router
 from app.api.client_comments import router as client_comments_router
 from app.api.client_download_jobs import router as client_download_jobs_router
 from app.api.client_gallery import router as client_gallery_router
@@ -65,6 +69,7 @@ from app.api.client_wishlist import router as client_wishlist_router
 from app.config.settings import get_settings
 from app.database.connection import SessionLocal
 from app.models.upload_session import UploadSession
+from app.services import quota_service
 from app.workers.thumbnail_worker import is_ffmpeg_available
 
 settings = get_settings()
@@ -129,6 +134,11 @@ async def lifespan(app: FastAPI):
             if orphaned:
                 db.commit()
                 logger.info("Failed %s upload session(s) orphaned by the previous process.", orphaned)
+            # The sessions above were failed with a bulk UPDATE, which does not
+            # go through _fail_upload_session - hand their reserved quota back.
+            released = quota_service.release_orphaned_reservations(db)
+            if released:
+                logger.info("Released %s storage reservation(s) of dead upload sessions.", released)
     except Exception:  # noqa: BLE001 - startup must never crash the API for a cleanup failure
         logger.exception("Startup sweep of orphaned upload sessions failed - continuing.")
 
@@ -275,6 +285,10 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # --- Routers --------------------------------------------------------------
 
 app.include_router(auth_router)
+app.include_router(super_admin_router)
+app.include_router(studio_router)
+app.include_router(studio_branding_router)
+app.include_router(platform_branding_router)
 app.include_router(admin_clients_router)
 app.include_router(admin_albums_router)
 app.include_router(admin_comments_router)

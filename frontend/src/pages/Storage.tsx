@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import AdminLayout from "../components/AdminLayout";
 import { adminService, StorageOverview } from "../services/admin";
-import { formatBytes } from "../utils/format";
+import { formatAllocationBytes, formatBytes } from "../utils/format";
 
 type RangeOption = 7 | 30 | 90;
 
-function diskGaugeClass(percentUsed: number): string {
+function gaugeClass(percentUsed: number): string {
   if (percentUsed >= 90) return "storage-gauge__fill storage-gauge__fill--danger";
   if (percentUsed >= 75) return "storage-gauge__fill storage-gauge__fill--warning";
   return "storage-gauge__fill";
@@ -54,7 +54,7 @@ export default function Storage() {
   return (
     <AdminLayout>
       <h1 className="admin-page-title">Storage</h1>
-      <p className="admin-page-subtitle">How much you're storing, how it's moving, and server disk health.</p>
+      <p className="admin-page-subtitle">How much of your storage allocation you're using, and how it's moving.</p>
 
       {error && <p className="auth-error">{error}</p>}
       {loading && !data && <div className="empty-state">Loading storage data…</div>}
@@ -80,68 +80,47 @@ export default function Storage() {
             </div>
           </div>
 
-          {/* --- VPS disk headroom --- */}
+          {/* --- This studio's storage allocation --- */}
           <div className="section-header">
-            <h2>Server disk (VPS)</h2>
+            <h2>Your storage allocation</h2>
           </div>
-          <div className="admin-panel-card">
-            <div className="storage-gauge">
-              <div className="storage-gauge__track">
-                <div
-                  className={diskGaugeClass(data.vps_disk.percent_used)}
-                  style={{ width: `${Math.min(data.vps_disk.percent_used, 100)}%` }}
-                />
-              </div>
-              <div className="storage-gauge__pct">{data.vps_disk.percent_used}%</div>
-            </div>
-            <div className="stat-strip">
-              <div className="stat-strip__item">
-                <div className="stat-strip__value">{formatBytes(data.vps_disk.used_bytes)}</div>
-                <div className="stat-strip__label">Used on disk</div>
-              </div>
-              <div className="stat-strip__item">
-                <div className="stat-strip__value">{formatBytes(data.vps_disk.free_bytes)}</div>
-                <div className="stat-strip__label">Free on disk</div>
-              </div>
-              <div className="stat-strip__item">
-                <div className="stat-strip__value">{formatBytes(data.vps_disk.effective_available_bytes)}</div>
-                <div className="stat-strip__label">Available for next upload</div>
-              </div>
-              <div className="stat-strip__item">
-                <div className="stat-strip__value">{formatBytes(data.vps_disk.total_bytes)}</div>
-                <div className="stat-strip__label">Total disk size</div>
-              </div>
-            </div>
-            {data.vps_disk.reserved_bytes > 0 && (
-              <p className="storage-type-card__sub" style={{ marginTop: "0.5rem" }}>
-                {formatBytes(data.vps_disk.reserved_bytes)} currently reserved by in-progress uploads.
-              </p>
-            )}
-          </div>
-
-          {/* --- Google Drive quota --- */}
-          <div className="section-header">
-            <h2>Google Drive quota</h2>
-          </div>
-          {data.drive_quota.available ? (
-            <div className="stat-strip">
-              <div className="stat-strip__item">
-                <div className="stat-strip__value">{formatBytes(data.drive_quota.usage_bytes)}</div>
-                <div className="stat-strip__label">Used on Drive</div>
-              </div>
-              <div className="stat-strip__item">
-                <div className="stat-strip__value">
-                  {data.drive_quota.limit_bytes ? formatBytes(data.drive_quota.limit_bytes) : "Unlimited"}
-                </div>
-                <div className="stat-strip__label">Drive plan limit</div>
-              </div>
+          {data.studio_quota ? (
+            <div className="admin-panel-card">
+              {(() => {
+                const q = data.studio_quota;
+                const percent = q.quota_bytes > 0 ? Math.min(100, Math.round(((q.used_bytes + q.reserved_bytes) / q.quota_bytes) * 100)) : 0;
+                return (
+                  <>
+                    <div className="storage-gauge">
+                      <div className="storage-gauge__track">
+                        <div className={gaugeClass(percent)} style={{ width: `${percent}%` }} />
+                      </div>
+                      <div className="storage-gauge__pct">{percent}%</div>
+                    </div>
+                    <div className="stat-strip">
+                      <div className="stat-strip__item">
+                        <div className="stat-strip__value">{formatAllocationBytes(q.quota_bytes)}</div>
+                        <div className="stat-strip__label">Allocated to your studio</div>
+                      </div>
+                      <div className="stat-strip__item">
+                        <div className="stat-strip__value">{formatAllocationBytes(q.used_bytes)}</div>
+                        <div className="stat-strip__label">Used</div>
+                      </div>
+                      <div className="stat-strip__item">
+                        <div className="stat-strip__value">{formatAllocationBytes(q.remaining_bytes)}</div>
+                        <div className="stat-strip__label">Remaining</div>
+                      </div>
+                      <div className="stat-strip__item">
+                        <div className="stat-strip__value">{formatAllocationBytes(q.reserved_bytes)}</div>
+                        <div className="stat-strip__label">Reserved by uploads in progress</div>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           ) : (
-            <div className="empty-state">
-              Drive quota isn't available for this account/configuration right now. The numbers
-              above (tracked in our records) are still accurate for what this platform has
-              uploaded.
-            </div>
+            <div className="empty-state">No storage allocation has been set for this studio yet.</div>
           )}
 
           {/* --- Daily upload/download volume --- */}

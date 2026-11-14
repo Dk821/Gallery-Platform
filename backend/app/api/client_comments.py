@@ -32,6 +32,7 @@ def _log(db: DbSession, client_id: int, action: str, comment_id: int, request: R
         AuditLog(
             user_type="client",
             user_id=client_id,
+            studio_id=db.query(Client.studio_id).filter(Client.id == client_id).scalar(),
             action=action,
             resource_type="album_comment",
             resource_id=comment_id,

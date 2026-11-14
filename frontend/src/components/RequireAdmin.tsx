@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
-import { authService } from "../services/auth";
+import { authService, isSuperAdmin } from "../services/auth";
 
 // Route-level session gate for every /admin/* page (dashboard, clients,
 // albums, etc.). Without this, the admin shell was only ever "protected"
@@ -12,7 +12,7 @@ import { authService } from "../services/auth";
 // server who we are (GET /auth/me) FIRST and only renders the admin page
 // once it confirms an admin session, redirecting to the login screen
 // otherwise.
-type Status = "checking" | "authorized" | "unauthorized";
+type Status = "checking" | "authorized" | "unauthorized" | "super_admin";
 
 export default function RequireAdmin() {
   const location = useLocation();
@@ -33,7 +33,11 @@ export default function RequireAdmin() {
         // me() resolves with null when no session cookie is present, and
         // with a client identity if a *gallery* session is what's active -
         // both must be treated as "not an admin".
-        setStatus(user?.user_type === "admin" ? "authorized" : "unauthorized");
+        // A platform super admin has no studio, so the studio pages have
+        // nothing to show them (the API refuses them too) - send them to
+        // their own console instead.
+        if (isSuperAdmin(user)) setStatus("super_admin");
+        else setStatus(user?.user_type === "admin" ? "authorized" : "unauthorized");
       })
       .catch(() => {
         // Network failure or an unexpected 401 (api.ts's own session-expired
@@ -50,6 +54,10 @@ export default function RequireAdmin() {
 
   if (status === "checking") {
     return <div className="auth-page" aria-busy="true" />;
+  }
+
+  if (status === "super_admin") {
+    return <Navigate to="/super-admin/dashboard" replace />;
   }
 
   if (status === "unauthorized") {

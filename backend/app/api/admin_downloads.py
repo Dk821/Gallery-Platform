@@ -21,8 +21,8 @@ def get_download_analytics(
     return {
         "success": True,
         "data": {
-            "summary": get_download_summary(db),
-            "albums": get_per_album_download_stats(db),
-            "history": get_download_history(db),
+            "summary": get_download_summary(db, admin.studio_id),
+            "albums": get_per_album_download_stats(db, admin.studio_id),
+            "history": get_download_history(db, studio_id=admin.studio_id),
         },
     }

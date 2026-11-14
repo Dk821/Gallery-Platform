@@ -30,7 +30,7 @@ from app.models.media import Media
 from app.models.upload_session import UploadSession
 
 
-def get_daily_transfer_series(db: DbSession, days: int = 30) -> list[dict]:
+def get_daily_transfer_series(db: DbSession, studio_id: int, days: int = 30) -> list[dict]:
     """
     One row per calendar day for the last `days` days (oldest first),
     always including days with zero activity - a chart with gaps silently
@@ -50,7 +50,11 @@ def get_daily_transfer_series(db: DbSession, days: int = 30) -> list[dict]:
             func.coalesce(func.sum(UploadSession.total_bytes), 0).label("bytes"),
             func.count(UploadSession.id).label("count"),
         )
-        .filter(UploadSession.status == "completed", UploadSession.created_at >= since)
+        .filter(
+            UploadSession.studio_id == studio_id,
+            UploadSession.status == "completed",
+            UploadSession.created_at >= since,
+        )
         .group_by(func.date(UploadSession.created_at))
         .all()
     )
@@ -60,7 +64,7 @@ def get_daily_transfer_series(db: DbSession, days: int = 30) -> list[dict]:
             func.coalesce(func.sum(DownloadRecord.total_bytes), 0).label("bytes"),
             func.count(DownloadRecord.id).label("count"),
         )
-        .filter(DownloadRecord.downloaded_at >= since)
+        .filter(DownloadRecord.studio_id == studio_id, DownloadRecord.downloaded_at >= since)
         .group_by(func.date(DownloadRecord.downloaded_at))
         .all()
     )
@@ -92,7 +96,7 @@ def get_daily_transfer_series(db: DbSession, days: int = 30) -> list[dict]:
     return series
 
 
-def get_storage_by_client(db: DbSession) -> list[dict]:
+def get_storage_by_client(db: DbSession, studio_id: int) -> list[dict]:
     rows = (
         db.query(
             Client.id.label("client_id"),
@@ -101,6 +105,7 @@ def get_storage_by_client(db: DbSession) -> list[dict]:
             func.count(Media.id).label("file_count"),
         )
         .join(Media, Media.client_id == Client.id)
+        .filter(Client.studio_id == studio_id)
         .group_by(Client.id, Client.client_name)
         .order_by(func.coalesce(func.sum(Media.file_size), 0).desc())
         .all()
@@ -116,20 +121,21 @@ def get_storage_by_client(db: DbSession) -> list[dict]:
     ]
 
 
-def get_storage_by_file_type(db: DbSession) -> list[dict]:
+def get_storage_by_file_type(db: DbSession, studio_id: int) -> list[dict]:
     rows = (
         db.query(
             Media.file_type,
             func.coalesce(func.sum(Media.file_size), 0).label("total_bytes"),
             func.count(Media.id).label("file_count"),
         )
+        .filter(Media.studio_id == studio_id)
         .group_by(Media.file_type)
         .all()
     )
     return [{"file_type": r.file_type, "total_bytes": r.total_bytes, "file_count": r.file_count} for r in rows]
 
 
-def get_upload_reliability(db: DbSession, days: int = 30) -> dict:
+def get_upload_reliability(db: DbSession, studio_id: int, days: int = 30) -> dict:
     """
     All-time status breakdown (so a persistent problem is visible even if
     it happened outside the recent window) plus a recent-window success
@@ -138,13 +144,27 @@ def get_upload_reliability(db: DbSession, days: int = 30) -> dict:
     """
     since = datetime.datetime.utcnow() - datetime.timedelta(days=days)
 
-    all_time_rows = db.query(UploadSession.status, func.count(UploadSession.id)).group_by(UploadSession.status).all()
+    all_time_rows = (
+        db.query(UploadSession.status, func.count(UploadSession.id))
+        .filter(UploadSession.studio_id == studio_id)
+        .group_by(UploadSession.status)
+        .all()
+    )
     by_status = {status: count for status, count in all_time_rows}
 
-    recent_total = db.query(func.count(UploadSession.id)).filter(UploadSession.created_at >= since).scalar() or 0
+    recent_total = (
+        db.query(func.count(UploadSession.id))
+        .filter(UploadSession.studio_id == studio_id, UploadSession.created_at >= since)
+        .scalar()
+        or 0
+    )
     recent_completed = (
         db.query(func.count(UploadSession.id))
-        .filter(UploadSession.created_at >= since, UploadSession.status == "completed")
+        .filter(
+            UploadSession.studio_id == studio_id,
+            UploadSession.created_at >= since,
+            UploadSession.status == "completed",
+        )
         .scalar()
         or 0
     )
@@ -159,7 +179,7 @@ def get_upload_reliability(db: DbSession, days: int = 30) -> dict:
     }
 
 
-def get_largest_files(db: DbSession, limit: int = 10) -> list[dict]:
+def get_largest_files(db: DbSession, studio_id: int, limit: int = 10) -> list[dict]:
     """
     Top N files by size, with enough context (client/album) to act on -
     e.g. deciding whether a multi-GB video is worth archiving or deleting.
@@ -178,6 +198,7 @@ def get_largest_files(db: DbSession, limit: int = 10) -> list[dict]:
         )
         .join(Album, Album.id == Media.album_id)
         .join(Client, Client.id == Media.client_id)
+        .filter(Media.studio_id == studio_id)
         .order_by(Media.file_size.desc())
         .limit(limit)
         .all()

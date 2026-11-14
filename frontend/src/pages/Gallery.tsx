@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useGalleryBase } from "../hooks/useGalleryBase";
 import ClientNav from "../components/ClientNav";
 import { GalleryAlbum, GalleryInfo, galleryService } from "../services/gallery";
 import { formatBytes, getExpiryInfo } from "../utils/format";
@@ -30,8 +31,10 @@ function formatAlbumDate(dateStr?: string | null): string {
 
 export default function Gallery() {
   const { galleryId = "" } = useParams();
+  const galleryBase = useGalleryBase();
   const navigate = useNavigate();
   const [info, setInfo] = useState<GalleryInfo | null>(null);
+  const studio = info?.studio ?? null; // the studio that shared this gallery
   const [albums, setAlbums] = useState<GalleryAlbum[]>([]);
   const [covers, setCovers] = useState<Record<number, string | null>>({});
   const [loading, setLoading] = useState(true);
@@ -61,7 +64,7 @@ export default function Gallery() {
         });
       })
       .catch(() => {
-        navigate(`/gallery/${galleryId}`, { replace: true });
+        navigate(`${galleryBase}`, { replace: true });
       })
       .finally(() => setLoading(false));
   }, [galleryId, navigate]);
@@ -129,13 +132,13 @@ export default function Gallery() {
                   <div
                     key={album.id}
                     className="wedding-album-card"
-                    onClick={() => navigate(`/gallery/${galleryId}/view/${album.id}`)}
+                    onClick={() => navigate(`${galleryBase}/view/${album.id}`)}
                     role="button"
                     tabIndex={0}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        navigate(`/gallery/${galleryId}/view/${album.id}`);
+                        navigate(`${galleryBase}/view/${album.id}`);
                       }
                     }}
                   >
@@ -187,7 +190,7 @@ export default function Gallery() {
                         className="wedding-album-card__btn"
                         onClick={(e) => {
                           e.stopPropagation();
-                          navigate(`/gallery/${galleryId}/view/${album.id}`);
+                          navigate(`${galleryBase}/view/${album.id}`);
                         }}
                       >
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
@@ -224,7 +227,21 @@ export default function Gallery() {
         {/* Editorial Footer (Reference Image 2) */}
         <footer className="wedding-footer">
           <div className="wedding-footer__left">
-         
+            {studio && (studio.contact_email || studio.contact_phone) && (
+              <div className="wedding-footer__contact-block">
+                <span className="wedding-footer__contact-title">Contact</span>
+                {studio.contact_phone && (
+                  <a className="wedding-footer__contact-link" href={`tel:${studio.contact_phone.replace(/[^\d+]/g, "")}`}>
+                    {studio.contact_phone}
+                  </a>
+                )}
+                {studio.contact_email && (
+                  <a className="wedding-footer__contact-link" href={`mailto:${studio.contact_email}`}>
+                    {studio.contact_email}
+                  </a>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="wedding-footer__center">
@@ -236,8 +253,10 @@ export default function Gallery() {
           </div>
 
           <div className="wedding-footer__right">
-            <div className="wedding-footer__studio">Love Story Photography</div>
-            <p className="wedding-footer__categories">Weddings &nbsp;|&nbsp; Couples &nbsp;|&nbsp; Stories</p>
+            <div className="wedding-footer__studio">{studio ? studio.name : "Love Story Photography"}</div>
+            {studio ? null : (
+              <p className="wedding-footer__categories">Weddings &nbsp;|&nbsp; Couples &nbsp;|&nbsp; Stories</p>
+            )}
           </div>
         </footer>
       </main>

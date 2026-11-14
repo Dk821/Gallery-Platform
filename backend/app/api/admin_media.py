@@ -12,7 +12,6 @@ from app.api.presenters import (
 from app.config.settings import Settings, get_settings
 from app.database.connection import get_db
 from app.models.admin import Admin
-from app.models.audit_log import AuditLog
 from app.models.media import Media
 from app.schemas.errors import bad_request
 from app.schemas.media import (
@@ -24,6 +23,7 @@ from app.schemas.media import (
     MediaUpdateRequest,
     UploadProgressRequest,
 )
+from app.services import audit_service
 from app.services.album_service import get_album_or_404
 from app.services.wishlist_service import get_wishlisted_media_ids
 from app.services.media_service import (
@@ -48,32 +48,26 @@ from app.services.storage_service import StorageService
 router = APIRouter(prefix="/api/admin/media", tags=["admin-media"])
 
 
-def _log(db: DbSession, admin_id: int, action: str, resource_id: int, request: Request) -> None:
-    db.add(
-        AuditLog(
-            user_type="admin",
-            user_id=admin_id,
-            action=action,
-            resource_type="media",
-            resource_id=resource_id,
-            ip_address=request.client.host if request.client else None,
-        )
+def _log(db: DbSession, admin: Admin, action: str, resource_id: int, request: Request) -> None:
+    audit_service.record_admin(
+        db, admin, action, request=request, resource_type="media", resource_id=resource_id
     )
-    db.commit()
 
 
-def _log_bulk(db: DbSession, admin_id: int, action: str, request: Request, count: int) -> None:
-    db.add(
-        AuditLog(
-            user_type="admin",
-            user_id=admin_id,
-            action=action,
-            resource_type="media",
-            resource_id=count,  # no single resource id for a bulk action - count is more useful here
-            ip_address=request.client.host if request.client else None,
-        )
+def _log_bulk(
+    db: DbSession, admin: Admin, action: str, request: Request, count: int, metadata: dict | None = None
+) -> None:
+    # No single resource id for a bulk action: the count is recorded as
+    # resource_id (existing behaviour) and again in the metadata.
+    audit_service.record_admin(
+        db,
+        admin,
+        action,
+        request=request,
+        resource_type="media",
+        resource_id=count,
+        metadata={"count": count, **(metadata or {})},
     )
-    db.commit()
 
 
 def _media_response_with_wishlist(db: DbSession, media: Media):
@@ -113,7 +107,7 @@ def start_direct_upload_route(
     if origin not in settings.effective_cors_origins:
         origin = None
 
-    album = get_album_or_404(db, payload.album_id)
+    album = get_album_or_404(db, payload.album_id, admin.studio_id)
     session, upload_url, existing_media = start_direct_upload(
         db,
         storage,
@@ -157,7 +151,7 @@ def complete_direct_upload_route(
         payload.reported_size,
         payload.reported_mime_type,
     )
-    _log(db, admin.id, "media_uploaded", media.id, request)
+    _log(db, admin, "media_uploaded", media.id, request)
     return {"success": True, "data": media_to_response(media)}
 
 
@@ -276,9 +270,13 @@ def reconcile_orphans_route(
     # the standalone reconcile_orphans.py script), the same pattern the
     # existing ZIP-job cleanup script uses.
     result = reconcile_orphans(
-        db, storage, settings.orphan_file_grace_period_hours, dry_run=not apply
+        db,
+        storage,
+        settings.orphan_file_grace_period_hours,
+        dry_run=not apply,
+        studio_id=admin.studio_id,
     )
-    _log_bulk(db, admin.id, "orphans_reconciled", request, len(result["confirmed"]))
+    _log_bulk(db, admin, "orphans_reconciled", request, len(result["confirmed"]))
     return {"success": True, "data": result}
 
 
@@ -295,8 +293,8 @@ def bulk_delete_media_route(
     # single-item DELETE route uses - including its storage-first
     # reconciliation guarantee. A missing/already-failed id never blocks
     # the rest of the batch.
-    result = bulk_delete_media(db, storage, payload.media_ids)
-    _log_bulk(db, admin.id, "media_bulk_deleted", request, len(result["deleted"]))
+    result = bulk_delete_media(db, storage, payload.media_ids, admin.studio_id)
+    _log_bulk(db, admin, "media_bulk_deleted", request, len(result["deleted"]))
     return {"success": True, "data": result}
 
 
@@ -308,9 +306,9 @@ def bulk_move_media_route(
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
 ):
-    target_album = get_album_or_404(db, payload.target_album_id)
-    result = bulk_move_media(db, storage, payload.media_ids, target_album)
-    _log_bulk(db, admin.id, "media_bulk_moved", request, len(result["moved"]))
+    target_album = get_album_or_404(db, payload.target_album_id, admin.studio_id)
+    result = bulk_move_media(db, storage, payload.media_ids, target_album, admin.studio_id)
+    _log_bulk(db, admin, "media_bulk_moved", request, len(result["moved"]))
     return {"success": True, "data": result}
 
 
@@ -320,7 +318,7 @@ def get_media_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    media = get_media_or_404(db, media_id)
+    media = get_media_or_404(db, media_id, admin.studio_id)
     return {"success": True, "data": _media_response_with_wishlist(db, media)}
 
 
@@ -332,9 +330,9 @@ def update_media_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    media = get_media_or_404(db, media_id)
+    media = get_media_or_404(db, media_id, admin.studio_id)
     media = update_media_metadata(db, media, payload)
-    _log(db, admin.id, "media_updated", media.id, request)
+    _log(db, admin, "media_updated", media.id, request)
     return {"success": True, "data": _media_response_with_wishlist(db, media)}
 
 
@@ -347,14 +345,14 @@ def move_media_route(
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
 ):
-    media = get_media_or_404(db, media_id)
+    media = get_media_or_404(db, media_id, admin.studio_id)
     # Never trust target_album_id blindly - get_album_or_404 confirms it's a
     # real album, and move_media_to_album() itself re-checks that it
     # belongs to the SAME client as the media being moved before touching
     # storage or the DB.
-    target_album = get_album_or_404(db, payload.target_album_id)
+    target_album = get_album_or_404(db, payload.target_album_id, admin.studio_id)
     media = move_media_to_album(db, storage, media, target_album)
-    _log(db, admin.id, "media_moved", media.id, request)
+    _log(db, admin, "media_moved", media.id, request)
     return {"success": True, "data": _media_response_with_wishlist(db, media)}
 
 
@@ -366,9 +364,9 @@ def delete_media_route(
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
 ):
-    media = get_media_or_404(db, media_id)
+    media = get_media_or_404(db, media_id, admin.studio_id)
     delete_media(db, storage, media)
-    _log(db, admin.id, "media_deleted", media_id, request)
+    _log(db, admin, "media_deleted", media_id, request)
     return {"success": True, "data": None}
 
 
@@ -379,7 +377,7 @@ def get_media_thumbnail_route(
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
 ):
-    media = get_media_or_404(db, media_id)
+    media = get_media_or_404(db, media_id, admin.studio_id)
     return stream_media_thumbnail(media, storage)
 
 
@@ -391,7 +389,7 @@ def view_media_route(
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
 ):
-    media = get_media_or_404(db, media_id)
+    media = get_media_or_404(db, media_id, admin.studio_id)
     return stream_media_file(media, storage, disposition="inline", range_header=request.headers.get("range"))
 
 
@@ -403,5 +401,5 @@ def download_media_route(
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
 ):
-    media = get_media_or_404(db, media_id)
+    media = get_media_or_404(db, media_id, admin.studio_id)
     return stream_media_file(media, storage, disposition="attachment", range_header=request.headers.get("range"))

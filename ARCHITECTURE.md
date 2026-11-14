@@ -2,7 +2,11 @@
 
 ## Overview
 
-A private gallery platform for wedding photographers to manage clients, albums, and media. Two interfaces: an **admin panel** for the studio and a **client gallery** for viewing/downloading photos and videos.
+A private gallery platform for wedding photographers to manage clients, albums, and media. It is **multi-studio**: one FastAPI app and one MySQL database serve many studios, each isolated from the others. Three interfaces live in one React app: a **Super Admin console** (`/super-admin/*`, platform owner), a **studio admin panel** (`/admin/*`) and a **client gallery** (`/gallery/*`) for viewing/downloading photos and videos. Files live in Cloudflare R2.
+
+> **v0.5 (31/10/2026):** storage is selectable with `STORAGE_PROVIDER` — **Google Drive (default)** or Cloudflare R2 — behind the same `StorageService` seam, with one folder model (`studios/{name}-{id}/albums/{client}_{albumId}/…`; real nested folders on Drive). Where this document says R2/presigned/bucket, that is the `r2` provider; see `README.md` §4 and `STORAGE_STRUCTURE.md`.
+
+Companion documents: `MULTI_STUDIO.md` (tenancy, roles, quotas, super admin API, migration runbook), `STORAGE_STRUCTURE.md` (the R2 key layout), `Upload-Pipeline.md` (direct-to-R2 uploads).
 
 ---
 
@@ -14,7 +18,7 @@ A private gallery platform for wedding photographers to manage clients, albums, 
 | Backend | Python 3.12, FastAPI 0.115, Uvicorn |
 | Database | MySQL 8 (via SQLAlchemy 2 + PyMySQL) |
 | Migrations | Alembic |
-| Storage | Google Drive v3 API (OAuth2 credentials) |
+| Storage | Cloudflare R2 (S3-compatible, boto3; browsers upload with presigned URLs) |
 | Video Processing | FFmpeg (system binary — **optional**, see below) |
 | Image Processing | Pillow (server-side fallbacks) + HTML5 Canvas/WebP (client-side) |
 | Auth | Argon2 (passwords), itsdangerous (admin tokens), Fernet (reversible encryption) |
@@ -33,25 +37,32 @@ final v2/
 │   │   │   ├── deps.py
 │   │   │   ├── presenters.py
 │   │   │   ├── media_streaming.py
-│   │   │   ├── admin_*.py    # Admin endpoints (clients, albums, media, dashboard, activity, storage, downloads, settings)
-│   │   │   └── client_*.py   # Client endpoints (gallery, download jobs, wishlist)
+│   │   │   ├── admin_*.py    # Studio admin endpoints (clients, albums, media, dashboard, activity, storage, downloads, settings)
+│   │   │   ├── client_*.py   # Client endpoints (gallery, download jobs, wishlist)
+│   │   │   ├── super_admin.py     # /api/super-admin/* (studios, quotas, the studio's single login, logos, platform audit log)
+│   │   │   ├── studio.py          # /api/studio/* (the studio's own profile, usage, audit log)
+│   │   │   └── studio_branding.py # GET /api/studios/{id}/logo (public logo image)
 │   │   ├── config/           # pydantic-settings (.env loader)
 │   │   ├── database/         # SQLAlchemy engine, session, Base
-│   │   ├── models/           # 12 ORM models + mixins
+│   │   ├── models/           # 14 ORM models + mixins (incl. studios, platform_storage)
 │   │   ├── schemas/          # Pydantic request/response models (auth, client, album, media, download_job, studio_settings, errors, pagination)
 │   │   ├── security/         # Password hashing (Argon2), session tokens, reversible encryption (Fernet)
-│   │   ├── services/         # Business logic layer (activity_service, admin_service, album_service, auth_service, circuit_breaker, client_service, comment_service, dashboard_service, disk_service, download_analytics_service, download_job_service, folder_naming, google_drive_service, media_aggregates, media_service, media_validation, orphan_reconciliation, retry, storage_analytics_service, storage_provider, storage_service, studio_settings_service, thumbnail_folder_migration, timeout_utils, upload_concurrency, upload_logging, wishlist_service)
+│   │   ├── services/         # Business logic layer (activity_service, admin_service, album_service, audit_service, auth_service, client_service, comment_service, dashboard_service, disk_service, download_analytics_service, download_job_service, folder_naming, media_aggregates, media_service, media_validation, orphan_reconciliation, quota_service, quota_reconciliation, r2_storage, storage_analytics_service, storage_paths, storage_provider, storage_service, studio_service, studio_logo_service, studio_settings_service, wishlist_service, ... plus the dormant google_drive_service / circuit_breaker / retry / thumbnail_folder_migration from the Drive era)
 │   │   ├── workers/          # Thumbnail generation (PIL + FFmpeg)
 │   │   ├── main.py           # App factory, lifespan, middleware, error envelope
-│   │   ├── create_admin.py   # First admin bootstrap (python -m app.create_admin)
-│   │   ├── reconcile_orphans.py      # Cron: dry-run/--apply Drive orphan cleanup
+│   │   ├── create_super_admin.py     # Platform owner bootstrap (python -m app.create_super_admin)
+│   │   ├── create_admin.py           # Legacy single-studio admin bootstrap
+│   │   ├── legacy_to_studio.py       # One-off: map pre-multi-studio rows into a studio (dry-run by default)
+│   │   ├── consolidate_studio_logins.py  # One-off: report/fix studios with more than one login (one login per studio)
+│   │   ├── reconcile_quota.py        # Cron: recompute / repair studio usage counters
+│   │   ├── reconcile_orphans.py      # Cron: dry-run/--apply cleanup of objects from unfinished uploads
 │   │   ├── cleanup_download_jobs.py  # Cron: expired ZIP cleanup
-│   │   └── migrate_thumbnail_folders.py  # Ops: dry-run/--apply "Cover Images" → "Thumbnails" rename + orphan cover purge
-│   ├── scripts/              # check_env.py (env sanity gate), generate_drive_refresh_token.py
+│   │   └── migrate_thumbnail_folders.py  # Legacy (Drive era): "Cover Images" → "Thumbnails" rename
+│   ├── scripts/              # check_env.py (env sanity gate), check_r2.py (R2 access test)
 │   ├── alembic/              # Database migrations
 │   ├── .env                  # Backend config (secrets - not committed)
 │   ├── .env.example          # Config template (committed)
-│   └── tests/                # 23 pytest test files + conftest/fakes
+│   └── tests/                # 27 pytest test files + conftest/fakes/ms_helpers
 ├── frontend/
 │   ├── .env.example          # VITE_API_BASE_URL - API base for cross-origin builds
 │   │                         #   (VITE_API_URL is only needed to enable the dev proxy)
@@ -62,26 +73,31 @@ final v2/
 │   ├── vercel.json           # Hosting config: SPA rewrite, /api proxy, security headers,
 │   │                         #   robots.txt/sitemap.xml content-type + cache headers
 │   ├── public/               # Copied verbatim to dist/ (never hashed, never bundled)
-│   │   ├── ls-logo.png       # The studio logo — favicon, admin avatar, and home mark
+│   │   ├── ls-logo.png       # The platform logo — favicon and home mark (each studio's own logo is uploaded to R2)
 │   │   ├── light-ls-logo.png # Light-background variant of the logo
 │   │   ├── favicon.svg       # Legacy heart-and-lens mark (superseded by ls-logo.png)
 │   │   ├── images/           # album-bg.webp, album-hero.webp (landing-page backdrops)
 │   │   ├── robots.txt        # Allows /, blocks /admin, /api, /.git, /.env*
 │   │   └── sitemap.xml       # Canonical public URLs (the site root + /gallery)
 │   └── src/
-│       ├── components/       # Shared UI (AdminLayout, Sidebar, Lightbox, Modals, GlobalUploadBadge, WishlistHeart,
-│       │                         PoweredBy credit line, RequireAdmin route guard)
+│       ├── components/       # Shared UI (AdminLayout, Sidebar, StudioBrandMark, Lightbox, Modals, GlobalUploadBadge,
+│       │   │                     WishlistHeart, PoweredBy credit line, RequireAdmin route guard)
+│       │   └── superadmin/   # Console UI (SuperAdminLayout, RequireSuperAdmin, Modal, ResetPasswordModal, SecretModal,
+│       │                     StudioAdminsPanel, StudioLogoField, StudioProfileForm, StudioQuotaCard, Toast, ...)
 │       ├── contexts/         # React Contexts (UploadContext - global persistent upload queue)
-│       ├── hooks/            # useWishlist (optimistic client wishlist state)
+│       ├── hooks/            # useWishlist (optimistic wishlist state), useStudioBranding (studio name + logo)
 │       ├── pages/            # Admin + Client pages (incl. BookView - the client-facing page-turning reader)
-│       ├── services/         # Typed API client (auth, admin, gallery)
-│       ├── styles/           # Plain CSS: index.css + admin.css + gallery.css + book-view.css
+│       │   └── superadmin/   # Console pages: Dashboard, Studios, StudioDetail, AuditLogs, Settings, NotFound
+│       ├── services/         # Typed API client (auth, admin, gallery, superAdmin, studioBranding)
+│       ├── styles/           # Plain CSS: index.css + admin.css + gallery.css + book-view.css + super-admin.css (`sa-` prefixed)
 │       ├── utils/            # format.ts, photoThumbnail.ts, videoPoster.ts
 │       ├── vite-env.d.ts     # ImportMetaEnv typing for VITE_ vars
 │       ├── App.tsx           # Route definitions
 │       └── main.tsx          # Entry point
 ├── ARCHITECTURE.md           # This file
-├── Upload-Pipeline.md        # Deep dive on direct-to-Drive upload pipeline
+├── MULTI_STUDIO.md           # Tenancy, roles, quotas, super admin API, migration runbook
+├── STORAGE_STRUCTURE.md      # Where each file lives in R2
+├── Upload-Pipeline.md        # Deep dive on the direct-to-R2 upload pipeline
 └── README.md                 # Setup guide and project overview
 ```
 
@@ -96,18 +112,21 @@ HTTP Request
     ↓
 API Routes (app/api/)       ← Thin HTTP shell, input validation only
     ↓
-Services (app/services/)    ← All business logic, Drive interaction, analytics
+Services (app/services/)    ← All business logic, storage interaction, quota, analytics
     ↓
 Models (app/models/)        ← SQLAlchemy ORM
     ↓
-Google Drive                ← Media storage (never exposed to frontend)
+Cloudflare R2               ← Media storage (never exposed to the frontend except
+                              as short-lived presigned upload URLs)
 ```
 
 ### Storage Abstraction
 
-`StorageService` is an abstract base class. Only `google_drive_service.py` imports the Google SDK. Routes receive the storage backend via the `get_storage_service()` dependency (`app/services/storage_provider.py`), which builds a single process-wide `GoogleDriveStorage` instance. The test suite overrides that dependency with `FakeStorageService` (in-memory). Storage is fully mockable.
+`StorageService` is an abstract base class (`storage_service.py`). `r2_storage.py` (`R2Storage`, boto3) is the only implementation in use; routes receive it via the `get_storage_service()` dependency (`app/services/storage_provider.py`), which builds a single process-wide instance. The test suite overrides that dependency with `FakeStorageService` (in-memory) or injects a fake S3 client into `R2Storage`, so storage is fully mockable. `google_drive_service.py` is kept in the repository but is dormant: nothing selects it and no Drive configuration is read.
 
-Folder naming conventions for Drive (client folders, album subfolders) are handled by `app/services/folder_naming.py`, keeping Google Drive path logic separate from the storage service itself.
+R2 objects are addressed by key, and every key starts with the studio's own readable folder, `studios/{studio-name}-{studio_id}/` (tenant isolation; see `STORAGE_STRUCTURE.md`). The folder is built once by `app/services/storage_paths.py` when the studio is created, saved in `studios.storage_prefix` and never changed, so renaming a studio never moves files; studios that predate it keep `studios/{id}/`. Four small seams in the interface let key-addressed providers work without special cases in the services: `object_key_for()` (the server chooses an upload's key), `owns_object()` (refuses any key outside the calling studio's folder), `tenant_root_folder()` (parent for a studio's client folders) and `album_originals_folder()` (`{studio folder}/albums/{client-name}_{album_id}`, where an album's originals go). Providers that cannot do this keep the default behaviour. `put_bytes()` stores small server-generated objects such as studio logos.
+
+Folder naming conventions (`{client}_C_{uid}`, `{album}_A_{uid}`) are handled by `app/services/folder_naming.py`. On R2 a "folder" is only a key prefix: renaming is a no-op (the readable name lives in the database) and album membership of an object is a database fact.
 
 ### Error Envelope
 
@@ -149,22 +168,26 @@ include session token hashes and encrypted password blobs.
 
 ---
 
-## Database Schema (12 Tables)
+## Database Schema (14 Tables)
 
 | Table | Purpose |
 |---|---|
-| `admins` | Admin/staff users (email, Argon2 password hash, status) |
-| `clients` | Client accounts with `client_uuid` (public galleryId), Drive folder ID, a random `folder_uid` folder-name suffix, encrypted password copies, and `thumbnail_folder_id` (the client's dedicated `Thumbnails` Drive folder - a sibling of the album folders, never inside one - holding every item thumbnail; nullable, created lazily, never exposed by any API). `password_hash` is **nullable**: a `NULL` gallery password means the gallery has no password prompt (see *Client Auth*) |
-| `albums` | Albums per client, with expiry (`expires_at`), Drive folder, and the two Book View presentation columns: `book_view_enabled` (boolean, default `false` - per-album opt-in to the client-facing page-turning reader) and `book_layout` (`square` / `portrait` / `landscape`, default `landscape` - the aspect ratio of the spread) |
-| `media` | Photo/video records with Google Drive file IDs, metadata, type, and `sort_order` (1-based position inside the album's book order; ordering is `sort_order ASC, id ASC`, and uploads/moves append at `MAX(sort_order)+1`) |
+| `studios` | One row per photography studio: name, `slug` (the name in client gallery links, unique, kept when the studio is renamed), contact, `logo_url` (path of the uploaded logo), `storage_prefix` (its permanent folder in R2, e.g. `studios/acme-photo-1`; NULL = legacy `studios/{id}`), brand colour, `status` (`active`/`suspended`), `quota_bytes`, `used_bytes`, `reserved_bytes`. See `MULTI_STUDIO.md` |
+| `platform_storage` | Single row (`id=1`): platform-wide `used_bytes` / `reserved_bytes`, checked against `PLATFORM_CAPACITY_BYTES` |
+| `admins` | Admin users (email, Argon2 password hash, status) plus `role` (`super_admin` / `studio_admin`), `studio_id` and `session_version` (bumped on password change/reset to revoke old cookies) |
+| `clients` | Client accounts with `client_uuid` (public galleryId), `studio_id`, storage folder id (an R2 key prefix, `studios/{studio-name}-{id}/{name}_C_{uid}`), a random `folder_uid` folder-name suffix, encrypted password copies, and `thumbnail_folder_id` (the client's dedicated `Thumbnails` prefix - holding every item thumbnail; nullable, created lazily, never exposed by any API). `password_hash` is **nullable**: a `NULL` gallery password means the gallery has no password prompt (see *Client Auth*) |
+| `albums` | Albums per client, with expiry (`expires_at`), a storage folder id, and the two Book View presentation columns: `book_view_enabled` (boolean, default `false` - per-album opt-in to the client-facing page-turning reader) and `book_layout` (`square` / `portrait` / `landscape`, default `landscape` - the aspect ratio of the spread) |
+| `media` | Photo/video records with `storage_key` / `storage_provider` (R2 object key), metadata, type, and `sort_order` (1-based position inside the album's book order; ordering is `sort_order ASC, id ASC`, and uploads/moves append at `MAX(sort_order)+1`) |
 | `sessions` | Client server-side sessions (SHA-256 hashed tokens, expiry, download password verification) |
-| `media_wishlists` | A client's favourites: `(client_id, media_id)` with `UNIQUE(client_id, media_id)` and an index on `media_id`; both FKs `ON DELETE CASCADE`. Pure database relationship - nothing is ever copied in Drive |
+| `media_wishlists` | A client's favourites: `(client_id, media_id)` with `UNIQUE(client_id, media_id)` and an index on `media_id`; both FKs `ON DELETE CASCADE`. Pure database relationship - nothing is ever copied in storage |
 | `album_comments` | Client page notes on a Book View album: 1-based `page_number`, free text (≤2000 chars), `status` (`open` / `resolved`), and an optional `media_id` (`ON DELETE SET NULL`, so the note survives its photo). `UNIQUE(client_id, album_id, page_number)` makes saving a page an upsert; the album/client FKs cascade |
-| `upload_sessions` | Idempotency ledger for uploads (admin_id, upload_id) |
+| `upload_sessions` | Idempotency ledger for uploads (admin_id, upload_id) plus the quota reservation (`reserved_bytes`, `reservation_status` none/reserved/committed/released) |
 | `download_jobs` | Background ZIP download jobs with status lifecycle |
 | `download_records` | Download analytics (per client, per album) |
-| `audit_logs` | Unified activity feed (admin + client actions) |
-| `studio_settings` | Single-row (`id=1`) studio-wide config: studio name/contact email, min client password length, download-link TTL hours. Lazily created on first read - see `studio_settings_service.py` |
+| `audit_logs` | Unified activity feed (admin + client actions) with `studio_id`, `actor_role` and sanitised `metadata` |
+| `studio_settings` | One row per studio (`studio_id` unique): studio name/contact email, min client password length, download-link TTL hours. Lazily created on first read - see `studio_settings_service.py` |
+
+Every studio-owned table (`clients`, `albums`, `media`, `upload_sessions`, `download_jobs`, `download_records`, `studio_settings`) carries an indexed `studio_id`, and every service query filters on it.
 
 Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_at).
 
@@ -175,21 +198,27 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 ### Auth (`/api/auth`)
 | Method | Path | Description |
 |---|---|---|
-| POST | `/api/auth/admin/login` | Admin login → HttpOnly cookie |
+| POST | `/api/auth/admin/login` | Admin login → HttpOnly cookie; the response carries `role` (`super_admin` / `studio_admin`) so the app knows which area to open |
 | POST | `/api/auth/client/login` | Client login → HttpOnly cookie |
 | POST | `/api/auth/logout` | Clear session |
 | GET | `/api/auth/me` | Current user info |
 
-### Admin (`/api/admin/*`) — Cookie auth required
+### Super admin (`/api/super-admin/*`) — `super_admin` role only (else `403 SUPER_ADMIN_REQUIRED`)
+Studios (list/create with the studio's one login and optional logo, detail, edit, suspend/reactivate, quota, usage), studio logo upload/remove (`POST`/`DELETE /studios/{id}/logo`), deleting a suspended studio (`DELETE /studios/{id}`; empty by default, or with all its data via `?delete_data=true&confirm_name=`), the studio's single login (edit name, change email, reset password, disable/enable — one login per studio, enforced by `studio_service` and the unique index `uq_admins_studio_id`; `POST /studios/{id}/admins` is recovery-only for a studio with no login; there is no delete-login endpoint), platform stats, the platform audit log and the super admin's own `POST /change-password`. A super admin can **not** browse a studio's clients/albums/media. Full table in `MULTI_STUDIO.md` §4.
+
+### Studio profile (`/api/studio/*`) and public logo
+`GET/PUT /api/studio/profile`, `GET /api/studio/usage`, `GET /api/studio/audit-logs` — always scoped to the logged-in studio admin's own studio. `GET /api/studios/{id}/logo?v=…` is public (no login) and serves the studio's uploaded logo with a one-year immutable cache; the `v` hash changes on every upload.
+
+### Admin (`/api/admin/*`) — Cookie auth required (`studio_admin` role; scoped to the admin's own studio)
 | Area | Endpoints |
 |---|---|
 | Clients | CRUD (gallery password optionally left blank → **passwordless** gallery), view passwords, change password, change/clear download password, disable/enable, regenerate gallery ID, client wishlist (`GET /{id}/wishlist?album_id=`, read-only) |
 | Albums | CRUD, filter by client, list media (`?wishlist=all\|wishlisted\|not_wishlisted`, in book order), selection summary (same filter), wishlist counts (`GET /{id}/media/wishlist-counts`), drag-and-drop book order (`PUT /{id}/media/order` - the complete media-id list exactly once; `MEDIA_ORDER_INVALID` otherwise, page notes follow their photo). `PUT /{id}` also carries the Book View presentation flags (`book_view_enabled` - omit to leave untouched, explicit `false` to turn off - and `book_layout`) |
 | Page notes | Per-album notes (`GET /{id}/comments`), resolve/reopen or correct the text (`PATCH /comments/{id}`, both fields optional), delete (`DELETE /comments/{id}`). Admin review deliberately ignores album expiry |
-| Media | Direct upload session (`POST /upload-session`), thumbnail upload (`POST /upload-session/{id}/thumbnail`), completion confirmation (`POST /upload-complete`), progress ping (`POST /upload-progress/{id}`), abandonment (`POST /upload-session/{id}/abandon`), status (`GET /upload-status/{id}`), recent session list (`GET /upload-sessions`), bulk delete/move, stream, download, thumbnail, orphans |
+| Media | Direct upload session (`POST /upload-session` - reserves quota and returns a presigned R2 URL), thumbnail upload (`POST /upload-session/{id}/thumbnail`), completion confirmation (`POST /upload-complete`), progress ping (`POST /upload-progress/{id}`), abandonment (`POST /upload-session/{id}/abandon`), status (`GET /upload-status/{id}`), recent session list (`GET /upload-sessions`), bulk delete/move, stream, download, thumbnail, orphans |
 | Dashboard | Stats summary |
 | Activity | Audit log feed |
-| Storage | Google Drive quota |
+| Storage | The studio's own storage allocation (quota, used, remaining, reserved by uploads in progress — `studio_quota`), daily transfer, upload reliability, breakdowns. Server disk and the storage provider's account quota are platform matters and are not shown to studios |
 | Downloads | Analytics, download job management |
 | Settings | `GET /settings` (studio profile + policy + own account), `PUT /settings/profile` (studio name/contact email), `PUT /settings/security` (min client password length, download-link TTL), `POST /settings/change-password` (admin's own password, requires current password) |
 
@@ -242,19 +271,20 @@ Shared mixins: `IdMixin` (BigInteger PK), `TimestampMixin` (created_at/updated_a
 ### Download Password Gate
 - If client has a `download_password_hash`, downloads require `download_password_verified_at` flag on the session
 
-### Upload Hardening (Direct-to-Drive Architecture)
-- **Direct-to-Drive transfers**: The browser transfers bytes directly to Google Drive via resumable session URLs (`adminService.uploadToDrive`). Large media payloads (up to 10 GB) never touch the application server's disk or relay through its network interface.
-- **CORS Origin forwarding**: During session creation (`POST /api/admin/media/upload-session`), the server validates the incoming browser `Origin` against `settings.effective_cors_origins` and forwards it to Google Drive's resumable session initiator, enabling Google Drive to issue standard CORS headers to subsequent browser PUTs.
-- **Client-Side WebP thumbnails**: Video poster frames (`videoPoster.ts`) and photo thumbnails (`photoThumbnail.ts`) are generated directly in the browser using HTML5 Canvas and WebP compression, then uploaded as small images to `POST /upload-session/{id}/thumbnail`. This eliminates heavy server-side video downloads and makes server-side FFmpeg optional. Both are stored in the client's dedicated `Thumbnails` Drive folder — a sibling of the album folders, never inside one (see *Album Covers*).
-- **One thumbnail folder per client**: `media_service._ensure_thumbnail_folder` lazily creates (or reuses, via `clients.thumbnail_folder_id`) a single `Thumbnails` folder per client, so every video poster and photo thumbnail of that client lives in exactly one place. Clients created before the rename still have their folder called `Cover Images` in Drive; `migrate_thumbnail_folders.py` renames it and purges the removed cover's leftover `cover.webp`.
+### Upload Hardening (Direct-to-R2 Architecture)
+Full detail: `Upload-Pipeline.md`.
+- **Direct-to-R2 transfers**: the browser PUTs bytes straight to Cloudflare R2 with a short-lived presigned URL (`adminService.uploadToDrive` - the function keeps its old name - sends an `XMLHttpRequest` PUT). Large media payloads (up to 10 GB; single PUT limit 5 GiB) never touch the application server's disk or network interface.
+- **Server-chosen object key**: `POST /api/admin/media/upload-session` makes the key `{studio folder}/albums/{client-name}_{album_id}/{media_uuid}` (for example `studios/acme-photo-1/albums/test-couple_25/<uuid>`) itself and signs the URL for that one key, content type and exact `Content-Length`. At completion the server uses the key it issued and ignores whatever the browser reports; `owns_object()` additionally refuses any key outside the studio's prefix.
+- **Quota reservation before any URL is issued**: the declared size is reserved against the studio quota and the platform capacity in one conditional `UPDATE` (413 `STUDIO_QUOTA_EXCEEDED`, 507 `PLATFORM_CAPACITY_EXCEEDED`, 403 `STUDIO_SUSPENDED`); it becomes `used_bytes` on completion and is released on failure, cancel, stale sweep or deletion. See `MULTI_STUDIO.md` §5.
+- **Bucket CORS**: the browser's PUT goes to R2, so the bucket needs a CORS rule allowing the frontend origin to `PUT` (README, Setup step 4). Without it uploads fail in the browser with a CORS error.
+- **Client-Side WebP thumbnails**: Video poster frames (`videoPoster.ts`) and photo thumbnails (`photoThumbnail.ts`) are generated directly in the browser using HTML5 Canvas and WebP compression, then uploaded as small images to `POST /upload-session/{id}/thumbnail`. This eliminates heavy server-side video downloads and makes server-side FFmpeg optional. Both are stored under the client's `Thumbnails` prefix (`{studio folder}/{client folder}/Thumbnails/`), which counts toward no quota (see *Album Covers*).
+- **One thumbnail prefix per client**: `media_service._ensure_thumbnail_folder` lazily creates (or reuses, via `clients.thumbnail_folder_id`) a single `Thumbnails` folder per client, so every video poster and photo thumbnail of that client lives in exactly one place.
 - **Portable aggregates**: `media_aggregates.py` builds the photo/video count and byte-total expressions as `SUM(CASE WHEN ...)` rather than `count(...) FILTER (WHERE ...)`, because MySQL 8 has no `FILTER` clause — the `FILTER` spelling compiles and passes on the SQLite test suite, then dies with a 1064 on the real database.
-- **Ranged-read signature validation**: Upon completion (`POST /api/admin/media/upload-complete`), the server verifies the file with Drive and reads only the initial header bytes (range 0..511 bytes) to perform magic-byte and ISO-BMFF box-walk checks (`app/services/media_validation.py`) without downloading the bulk file.
-- **Idempotency ledger (`upload_sessions`)**: Each upload uses a UUID-based `upload_id` decoupled from filename to prevent `VARCHAR(100)` column overflow. Duplicate submissions of completed uploads safely return the existing `Media` record without re-uploading.
+- **Ranged-read signature validation**: Upon completion (`POST /api/admin/media/upload-complete`), the server asks R2 for the object's real size and reads only the initial header bytes (range 0..511 bytes) to perform magic-byte and ISO-BMFF box-walk checks (`app/services/media_validation.py`) without downloading the bulk file. A rejected object is deleted and its reservation released.
+- **Idempotency ledger (`upload_sessions`)**: Each upload uses a UUID-based `upload_id` decoupled from filename to prevent `VARCHAR(100)` column overflow. Duplicate submissions of completed uploads safely return the existing `Media` record without re-uploading. The object key is recorded on the session as soon as the session opens, so `reconcile_orphans` can find the object of an upload whose confirmation never arrived.
 - **Global queue persistence**: `UploadContext.tsx` maintains upload state globally across admin routes. Transfer progress is visible anywhere via `GlobalUploadBadge.tsx`. Memory is guarded by `withReleasedFile()`, which clears `File` object handles from React state upon upload completion or cancellation.
 - **Client-side throttling**: The upload queue scheduler caps active transfers to `MAX_CONCURRENT_UPLOADS = 4` simultaneous connections to prevent network saturation.
-- **Server admission control**: Tunable via `UPLOAD_MAX_CONCURRENT` (default `3`), `UPLOAD_MAX_CONCURRENT_REQUESTS` (default `8`), `UPLOAD_QUEUE_WAIT_SECONDS` (default `45`), `UPLOAD_CHUNK_TIMEOUT` (default `120`) and `UPLOAD_SESSION_TIMEOUT` (default `3600`). Override them in `.env` for larger batches or slower links.
-- **Socket-level timeouts**: Every `httplib2.Http()` used to communicate with Google Drive has explicit socket timeouts (`timeout=settings.upload_chunk_timeout`), preventing hung TLS handshakes from permanently blocking worker threads.
-- **Circuit breaker** (`app/services/circuit_breaker.py`): Wraps transport calls to Google Drive. Trips after 3 consecutive transport/connectivity failures with a 20-second cooldown, protecting the backend thread pool during Google Drive service degradation.
+- **Legacy Google Drive hardening (dormant)**: server admission control (`UPLOAD_MAX_CONCURRENT`, ...), per-call `httplib2` socket timeouts and the circuit breaker (`circuit_breaker.py`) existed for the Drive transport. They are only used by the dormant `google_drive_service.py`; their settings have no effect with R2.
 
 
 ### Album Covers
@@ -263,7 +293,7 @@ There is no stored cover image anywhere in the system, and nothing to manage: no
 - **Derived per album, at read time**: the gallery album grid fetches `GET /api/client/media?album_id={id}&page=1&limit=1` and uses the first item's `has_thumbnail` flag — if set, that item's thumbnail URL becomes the album cover; if not, the card renders its styled empty cover block (`wedding-album-card__cover-empty`) over the album's gradient background.
 - **One request per album, deliberately**: photo/video counts and byte totals already ride on the album list (aggregated in SQL), so the first media page is the only extra fetch the grid makes — and it asks for a single item.
 - **Replacing a removed feature**: an earlier design gave each *client* one automatic cover, built by the browser from the first eligible photo and stored as `cover.webp` beside the album folders. It was removed (Alembic `a5c7e3b1d9f8`) along with `cover_service.py` and the `POST /upload-session/{id}/cover` + `GET /gallery/cover` endpoints; `cover_drive_file_id` was dropped, while `cover_folder_id` was renamed to `thumbnail_folder_id` (value preserved). Album art now comes from the album's own first thumbnail, so there is no cover that can go stale or need reconciling.
-- **Legacy bytes**: `migrate_thumbnail_folders.py` (dry-run by default, `--apply` to write) renames each legacy `Cover Images` folder to `Thumbnails` — metadata-only, so the folder id and every thumbnail inside it are untouched — then deletes the orphaned `cover.webp`, which is unambiguously identifiable because item thumbnails are always named `thumb_{uuid}.webp`. A file by that name is still skipped if any `Media` row references it, and a folder missing from Drive has its now-dangling `thumbnail_folder_id` cleared so the next upload recreates it.
+- **Legacy bytes**: this concerned the Google Drive era only. `migrate_thumbnail_folders.py` (dry-run by default, `--apply` to write) renamed each legacy `Cover Images` Drive folder to `Thumbnails` and deleted the orphaned `cover.webp`. A fresh R2 installation never has either, so the script is not part of normal operation.
 
 ### Client Wishlist
 A client can heart any photo or video; the state is one row in `media_wishlists`.
@@ -387,8 +417,9 @@ the admin side).
 ### Routing
 
 ```
-/                            → Home: studio logo + the two ways in (client gallery link, studio sign-in)
-/admin/login              → Admin login (accepts ?redirect=<in-app-path>)
+/                            → Home: platform logo + the two ways in (client gallery link, studio sign-in)
+/admin/login              → Sign-in for super admins and studio admins (accepts ?redirect=<in-app-path>);
+                            a super admin is sent on to /super-admin/dashboard
 /admin/dashboard          → Dashboard with area chart
 /admin/activity           → Audit log feed
 /admin/clients            → Client CRUD
@@ -396,24 +427,36 @@ the admin side).
 /admin/albums/:albumId    → Album media management
 /admin/uploads            → Drag-drop upload queue
 /admin/downloads          → Download job monitoring
-/admin/storage            → Drive quota usage
+/admin/storage            → Studio storage usage and quota
+
+/super-admin/dashboard   → Platform stats (RequireSuperAdmin; a studio admin is sent back to /admin/dashboard)
+/super-admin/studios      → Studio list: create, edit (details + quota), the studio's login (a Login ▾ menu per row: edit login details / change login email / reset password / disable-enable)
+/super-admin/studios/:id  → Studio detail: quota, details + logo image, suspend/reactivate, users
+/super-admin/audit-logs   → Platform-wide audit trail
+/super-admin/settings     → The super admin's own password
 /admin/settings           → Studio profile, admin account (change password), security & download policy
 
-/gallery/:galleryId              → Client entrance (auto-opens passwordless galleries)
-/gallery/:galleryId/view         → Album picker: every album shared with the client
-/gallery/:galleryId/view/:albumId → Single album view
-/gallery/:galleryId/view/:albumId/book → Book View: the page-turning reader for one album
+/:studioSlug/gallery/:galleryId              → Client entrance (auto-opens passwordless galleries)
+/:studioSlug/gallery/:galleryId/view         → Album picker: every album shared with the client
+/:studioSlug/gallery/:galleryId/view/:albumId → Single album view
+/:studioSlug/gallery/:galleryId/view/:albumId/book → Book View: the page-turning reader for one album
                                     (redirects to the plain album view unless the album's
                                     book_view_enabled flag is on)
-/gallery/:galleryId/wishlist     → The client's wishlist
+/:studioSlug/gallery/:galleryId/wishlist     → The client's wishlist
 ```
+
+`:studioSlug` is the studio's name in the link (`studios.slug`, e.g. `/acme-photo/gallery/<link id>`). The older
+`/gallery/:galleryId/...` form still works: every client gallery route is wrapped in `GalleryUrlGate`, which asks the
+public access check (it returns the studio's `slug`) and redirects an old link to the studio's address, corrects a wrong
+name, and leaves a studio without a slug on the old form. Pages build their links from `useGalleryBase()`, so a client stays
+on one form of URL.
 
 Behavioral notes on the entrance routes:
 - `/` is the public front door and needs no auth: it shows the studio mark (the `/ls-logo.png`
   logo image plus the shared `.login-brand` wordmark — the same wordmark `AdminLogin`,
   `ClientLogin` and `NotFound` reuse) and the only two ways into the app.
   The client card takes the link the photographer sent - a full `.../gallery/<id>` URL, a
-  trailing `/view` or query, or a bare id - and navigates client-side to `/gallery/<id>`; it
+  trailing `/view` or query, or a bare id - and navigates client-side to `/gallery/<id>` (the gate then moves it to `/<studio>/gallery/<id>`); it
   is not a server redirect and is not an open redirect, since only `/[A-Za-z0-9_-]+/` is ever
   appended to the in-app path.
 - `/gallery/:galleryId` probes `GET /api/client/gallery/access/{id}` while rendering the
@@ -445,18 +488,21 @@ sessions that expire mid-use to `api.ts`'s 401 handler.
   exports `API_BASE_URL`, read from `VITE_API_BASE_URL` (frontend `.env`) and prefixed onto every
   request - empty by default (same-origin, today's behavior), set only when the frontend is deployed
   on a different origin than the backend
-- `auth.ts` — Login/me/logout calls
+- `auth.ts` — Login/me/logout calls (login/logout also reset the cached studio branding)
+- `superAdmin.ts` — All `/api/super-admin/*` calls (studios, quota, users, logo upload via `api.postForm`, audit logs, change password)
+- `studioBranding.ts` — Small store (read with `useSyncExternalStore` through `hooks/useStudioBranding.ts`) holding the logged-in studio's name and logo from `GET /api/studio/profile`; `assetUrl()` in `api.ts` resolves backend-served paths such as the logo against `API_BASE_URL`
 - `admin.ts` — All admin endpoints (incl. `getSettings`/`updateStudioProfile`/`updateSecurityPolicy`/`changeAdminPassword`)
 - `gallery.ts` — All client-facing endpoints (incl. `checkGalleryAccess` on `/client/gallery/access/{id}`, `thumbnailUrl`, `listWishlist`/`addToWishlist`/`removeFromWishlist`)
 
 ### Key Components
-- `AdminLayout` + `Sidebar` — Admin shell
+- `AdminLayout` + `Sidebar` — Studio admin shell; `StudioBrandMark` shows the studio's own name and logo in the sidebar and the mobile top bar (and `AdminDashboard`'s profile chip)
+- `SuperAdminLayout` (+ `RequireSuperAdmin`, `components/superadmin/*`) — The console shell. It reuses the studio admin look (same sidebar, search pill and profile chip pattern) with every CSS class `sa-` prefixed and its design tokens scoped to a `.sa` wrapper, so it cannot affect the studio pages. Dialogs (`Modal`) are rendered into the `.sa` root through a portal and are stack-aware (Escape closes only the top one). One-time secrets (temporary passwords) are shown in `SecretModal`; a password reset uses the editable `ResetPasswordModal`, which starts empty, generates a password only on **Generate**, and keeps **Update password** disabled until something is entered (the old password is stored hashed and can never be shown). Suspend / reactivate / delete confirmations for a studio live in the `useStudioLifecycle` hook (`StudioLifecycleDialogs.tsx`), shared by the studios list (**More ▾**) and the studio detail page. The studios list's **Users ▾** button is `StudioUsersMenu` (each user with Edit / Reset password / Disable / Delete, plus Add user, and Manage all users when there is more than one); the dialogs behind every user action are shared through the `useAdminDialogs` hook in `StudioAdminsPanel.tsx`. Per-user actions live in `RowActionsMenu` (an **Actions ▾** button whose menu is portaled into `.sa` with fixed positioning, so dialogs and scrolling tables never clip it)
 - `UploadContext` — Global upload queue manager mounted at admin root, maintaining in-flight transfers across page navigation
 - `GlobalUploadBadge` — Floating status badge displayed across admin screens when background uploads are in progress
 - `ClientLogin` — Probes gallery access first (`checkGalleryAccess`); opens passwordless galleries directly with a blank-password login, otherwise shows the password card (demo ids skip the probe)
 - `AdminLogin` — Sign-in card that honors the `?redirect=` return target written by the session-expired handler (open-redirect guarded), showing an "expired" note when returning that way
 - `NotFound` — The themed 404 page for unknown routes
-- `Home` — The unauthenticated landing page at `/`: the studio logo lockup (`/ls-logo.png` + `.login-brand`), a hero, and the two
+- `Home` — The unauthenticated landing page at `/`: the platform logo lockup (`/ls-logo.png` + `.login-brand`), a hero, and the two
   portal cards (paste-a-gallery-link, and the studio sign-in)
 - `ClientNav` — Gallery navigation
 - `MediaLightbox` — Filmstrip + zoom + keyboard nav; optional `isWishlisted`/`onToggleWishlist` props add the heart (the admin lightbox passes neither)
@@ -478,7 +524,7 @@ sessions that expire mid-use to `api.ts`'s 401 handler.
   admin sidebar; the version/date strings live only here
 
 ### Styling
-- Plain CSS (no Tailwind/UI framework) split across `index.css` (global) + `styles/admin.css` / `styles/gallery.css` / `styles/book-view.css` per view
+- Plain CSS (no Tailwind/UI framework) split across `index.css` (global) + `styles/admin.css` / `styles/gallery.css` / `styles/book-view.css` / `styles/super-admin.css` per view
 - Wedding typography: Alex Brush, Cormorant Garamond, Montserrat (Google Fonts, imported at the top of the per-view stylesheets)
 - Reusable pieces in the shared sheets: `.powered-by` (credit line, in `index.css`; restyled for
   the sidebar in `admin.css`) and `.toggle-switch` (the generic on/off pill used by the Edit
@@ -495,9 +541,10 @@ No task queue (by design — single-VPS, single-process). Background work uses F
 | ZIP download creation | `BackgroundTasks` + threading | Snaps media list, prefetches files concurrently (`ZIP_JOB_PARALLEL_DOWNLOADS=4`), builds ZIP incrementally, TTL from `studio_settings.download_link_ttl_hours` (admin-configurable, default 24h) |
 | Download analytics recording | Starlette `BackgroundTask` | Own DB session, non-blocking |
 | Thumbnail generation | Client-side (WebP) with server fallback | Video posters and photo thumbnails are generated in the browser during direct upload; PIL and server-side FFmpeg are retained for fallbacks & backfills |
-| Orphan reconciliation | Cron script (`python -m app.reconcile_orphans --apply`) | Deletes Drive files with no DB row after `ORPHAN_FILE_GRACE_PERIOD_HOURS` (default 48h) grace; dry run without `--apply` |
+| Orphan reconciliation | Cron script (`python -m app.reconcile_orphans --apply`) | Deletes stored objects of uploads that never completed (no Media row) after `ORPHAN_FILE_GRACE_PERIOD_HOURS` (default 48h) grace; dry run without `--apply` |
+| Quota reconciliation | Cron script (`python -m app.reconcile_quota [--apply]`) | Recomputes each studio's `used_bytes` / `reserved_bytes` from the database, releases reservations older than `UPLOAD_RESERVATION_TTL_MINUTES`; exit code 1 on drift |
 | Expired job cleanup | Cron script (`python -m app.cleanup_download_jobs`) | Removes stale ZIPs; flips rows to `expired` |
-| Stale upload sweep | On app boot (`lifespan`) | Marks `uploading`/`queued` sessions from a dead process as `failed` (`UPLOAD_STALE`) |
+| Stale upload sweep | On app boot (`lifespan`) | Marks `uploading`/`queued` sessions from a dead process as `failed` (`UPLOAD_STALE`) and releases their quota reservation |
 
 ---
 
@@ -505,7 +552,7 @@ No task queue (by design — single-VPS, single-process). Background work uses F
 
 | Service | Purpose |
 |---|---|
-| Google Drive v3 API | Authoritative media storage (folders per client/album) |
+| Cloudflare R2 | Authoritative media storage (one bucket, one readable `studios/{studio-name}-{id}/` folder per studio) |
 | FFmpeg | Video poster frame extraction (t=1.0s) |
 | Google Fonts | Wedding-styled typography |
 | MySQL 8 | Primary database |
@@ -519,7 +566,7 @@ No task queue (by design — single-VPS, single-process). Background work uses F
 | | Origin | Notes |
 |---|---|---|
 | Frontend | `http://lovestoryphotography.in` | Static Vite build; `public/sitemap.xml` and `robots.txt` carry the same origin. Should move to `https://` once TLS terminates on the domain — sitemap `<loc>` and `robots.txt` `Sitemap:` are conventionally `https`, and search engines flag `http://` there |
-| Backend | `https://api.madgen.space` | Must be in the backend's `CORS_ORIGINS`, **and** the frontend origin must be too — the same allowlist (`settings.effective_cors_origins`) is what authorizes the browser's direct PUTs to Google Drive (see *CORS Origin forwarding*) |
+| Backend | `https://api.madgen.space` | Must be in the backend's `CORS_ORIGINS`, **and** the frontend origin must be too for the API. The R2 bucket also needs its own CORS rule allowing the frontend origin to `PUT` (README, Setup step 4) |
 
 The two are on different origins, so `CROSS_SITE_FRONTEND=true` and the Secure/SameSite=None session cookies apply. `main.py`'s boot check warns when `CROSS_SITE_FRONTEND=true` while `ENVIRONMENT=development`, because browsers silently reject those cookies over plain HTTP.
 
@@ -529,31 +576,27 @@ The two are on different origins, so `CROSS_SITE_FRONTEND=true` and the Secure/S
 
 - **Backend**: `uvicorn app.main:app` with Alembic migrations (`alembic upgrade head`)
 - **Frontend**: `npm run build` → static files served from same origin
-- **First admin**: `python -m app.create_admin` (password must be exactly 8 chars)
-- **Pre-deploy sanity gate**: `python scripts/check_env.py` (verifies DB connectivity, Drive token/root
-  folder, writable `ZIP_TEMP_DIR`, ffmpeg on PATH; exits nonzero on any FAIL)
-- **Drive token refresh**: `python scripts/generate_drive_refresh_token.py` (re-runs the OAuth consent
-  flow after `invalid_grant: Token has been expired or revoked`)
-- **Ops pass, once**: `python -m app.migrate_thumbnail_folders --apply` (renames legacy `Cover Images`
-  folders to `Thumbnails` and purges the removed cover — see *Album Covers*); dry-run first
-- **Cron jobs**: `python -m app.cleanup_download_jobs`, `python -m app.reconcile_orphans --apply`
+- **Platform owner**: `python -m app.create_super_admin` (min 4 characters); create studios and their admins in the console. An existing single-studio install is mapped with `python -m app.legacy_to_studio` (runbook in `MULTI_STUDIO.md` §3)
+- **Pre-deploy sanity gate**: `python scripts/check_env.py` (DB connectivity, R2 settings and bucket access, writable `ZIP_TEMP_DIR`, ffmpeg on PATH; exits nonzero on any FAIL) and `python -m scripts.check_r2` (write/read-back and a presigned upload URL)
+- **R2 bucket CORS**: allow the production frontend origin to `PUT`
+- **Cron jobs**: `python -m app.cleanup_download_jobs`, `python -m app.reconcile_orphans --apply`, `python -m app.reconcile_quota`
 - **Dev API access**: the app calls `VITE_API_BASE_URL` directly; optionally set `VITE_API_URL` so Vite proxies `/api` to that origin (e.g. `http://localhost:8000`)
 
 ### Branding
 
-`frontend/public/ls-logo.png` is the single studio logo, referenced from three places and inlined
-rather than imported so Vite serves it from `public/` unhashed:
+**Platform mark.** `frontend/public/ls-logo.png` is the platform logo, inlined by absolute URL rather than imported so Vite serves it from `public/` unhashed:
 
 | Where | How |
 |---|---|
 | Favicon / apple-touch-icon | `index.html` `<link rel="icon" | "alternate icon" | "apple-touch-icon">` all point at `/ls-logo.png` (`type="image/png"`). The older `favicon.svg` heart-and-lens mark is still in `public/` but no longer referenced by anything |
-| Admin header chip | `AdminDashboard.tsx` `.admin-profile-avatar` renders `<img src="/ls-logo.png">` (circular via `border-radius: 50%` + `overflow: hidden` on a 28px box), in place of the old hard-coded `L` initial |
 | Home landing page | `Home.tsx` `.home-mark` renders the same file at 72×72 above the `.login-brand` wordmark |
 
 `public/light-ls-logo.png` is a light-background variant, present but not yet referenced by any view.
 
-Separately from the logo, the shared `PoweredBy` credit line (`Powered by madgen`, with the
-build's version and date) appears in four places: the Home footer (replacing the old two-span
+**Per-studio logo.** Each studio has its own logo, uploaded by the super admin as an image (not a URL): checked, re-encoded to a PNG that fits 512 px with metadata stripped (SVG is refused, 5 MB limit), stored in R2 at `{studio folder}/branding/logo-{hash}.png` and served from `GET /api/studios/{id}/logo?v={hash}` (public, cached for a year; the hash changes with every upload). `studios.logo_url` holds that path, so no extra table is involved. The studio admin area reads it, with the studio name, from `GET /api/studio/profile` and shows it in the sidebar, the mobile top bar and the dashboard profile chip (`StudioBrandMark`, `useStudioBranding`); the old hard-coded logo in the admin header is gone. A studio without a logo shows its name, and the profile chip an initial.
+
+Separately, the shared `PoweredBy` credit line (`Powered by madgen`, with the build's
+version and date) appears in four places: the Home footer (replacing the old two-span
 `.home-footer` tagline), both login cards via the `.login-powered-wrap` bottom anchor, and the
 base of the admin sidebar (`.admin-sidebar__powered`). It is the single source of the displayed
 version string.
@@ -562,10 +605,10 @@ version string.
 
 ## Testing
 
-- 23 pytest test files in `backend/tests/` (+ shared `conftest.py` / `fakes.py`)
-- SQLite in-memory database + `FakeStorageService` (no real Drive calls)
-- Coverage: auth (incl. the optional gallery-password flow and cookie security attributes), authorization & cross-client isolation, client search & selection summaries, admin/client/album management, album expiry, media management (search, pagination, metadata edits, move, delete), bulk ops, gallery totals, ZIP download jobs & analytics, upload hardening (idempotency, disk reservation, concurrency limits, stale-session recovery, orphan reconciliation), thumbnails & streaming (range requests, 416s, concurrency), the server-side thumbnail fallback, the thumbnail-folder migration, dashboard, storage integration (Drive folder provisioning, storage overview), Drive folder naming, direct resumable uploads, FFmpeg availability, httplib2 cleanup-bug regression, studio settings/security policy (incl. self-service admin password change), page notes (`test_comments.py`: upsert, cross-client isolation, validation, expiry, admin review, album counts), book order (`test_media_order.py`: reorder, client-side ordering, complete-list validation, note renumbering, move-to-end, admin-only access)
-- Suite status: **192 pass, 107 fail** (299 total). The failures are older tests that still drive the retired byte-relay `POST /api/admin/media/upload` route, which no longer exists in the direct-to-Drive app — a notable trap, because the SQLite-backed suite happily compiles queries (`count(...) FILTER (WHERE ...)`) that MySQL 8 rejects, so a green run is not proof a query works on the real database. The current upload path is exercised at the storage layer (`test_drive_resumable_upload.py`) and the session/ledger layer (`test_upload_hardening.py`), not as an end-to-end HTTP upload
+- 27 pytest test files in `backend/tests/` (+ shared `conftest.py` / `fakes.py` / `ms_helpers.py`)
+- SQLite in-memory database + `FakeStorageService` / a fake S3 client for `R2Storage` (no real storage calls)
+- Coverage: multi-studio behaviour (`test_multi_studio_*.py`, 130 tests: super admin API incl. studio logos, the one-login-per-studio rule at API and database level, the `consolidate_studio_logins` cleanup tool and the saved studio folder, tenant isolation across URL/body/query/bulk, suspension, client gallery shows the sharing studio's branding, quota reserve/commit/release and concurrency, R2 key handling, the readable studio/album/client folders and the tenant check, legacy mapping); auth (incl. the optional gallery-password flow and cookie security attributes), authorization & cross-client isolation, client search & selection summaries, admin/client/album management, album expiry, media management (search, pagination, metadata edits, move, delete), bulk ops, gallery totals, ZIP download jobs & analytics, upload hardening (idempotency, disk reservation, concurrency limits, stale-session recovery, orphan reconciliation), thumbnails & streaming (range requests, 416s, concurrency), the server-side thumbnail fallback, the thumbnail-folder migration, dashboard, storage integration (folder provisioning, storage overview), folder naming, FFmpeg availability, the legacy Drive client's cleanup-bug regression, studio settings/security policy (incl. self-service admin password change), page notes (`test_comments.py`: upsert, cross-client isolation, validation, expiry, admin review, album counts), book order (`test_media_order.py`: reorder, client-side ordering, complete-list validation, note renumbering, move-to-end, admin-only access)
+- Suite status: **322 pass, 106 fail** (428 total). The failures are older tests that still drive the retired byte-relay `POST /api/admin/media/upload` route and the old Drive resumable helpers, which no longer exist in the direct-to-R2 app — a notable trap, because the SQLite-backed suite happily compiles queries (`count(...) FILTER (WHERE ...)`) that MySQL 8 rejects, so a green run is not proof a query works on the real database. The current upload path is exercised by `test_multi_studio_storage.py` / `test_multi_studio_quota.py` (R2 key, quota, completion). It was also checked end to end in a real browser against an S3-compatible stand-in (select a file, presigned PUT, thumbnail, confirmation, view/download, delete)
 - No frontend tests
 
 ---
@@ -573,19 +616,19 @@ version string.
 ## Notable Design Decisions
 
 1. **No task queue** — Deliberate choice for single-VPS simplicity; ZIP jobs run in-process via `BackgroundTasks`
-2. **Google Drive as direct storage** — Bulk media uploads never touch the application server's disk or relay through its network interface; browsers upload directly to Google Drive via resumable upload URLs, saving VPS bandwidth and disk space. Media files are organized into client and album Drive folders. Only `google_drive_service.py` imports the Drive SDK
+2. **Cloudflare R2 as direct storage** — Bulk media uploads never touch the application server's disk or relay through its network interface; browsers upload directly to R2 via presigned PUT URLs signed for one server-chosen key and exact size, saving VPS bandwidth and disk space. Every key lives under `studios/{studio_id}/`. Only `r2_storage.py` imports boto3. Google Drive was the earlier backend and is no longer configurable
 3. **Optional dual password system** — The gallery login password (Argon2) is optional (`NULL` = passwordless, opens straight in) and can be set, changed, or removed by an admin later; a separate, optional download password gates ZIP downloads when present. Both passwords can be cleared again via a nullable `password: null` on their respective change endpoints
-4. **Client-scoped routes** — Every client route validates `galleryId` ownership; no cross-tenant access possible
+4. **Client-scoped routes** — Every client route validates `galleryId` ownership; no cross-tenant access possible. The same holds one level up: the studio is always derived from the authenticated admin/client row, every studio-owned table has `studio_id`, and another studio's resource answers 404 so ids cannot be probed
 5. **Upload idempotency** — `upload_sessions` table prevents duplicate uploads on retry
-6. **Orphan reconciliation** — Background cron catches Drive files that lost their DB row
+6. **Orphan reconciliation** — Background cron catches stored objects of uploads that never got a DB row
 7. **Album expiry** — Enforced only on client routes; admins always see expired albums
-8. **Studio settings as a singleton row** — `studio_settings` always has exactly one row (`id=1`),
-   created lazily with defaults on first read rather than seeded by its migration, so a fresh install
-   and an upgraded install behave identically with no data-seed step to keep in sync
-9. **Circuit breaker over raw retries** — Retry-with-backoff alone couldn't stop a burst of failing
-   Drive connectivity calls from exhausting the request thread pool; a process-wide circuit breaker
-   (`circuit_breaker.py`) fails fast during a cooldown window instead, and is deliberately scoped to
-   transport-layer failures only, not application-level Drive errors
+8. **Studio settings as one lazily created row per studio** — `studio_settings` has at most one row
+   per studio, created with defaults on first read rather than seeded by its migration, so a fresh
+   install and an upgraded install behave identically with no data-seed step to keep in sync
+9. **Circuit breaker over raw retries (Drive era)** — Retry-with-backoff alone couldn't stop a burst of
+   failing Drive connectivity calls from exhausting the request thread pool; a process-wide circuit
+   breaker (`circuit_breaker.py`) failed fast during a cooldown window instead. It now guards only the
+   dormant Drive client; R2 calls use boto3's own retry configuration
 10. **Client-side WebP thumbnail generation** — Generating video poster frames and photo thumbnails
     in the browser via HTML5 Canvas and WebP compression avoids expensive server-side video re-downloads
     and renders server-side FFmpeg optional (retained only for backfill tooling)
@@ -596,11 +639,12 @@ version string.
     two more endpoints, and a migration to reclaim the leftovers — all to produce an image that a
     thumbnail already provided. Deriving it removes the whole surface, and nothing is left to
     reconcile, replace, or go stale
-12. **Wishlist as a plain relationship** — Favourites are rows, not files: no Drive copies, no second
+12. **Wishlist as a plain relationship** — Favourites are rows, not files: no storage copies, no second
     gallery. Ownership is re-derived server-side from the session on every write
-13. **Logo served from `public/`, not bundled** — `ls-logo.png` is referenced by absolute URL from
-    `index.html` and two views, so one file is the favicon, the admin avatar and the home mark
-    without a build hash and without duplicating the binary into the JS bundle
+13. **Two kinds of logo** — the platform mark `ls-logo.png` is served from `public/` (favicon and
+    home mark, no build hash, not bundled); each studio's own logo is an uploaded image stored in R2
+    and served by a public, versioned, immutable-cache route, so a replaced logo is never stale and no
+    new column or migration was needed (`studios.logo_url` holds the path)
 14. **Book View reuses the grid's endpoints** — the page-turning reader adds no
     separate read path: it calls the same client album/media endpoints and access
     checks, plus two presentation columns on `albums` (`book_view_enabled`,
@@ -613,3 +657,14 @@ version string.
     merge. Editing a note reopens it so changed wording is re-reviewed, and the
     note outlives its photo (`media_id ON DELETE SET NULL`) because the feedback
     is still meaningful after the picture is removed
+16. **Quota is enforced by the application, not by R2** — a studio's quota and the platform capacity are
+    reserved in single conditional `UPDATE ... WHERE used+reserved+n <= quota` statements before a presigned
+    URL is issued (race-safe on InnoDB), committed on confirmation and released on failure; R2 only
+    enforces the exact signed `Content-Length`. `reconcile_quota` repairs drift
+17. **One frontend for all roles** — the Super Admin console is part of the same React app, behind the
+    same login and cookie, with role guards (`RequireAdmin` / `RequireSuperAdmin`) for UX only; the API
+    enforces the role on every route (`SUPER_ADMIN_REQUIRED` / `STUDIO_ADMIN_REQUIRED`). Its CSS is
+    `sa-` prefixed and scoped so it cannot leak into the studio or client pages
+18. **Passwords cannot be shown** — all passwords are stored as Argon2 hashes, so the "old password" of a
+    studio user can never be displayed. A super admin resets it instead: the new password is chosen or
+    generated explicitly, shown once, and the user's other sessions are revoked (`session_version`)

@@ -14,8 +14,8 @@ def get_dashboard(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    summary = get_dashboard_summary(db)
-    recent = get_recent_clients(db)
+    summary = get_dashboard_summary(db, admin.studio_id)
+    recent = get_recent_clients(db, admin.studio_id)
     return {
         "success": True,
         "data": {

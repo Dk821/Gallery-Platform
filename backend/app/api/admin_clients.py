@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy.orm import Session as DbSession
+from sqlalchemy.orm import Session as DbSession, object_session
 
 from app.api.deps import get_current_admin
 from app.database.connection import get_db
 from app.models.admin import Admin
-from app.models.audit_log import AuditLog
+from app.services import audit_service, studio_service
 from app.api.presenters import media_to_response
 from app.schemas.client import (
     ClientChangeDownloadPasswordRequest,
@@ -33,21 +33,14 @@ from app.services.wishlist_service import get_album_of_client_or_404, list_wishl
 router = APIRouter(prefix="/api/admin/clients", tags=["admin-clients"])
 
 
-def _log(db: DbSession, admin_id: int, action: str, resource_id: int, request: Request) -> None:
-    db.add(
-        AuditLog(
-            user_type="admin",
-            user_id=admin_id,
-            action=action,
-            resource_type="client",
-            resource_id=resource_id,
-            ip_address=request.client.host if request.client else None,
-        )
+def _log(db: DbSession, admin: Admin, action: str, resource_id: int, request: Request) -> None:
+    audit_service.record_admin(
+        db, admin, action, request=request, resource_type="client", resource_id=resource_id
     )
-    db.commit()
 
 
 def _to_response(client) -> ClientResponse:
+    db = object_session(client)
     return ClientResponse(
         id=client.id,
         client_uuid=client.client_uuid,
@@ -57,7 +50,7 @@ def _to_response(client) -> ClientResponse:
         has_download_password=bool(client.download_password_hash),
         created_at=client.created_at,
         last_login_at=client.last_login_at,
-        gallery_url_path=f"/gallery/{client.client_uuid}",
+        gallery_url_path=studio_service.gallery_url_path(db, client),
     )
 
 
@@ -68,7 +61,7 @@ def list_clients_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    items, total, page, limit = list_clients(db, page, limit)
+    items, total, page, limit = list_clients(db, admin.studio_id, page, limit)
     return {
         "success": True,
         "data": build_page(items, page, limit, total),
@@ -83,8 +76,8 @@ def create_client_route(
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
 ):
-    client = create_client(db, payload, storage)
-    _log(db, admin.id, "client_created", client.id, request)
+    client = create_client(db, payload, storage, admin.studio_id)
+    _log(db, admin, "client_created", client.id, request)
     return {"success": True, "data": _to_response(client)}
 
 
@@ -94,7 +87,7 @@ def get_client_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    client = get_client_or_404(db, client_id)
+    client = get_client_or_404(db, client_id, admin.studio_id)
     return {"success": True, "data": _to_response(client)}
 
 
@@ -112,7 +105,7 @@ def get_client_wishlist_route(
     # selections but cannot change them. A bogus client is a 404, and an
     # album_id must belong to THIS client - otherwise it 404s rather than
     # quietly returning another client's album's data.
-    get_client_or_404(db, client_id)
+    get_client_or_404(db, client_id, admin.studio_id)
     if album_id is not None:
         get_album_of_client_or_404(db, album_id, client_id)
     rows, total, page, limit = list_wishlist_for_admin(db, client_id, album_id, page, limit)
@@ -129,9 +122,9 @@ def update_client_route(
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
 ):
-    client = get_client_or_404(db, client_id)
+    client = get_client_or_404(db, client_id, admin.studio_id)
     client = update_client(db, client, payload, storage)
-    _log(db, admin.id, "client_updated", client.id, request)
+    _log(db, admin, "client_updated", client.id, request)
     return {"success": True, "data": _to_response(client)}
 
 
@@ -143,9 +136,9 @@ def delete_client_route(
     admin: Admin = Depends(get_current_admin),
     storage: StorageService = Depends(get_storage_service),
 ):
-    client = get_client_or_404(db, client_id)
+    client = get_client_or_404(db, client_id, admin.studio_id)
     delete_client(db, client, storage)
-    _log(db, admin.id, "client_deleted", client_id, request)
+    _log(db, admin, "client_deleted", client_id, request)
     return {"success": True, "data": None}
 
 
@@ -155,7 +148,7 @@ def get_client_passwords_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    client = get_client_or_404(db, client_id)
+    client = get_client_or_404(db, client_id, admin.studio_id)
     return {"success": True, "data": get_client_password_plaintexts(client)}
 
 
@@ -167,9 +160,9 @@ def change_password_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    client = get_client_or_404(db, client_id)
+    client = get_client_or_404(db, client_id, admin.studio_id)
     client = change_client_password(db, client, payload.password)
-    _log(db, admin.id, "client_password_removed" if payload.password is None else "client_password_changed", client.id, request)
+    _log(db, admin, "client_password_removed" if payload.password is None else "client_password_changed", client.id, request)
     return {"success": True, "data": _to_response(client)}
 
 
@@ -181,9 +174,9 @@ def change_download_password_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    client = get_client_or_404(db, client_id)
+    client = get_client_or_404(db, client_id, admin.studio_id)
     client = change_client_download_password(db, client, payload.password)
-    _log(db, admin.id, "client_download_password_changed", client.id, request)
+    _log(db, admin, "client_download_password_changed", client.id, request)
     return {"success": True, "data": _to_response(client)}
 
 
@@ -194,9 +187,9 @@ def disable_client_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    client = get_client_or_404(db, client_id)
+    client = get_client_or_404(db, client_id, admin.studio_id)
     client = set_client_status(db, client, "disabled")
-    _log(db, admin.id, "client_disabled", client.id, request)
+    _log(db, admin, "client_disabled", client.id, request)
     return {"success": True, "data": _to_response(client)}
 
 
@@ -207,9 +200,9 @@ def enable_client_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    client = get_client_or_404(db, client_id)
+    client = get_client_or_404(db, client_id, admin.studio_id)
     client = set_client_status(db, client, "active")
-    _log(db, admin.id, "client_enabled", client.id, request)
+    _log(db, admin, "client_enabled", client.id, request)
     return {"success": True, "data": _to_response(client)}
 
 
@@ -220,7 +213,7 @@ def regenerate_gallery_id_route(
     db: DbSession = Depends(get_db),
     admin: Admin = Depends(get_current_admin),
 ):
-    client = get_client_or_404(db, client_id)
+    client = get_client_or_404(db, client_id, admin.studio_id)
     client = regenerate_gallery_id(db, client)
-    _log(db, admin.id, "client_gallery_id_regenerated", client.id, request)
+    _log(db, admin, "client_gallery_id_regenerated", client.id, request)
     return {"success": True, "data": _to_response(client)}

@@ -1,5 +1,6 @@
 import { ReactNode, useState } from "react";
 import Sidebar from "./Sidebar";
+import StudioBrandMark from "./StudioBrandMark";
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -7,10 +8,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
   return (
     <div className="admin-shell">
       <div className="admin-topbar">
-        <div className="admin-topbar__brand">
-          <span className="admin-topbar__logo-script">Love Story</span>
-          <span className="admin-topbar__logo-sub">PHOTOGRAPHY</span>
-        </div>
+        <StudioBrandMark variant="topbar" />
         <button
           className="admin-topbar__toggle"
           onClick={() => setMobileNavOpen((v) => !v)}

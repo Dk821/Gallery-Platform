@@ -8,10 +8,12 @@ from sqlalchemy.orm import Session as DbSession
 from app.models.album import Album
 from app.models.album_comment import AlbumComment
 from app.models.media import Media
+from app.models.studio import Studio
 from app.schemas.album import AlbumCreateRequest, AlbumUpdateRequest
 from app.schemas.errors import ApiError, forbidden, not_found
 from app.schemas.pagination import paginate_params
 from app.services.client_service import get_client_or_404
+from app.services import quota_service
 from app.services.folder_naming import build_album_folder_name, generate_folder_uid
 from app.services.media_aggregates import photo_count_column, total_bytes_column, video_count_column
 from app.services.storage_service import StorageError, StorageService
@@ -49,21 +51,33 @@ def check_album_not_expired(album: Album) -> None:
         )
 
 
-def create_album(db: DbSession, payload: AlbumCreateRequest, storage: StorageService) -> Album:
-    # Ensures the target client actually exists before creating the album -
-    # never trust a bare client_id from the request body.
-    client = get_client_or_404(db, payload.client_id)
+def create_album(db: DbSession, payload: AlbumCreateRequest, storage: StorageService, studio_id: int) -> Album:
+    # Ensures the target client actually exists AND belongs to the caller's
+    # studio before creating the album - never trust a bare client_id from
+    # the request body.
+    client = get_client_or_404(db, payload.client_id, studio_id)
 
     album_uuid = str(uuid.uuid4())
     folder_uid = generate_folder_uid()
     folder_name = build_album_folder_name(payload.album_name, folder_uid)
-    try:
-        folder_id = storage.create_folder(folder_name, parent_folder_id=client.drive_folder_id)
-    except StorageError as exc:
-        logger.error("Failed to create Drive folder for new album: %s", exc)
-        raise ApiError(502, "STORAGE_FOLDER_CREATE_FAILED", "Could not provision storage for this album.")
+
+    # Studios with a named storage folder keep an album's originals in
+    # "<studio folder>/albums/<client-name>_<album id>/". The album id does not
+    # exist yet, so that folder is filled in right after the row is flushed
+    # (below); R2 folders are only key prefixes, so nothing is created or cleaned up.
+    studio = db.query(Studio).filter(Studio.id == client.studio_id).first()
+    studio_prefix = studio.storage_prefix if studio else None
+    named_layout = bool(studio_prefix) and storage.uses_named_layout
+    folder_id = None
+    if not named_layout:
+        try:
+            folder_id = storage.create_folder(folder_name, parent_folder_id=client.drive_folder_id)
+        except StorageError as exc:
+            logger.error("Failed to create Drive folder for new album: %s", exc)
+            raise ApiError(502, "STORAGE_FOLDER_CREATE_FAILED", "Could not provision storage for this album.")
 
     album = Album(
+        studio_id=client.studio_id,
         client_id=payload.client_id,
         album_uuid=album_uuid,
         album_name=payload.album_name,
@@ -75,10 +89,17 @@ def create_album(db: DbSession, payload: AlbumCreateRequest, storage: StorageSer
     )
     try:
         db.add(album)
+        if named_layout:
+            db.flush()
+            folder_id = storage.album_originals_folder(studio_prefix, client.client_name, album.id)
+            album.drive_folder_id = folder_id
         db.commit()
         db.refresh(album)
     except Exception:
         db.rollback()
+        if named_layout:
+            logger.exception("Creating an album failed.")
+            raise ApiError(500, "ALBUM_SAVE_FAILED", "Creating the album failed. Please retry.")
         logger.critical(
             "DB save failed after creating Drive folder %s for a new album. Attempting cleanup.", folder_id
         )
@@ -95,8 +116,8 @@ def create_album(db: DbSession, payload: AlbumCreateRequest, storage: StorageSer
     return album
 
 
-def get_album_or_404(db: DbSession, album_id: int) -> Album:
-    album = db.query(Album).filter(Album.id == album_id).first()
+def get_album_or_404(db: DbSession, album_id: int, studio_id: int) -> Album:
+    album = db.query(Album).filter(Album.id == album_id, Album.studio_id == studio_id).first()
     if album is None:
         raise not_found("Album not found.", code="ALBUM_NOT_FOUND")
     return album
@@ -147,7 +168,11 @@ def get_album_for_client_or_403(db: DbSession, album_id: int, client_id: int) ->
     return album
 
 
-def list_albums_for_admin(db: DbSession, client_id: int | None, page: int, limit: int):
+def list_albums_for_admin(
+    db: DbSession, client_id: int | None, page: int, limit: int, studio_id: int | None = None
+):
+    # studio_id is passed by every studio-admin route. It is None only for the
+    # client-facing wrapper below, which is hard-scoped by client_id instead.
     page, limit = paginate_params(page, limit)
 
     # One grouped pass over Media for the whole page of albums, carrying the
@@ -191,6 +216,8 @@ def list_albums_for_admin(db: DbSession, client_id: int | None, page: int, limit
     )
     if client_id is not None:
         query = query.filter(Album.client_id == client_id)
+    if studio_id is not None:
+        query = query.filter(Album.studio_id == studio_id)
     query = query.order_by(Album.created_at.desc())
 
     total = query.count()
@@ -292,5 +319,9 @@ def delete_album(db: DbSession, album: Album, storage: StorageService) -> None:
             logger.error("Failed to delete Drive folder for album %s: %s", album.id, exc)
             raise ApiError(502, "STORAGE_DELETE_FAILED", "Could not delete album storage. Please retry.")
 
+    freed = db.query(func.coalesce(func.sum(Media.file_size), 0)).filter(Media.album_id == album.id).scalar() or 0
+    studio_id = album.studio_id
+    quota_service.release_reserved_sessions(db, album_ids=[album.id])
     db.delete(album)
+    quota_service.decrease_used(db, studio_id, int(freed))
     db.commit()

@@ -39,6 +39,7 @@ def get_activity(
         "success": True,
         "data": get_activity_feed(
             db,
+            admin.studio_id,
             search=search,
             activity_type=activity_type,
             date_from=date_from,
