@@ -863,14 +863,15 @@ def list_audit_logs(
 def audit_summary(db: DbSession) -> dict:
     """Platform-wide pulse for the Audit log header (ignores the page filters on purpose)."""
     since = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
-    last_day = db.query(func.count(AuditLog.id)).filter(AuditLog.created_at >= since).scalar() or 0
+    shown = AuditLog.action != "media_upload_failed"
+    last_day = db.query(func.count(AuditLog.id)).filter(AuditLog.created_at >= since, shown).scalar() or 0
     failed = (
         db.query(func.count(AuditLog.id))
         .filter(AuditLog.created_at >= since, AuditLog.action == "admin_login_failed")
         .scalar()
         or 0
     )
-    return {"events_24h": int(last_day), "failed_sign_ins_24h": int(failed), "total": int(db.query(func.count(AuditLog.id)).scalar() or 0)}
+    return {"events_24h": int(last_day), "failed_sign_ins_24h": int(failed), "total": int(db.query(func.count(AuditLog.id)).filter(shown).scalar() or 0)}
 
 
 def export_audit_logs(db: DbSession, **filters) -> tuple[list[dict], int]:
