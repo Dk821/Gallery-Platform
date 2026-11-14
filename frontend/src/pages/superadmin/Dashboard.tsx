@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { Page } from "../../services/api";
 import { superAdminService } from "../../services/superAdmin";
 import type { AuditLogRow, PlatformStats, PlatformTrends, Studio, TrendDay, TrendTotals } from "../../types/superAdmin";
+import Modal from "../../components/superadmin/Modal";
 import { AreaChart, CHART_COLORS, Donut } from "../../components/superadmin/Charts";
 import {
   IconAlbums,
@@ -152,6 +153,7 @@ export default function Dashboard() {
   const applyCustom = () => {
     if (!draftValid) return;
     setCustom(draft);
+    setCustomOpen(false);
     void loadTrends(draft);
   };
   const changeMetric = (next: MetricKey) => {
@@ -210,20 +212,10 @@ export default function Dashboard() {
                 {r}d
               </button>
             ))}
-            <button type="button" className={`sa-seg__btn${custom ? " is-active" : ""}`} aria-pressed={!!custom} aria-expanded={customOpen} onClick={() => setCustomOpen((o) => !o)}>
+            <button type="button" className={`sa-seg__btn${custom ? " is-active" : ""}`} aria-pressed={!!custom} aria-haspopup="dialog" onClick={() => { if (custom) setDraft(custom); setCustomOpen(true); }}>
               Custom
             </button>
           </div>
-          {customOpen && (
-            <div className="sa-dash-custom">
-              <input type="date" aria-label="Start date" value={draft.start} max={draft.end || today} onChange={(e) => setDraft({ ...draft, start: e.target.value })} />
-              <span className="sa-muted">to</span>
-              <input type="date" aria-label="End date" value={draft.end} min={draft.start || undefined} max={today} onChange={(e) => setDraft({ ...draft, end: e.target.value })} />
-              <button type="button" className="sa-btn sa-btn--dark sa-btn--sm" onClick={applyCustom} disabled={!draftValid}>
-                Apply
-              </button>
-            </div>
-          )}
           <button type="button" className="sa-btn sa-btn--ghost sa-btn--sm" onClick={exportStudios}>
             <IconDownload /> Export studios
           </button>
@@ -232,6 +224,27 @@ export default function Dashboard() {
           </Link>
         </div>
       </div>
+
+      {customOpen && (
+        <Modal title="Custom date range" description="Pick the first and last day to show (UTC, up to one year)." onClose={() => setCustomOpen(false)}>
+          <div className="sa-field">
+            <label htmlFor="sa-dash-start">Start date</label>
+            <input id="sa-dash-start" type="date" value={draft.start} max={draft.end || today} onChange={(e) => setDraft({ ...draft, start: e.target.value })} />
+          </div>
+          <div className="sa-field">
+            <label htmlFor="sa-dash-end">End date</label>
+            <input id="sa-dash-end" type="date" value={draft.end} min={draft.start || undefined} max={today} onChange={(e) => setDraft({ ...draft, end: e.target.value })} />
+          </div>
+          <div className="sa-modal-card__actions">
+            <button type="button" className="sa-btn sa-btn--ghost" onClick={() => setCustomOpen(false)}>
+              Cancel
+            </button>
+            <button type="button" className="sa-btn sa-btn--dark" onClick={applyCustom} disabled={!draftValid}>
+              Apply
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {unmappedTotal > 0 && (
         <div className="sa-notice sa-notice--warn sa-notice--icon" role="alert">
