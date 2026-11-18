@@ -811,7 +811,7 @@ export default function AlbumView() {
                     </span>
                     <div className="wedding-media-list-meta">
                       <span className="wedding-media-list-tag">
-                        {isVideo ? "📹 Video" : "📷 Photo"}
+                        {isVideo ? " Video" : "Photo"}
                       </span>
                       <span>{formatBytes(item.file_size)}</span>
                       {isVideo && <span>Duration: {getVideoDurationBadge(item.id)}</span>}

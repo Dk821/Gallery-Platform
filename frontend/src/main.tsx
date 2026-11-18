@@ -5,6 +5,7 @@ import App from "./App";
 import "./index.css";
 import "./styles/admin.css";
 import "./styles/gallery.css";
+import "./styles/client-gallery.css";
 import "./styles/book-view.css";
 import "./styles/super-admin.css";
 
