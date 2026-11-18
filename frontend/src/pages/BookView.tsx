@@ -300,7 +300,10 @@ export default function BookView() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{
+    message: string;
+    kind: "info" | "success";
+  } | null>(null);
   // True while a phone is held upright (the rotate prompt is on screen).
   const [phonePortrait, setPhonePortrait] = useState(() => !!window.matchMedia?.(PHONE_PORTRAIT_QUERY)?.matches);
   const touchStartY = useRef<number | null>(null);
@@ -385,11 +388,14 @@ export default function BookView() {
     };
   }, [zoom]);
 
-  const showToast = useCallback((message: string) => {
-    setToast(message);
-    window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), TOAST_MS);
-  }, []);
+  const showToast = useCallback(
+    (message: string, kind: "info" | "success" = "info") => {
+      setToast({ message, kind });
+      window.clearTimeout(toastTimer.current);
+      toastTimer.current = window.setTimeout(() => setToast(null), TOAST_MS);
+    },
+    []
+  );
 
   const changeZoom = useCallback((next: number) => {
     const z = Math.round(clamp(next, ZOOM_MIN, ZOOM_MAX) * 100) / 100;
@@ -911,7 +917,7 @@ export default function BookView() {
     }
     try {
       await navigator.clipboard.writeText(url);
-      showToast("Link copied");
+      showToast("Link copied", "success");
     } catch {
       showToast("Could not share this link");
     }
@@ -1332,8 +1338,13 @@ export default function BookView() {
       )}
 
       {toast && (
-        <div className="book-toast" role="status">
-          {toast}
+        <div
+          className={
+            "book-toast" + (toast.kind === "success" ? " book-toast--success" : "")
+          }
+          role="status"
+        >
+          {toast.message}
         </div>
       )}
 

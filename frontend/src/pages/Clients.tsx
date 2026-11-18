@@ -54,6 +54,7 @@ export default function Clients() {
     kind: "info" | "success";
   } | null>(null);
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
+  const [copyingPasswordsId, setCopyingPasswordsId] = useState<number | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuAnchorRef = useRef<HTMLButtonElement>(null);
 
@@ -141,11 +142,46 @@ export default function Clients() {
     const url = `${window.location.origin}${galleryPath}`;
     try {
       await navigator.clipboard.writeText(url);
-      showToast("Gallery link copied.");
+      showToast("Gallery link copied.", "success");
     } catch {
       showToast(url);
     }
     setOpenMenuId(null);
+  }
+
+  async function handleCopyPasswords(c: ClientListItem) {
+    setOpenMenuId(null);
+    setCopyingPasswordsId(c.id);
+    try {
+      const passwords = await adminService.getClientPasswords(c.id);
+      const lines: string[] = [];
+      if (passwords.gallery_password != null) {
+        lines.push(`Gallery Password :${passwords.gallery_password}`);
+      }
+      if (passwords.download_password != null) {
+        lines.push(`download pin :${passwords.download_password}`);
+      }
+      if (lines.length === 0) {
+        showToast("No passwords set for this client.");
+        return;
+      }
+      const text = lines.join("\n");
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast(
+          lines.length === 2
+            ? "Gallery and download passwords copied."
+            : "Password copied.",
+          "success"
+        );
+      } catch {
+        showToast(text);
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Could not load passwords.");
+    } finally {
+      setCopyingPasswordsId(null);
+    }
   }
 
   async function handleToggleStatus(c: ClientListItem) {
@@ -316,11 +352,21 @@ export default function Clients() {
                       <td>
                         <div className="row-actions">
                           <button
-                            className="copy-link-btn"
+                            className="row-action-icon-btn"
                             title="Copy gallery link"
+                            aria-label="Copy gallery link"
                             onClick={() => handleCopyUrl(c.gallery_url_path)}
                           >
-                            Copy link
+                            <MenuIcon name="link" size={17} />
+                          </button>
+                          <button
+                            className="row-action-icon-btn"
+                            title="Copy gallery and download passwords"
+                            aria-label="Copy gallery and download passwords"
+                            disabled={copyingPasswordsId === c.id}
+                            onClick={() => handleCopyPasswords(c)}
+                          >
+                            <CopyIcon />
                           </button>
                           <button
                             className="row-actions__trigger"
@@ -460,6 +506,7 @@ export default function Clients() {
           onClose={() => setModal(null)}
           onManagePasswords={(c) => setModal({ kind: "manage-passwords", client: c })}
           onEdit={(c) => setModal({ kind: "edit-client", client: c })}
+          showToast={showToast}
         />
       )}
 
@@ -683,11 +730,13 @@ function ClientDetailsModal({
   onClose,
   onManagePasswords,
   onEdit,
+  showToast,
 }: {
   client: ClientListItem;
   onClose: () => void;
   onManagePasswords: (c: ClientListItem) => void;
   onEdit: (c: ClientListItem) => void;
+  showToast: (message: string, kind?: "info" | "success") => void;
 }) {
   const [detail, setDetail] = useState<ClientDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -721,6 +770,7 @@ function ClientDetailsModal({
   async function handleCopy() {
     try {
       await navigator.clipboard.writeText(galleryUrl);
+      showToast("Gallery link copied.", "success");
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -1016,7 +1066,7 @@ function PasswordManagementModal({
     try {
       await navigator.clipboard.writeText(text);
       if (kind === "gallery") {
-        showToast("Gallery password copied.");
+        showToast("Gallery password copied.", "success");
       } else {
         showToast("Download pin copied.", "success");
       }

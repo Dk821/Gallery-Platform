@@ -1320,6 +1320,12 @@ img.book-spread-img.is-video {
   animation: book-toast-in 0.25s ease both;
 }
 
+.book-toast--success {
+  border-color: rgba(89, 196, 140, 0.55);
+  background: rgba(35, 122, 75, 0.94);
+  color: #eafaf0;
+}
+
 @keyframes book-toast-in {
   from {
     opacity: 0;

@@ -90,7 +90,12 @@ export default function ResetPasswordModal({
           <button type="button" className="sa-btn sa-btn--ghost sa-btn--sm" onClick={() => setPassword(suggestPassword())}>
             Generate
           </button>
-          <button type="button" className="sa-btn sa-btn--ghost sa-btn--sm" onClick={copy} disabled={!password}>
+          <button
+            type="button"
+            className={"sa-btn sa-btn--ghost sa-btn--sm" + (copied ? " sa-btn--success" : "")}
+            onClick={copy}
+            disabled={!password}
+          >
             <IconCopy /> {copied ? "Copied" : "Copy"}
           </button>
         </div>

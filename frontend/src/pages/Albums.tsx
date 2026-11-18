@@ -42,7 +42,10 @@ export default function Albums() {
   const [confirmDelete, setConfirmDelete] = useState<AlbumItem | null>(null);
   const [downloadJobAlbum, setDownloadJobAlbum] = useState<AlbumItem | null>(null);
   const [commentsAlbum, setCommentsAlbum] = useState<AlbumItem | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{
+    message: string;
+    kind: "info" | "success";
+  } | null>(null);
 
   // Filters & View state
   const [search, setSearch] = useState("");
@@ -56,8 +59,8 @@ export default function Albums() {
   const menuAnchorRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
-  function showToast(message: string) {
-    setToast(message);
+  function showToast(message: string, kind: "info" | "success" = "info") {
+    setToast({ message, kind });
     setTimeout(() => setToast(null), 2800);
   }
 
@@ -138,7 +141,7 @@ export default function Albums() {
     const url = `${window.location.origin}${client.gallery_url_path}/view/${album.id}`;
     try {
       await navigator.clipboard.writeText(url);
-      showToast("Gallery link copied to clipboard.");
+      showToast("Gallery link copied to clipboard.", "success");
     } catch {
       showToast(url);
     }
@@ -861,7 +864,15 @@ export default function Albums() {
         />
       )}
 
-      {toast && <div className="toast">{toast}</div>}
+      {toast && (
+        <div
+          className={
+            "toast" + (toast.kind === "success" ? " toast--success" : "")
+          }
+        >
+          {toast.message}
+        </div>
+      )}
     </AdminLayout>
   );
 }

@@ -40,7 +40,11 @@ export default function SecretModal({ title, subject, password, onClose }: Secre
         <code className="sa-secret__value" data-testid="temp-password">
           {password}
         </code>
-        <button type="button" className="sa-btn sa-btn--ghost sa-btn--sm" onClick={copy}>
+        <button
+          type="button"
+          className={"sa-btn sa-btn--ghost sa-btn--sm" + (copied ? " sa-btn--success" : "")}
+          onClick={copy}
+        >
           <IconCopy /> {copied ? "Copied" : "Copy"}
         </button>
       </div>

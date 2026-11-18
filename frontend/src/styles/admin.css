@@ -886,19 +886,35 @@
   opacity: 0.75;
 }
 
-.copy-link-btn {
-  background: none;
-  border: none;
+.row-action-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
   color: var(--text-muted);
-  font-size: 0.78rem;
+  border-radius: 8px;
   cursor: pointer;
-  padding: 0.2rem 0;
-  font-family: var(--font-ui);
-  transition: color 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
-.copy-link-btn:hover {
+.row-action-icon-btn:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
   color: var(--accent);
+}
+
+.row-action-icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.row-action-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
 }
 
 .status-pill {
@@ -1101,13 +1117,13 @@
   width: 30px;
   height: 30px;
   flex-shrink: 0;
-  background: none;
-  border: none;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
   color: var(--text-muted);
-  border-radius: 7px;
+  border-radius: 8px;
   cursor: pointer;
   padding: 0;
-  transition: background 0.14s ease, color 0.14s ease;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
 }
 
 .row-actions__trigger svg {
@@ -1116,18 +1132,20 @@
 }
 
 .row-actions__trigger:hover {
-  background: var(--panel-hover, var(--bg));
-  color: var(--text);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .row-actions__trigger[aria-expanded="true"] {
   background: var(--accent-soft);
+  border-color: var(--accent);
   color: var(--accent);
 }
 
 .row-actions__trigger:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: -1px;
+  outline-offset: 1px;
 }
 
 .row-actions__menu {
@@ -5302,7 +5320,8 @@
   }
 
   /* ⋯ menu button: 40 × 40 touch target */
-  .row-actions__trigger {
+  .row-actions__trigger,
+  .row-action-icon-btn {
     min-width: 40px;
     min-height: 40px;
     display: flex;

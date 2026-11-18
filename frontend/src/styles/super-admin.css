@@ -160,6 +160,8 @@
 .sa-btn--dark:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); transform: translateY(-1px); box-shadow: 0 4px 14px rgba(180, 133, 59, 0.25); }
 .sa-btn--ghost { background: var(--panel); color: var(--text); border-color: var(--hairline-dark); }
 .sa-btn--ghost:hover:not(:disabled) { background: var(--panel-raised); border-color: var(--accent); color: var(--accent); }
+.sa-btn--success,
+.sa-btn--success:hover:not(:disabled) { background: var(--success); border-color: var(--success); color: #fff; }
 .sa-btn--danger { background: var(--danger); color: #fff; }
 .sa-btn--danger:hover:not(:disabled) { background: #a62f23; }
 .sa-btn--danger-outline { background: var(--panel); color: var(--danger); border-color: #e6bcb7; }
