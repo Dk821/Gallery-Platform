@@ -25,12 +25,34 @@ type ModalState =
 
 type SortKey = "name" | "created";
 
+function CopyIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
 export default function Clients() {
   const [clients, setClients] = useState<ClientListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalState>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{
+    message: string;
+    kind: "info" | "success";
+  } | null>(null);
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuAnchorRef = useRef<HTMLButtonElement>(null);
@@ -44,8 +66,8 @@ export default function Clients() {
   // below render with a sane constraint even before this loads.
   const [minPasswordLength, setMinPasswordLength] = useState(4);
 
-  function showToast(message: string) {
-    setToast(message);
+  function showToast(message: string, kind: "info" | "success" = "info") {
+    setToast({ message, kind });
     setTimeout(() => setToast(null), 2500);
   }
 
@@ -428,6 +450,7 @@ export default function Clients() {
             showToast("Passwords updated.");
             loadClients();
           }}
+          showToast={showToast}
         />
       )}
 
@@ -476,7 +499,15 @@ export default function Clients() {
         </Modal>
       )}
 
-      {toast && <div className="toast">{toast}</div>}
+      {toast && (
+        <div
+          className={
+            "toast" + (toast.kind === "success" ? " toast--success" : "")
+          }
+        >
+          {toast.message}
+        </div>
+      )}
     </AdminLayout>
   );
 }
@@ -903,11 +934,13 @@ function PasswordManagementModal({
   minPasswordLength,
   onClose,
   onChanged,
+  showToast,
 }: {
   client: ClientListItem;
   minPasswordLength: number;
   onClose: () => void;
   onChanged: () => void;
+  showToast: (message: string, kind?: "info" | "success") => void;
 }) {
   const [current, setCurrent] = useState<{
     gallery_password: string | null;
@@ -970,6 +1003,28 @@ function PasswordManagementModal({
     }
   }
 
+  async function handleCopyPassword(kind: "gallery" | "download") {
+    const value =
+      kind === "gallery"
+        ? current?.gallery_password
+        : current?.download_password;
+    if (value == null) return;
+    const text =
+      kind === "gallery"
+        ? `Gallery Password :${value}`
+        : `download pin :${value}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      if (kind === "gallery") {
+        showToast("Gallery password copied.");
+      } else {
+        showToast("Download pin copied.", "success");
+      }
+    } catch {
+      showToast(text);
+    }
+  }
+
 return (
     <Modal title={`Passwords for ${client.client_name}`} onClose={onClose}>
       <form onSubmit={handleSubmit}>
@@ -1013,18 +1068,30 @@ return (
                 {showGallery ? "Hide" : "Show"}
               </button>
             </span>
-            <input
-              type={showGallery ? "text" : "password"}
-              readOnly
-              value={current?.gallery_password ?? ""}
-              placeholder={
-                current?.gallery_password != null
-                  ? "Current gallery password"
-                  : client.has_password
-                    ? "No viewable copy on file"
-                    : "Not set"
-              }
-            />
+            <span className="input-with-action">
+              <input
+                type={showGallery ? "text" : "password"}
+                readOnly
+                value={current?.gallery_password ?? ""}
+                placeholder={
+                  current?.gallery_password != null
+                    ? "Current gallery password"
+                    : client.has_password
+                      ? "No viewable copy on file"
+                      : "Not set"
+                }
+              />
+              <button
+                type="button"
+                className="input-action-btn"
+                title="Copy gallery password"
+                aria-label="Copy gallery password"
+                onClick={() => handleCopyPassword("gallery")}
+                disabled={current?.gallery_password == null}
+              >
+                <CopyIcon />
+              </button>
+            </span>
           </label>
           {current != null &&
             current.gallery_password == null &&
@@ -1114,18 +1181,30 @@ return (
                 {showDownload ? "Hide" : "Show"}
               </button>
             </span>
-            <input
-              type={showDownload ? "text" : "password"}
-              readOnly
-              value={current?.download_password ?? ""}
-              placeholder={
-                current?.download_password != null
-                  ? "Current download password"
-                  : client.has_download_password
-                    ? "No viewable copy on file"
-                    : "Not set"
-              }
-            />
+            <span className="input-with-action">
+              <input
+                type={showDownload ? "text" : "password"}
+                readOnly
+                value={current?.download_password ?? ""}
+                placeholder={
+                  current?.download_password != null
+                    ? "Current download password"
+                    : client.has_download_password
+                      ? "No viewable copy on file"
+                      : "Not set"
+                }
+              />
+              <button
+                type="button"
+                className="input-action-btn"
+                title="Copy download pin"
+                aria-label="Copy download pin"
+                onClick={() => handleCopyPassword("download")}
+                disabled={current?.download_password == null}
+              >
+                <CopyIcon />
+              </button>
+            </span>
           </label>
           {current != null &&
             current.download_password == null &&
