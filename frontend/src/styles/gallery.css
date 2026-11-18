@@ -1102,9 +1102,8 @@
    =========================================================================== */
 
 .wedding-media-grid {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 0.85rem;
+  column-count: 5;
+  column-gap: 0.85rem;
   margin-bottom: 3.5rem;
 }
 
@@ -1117,6 +1116,17 @@
   cursor: pointer;
   box-shadow: 0 4px 12px rgba(20, 15, 10, 0.05);
   transition: transform 0.25s ease, box-shadow 0.25s ease;
+  /* Masonry flow: each tile keeps its own height and never splits across a
+     column. Portrait photos get their real ratio (inline, set on load); the
+     rest keep the fixed landscape frame. */
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  margin-bottom: 0.85rem;
+  width: 100%;
+}
+
+.wedding-media-tile--portrait {
+  aspect-ratio: 3 / 4;
 }
 
 .wedding-media-tile:hover {
@@ -1594,7 +1604,7 @@
   }
 
   .wedding-media-grid {
-    grid-template-columns: repeat(4, 1fr);
+    column-count: 4;
   }
 }
 
@@ -1641,7 +1651,7 @@
   }
 
   .wedding-media-grid {
-    grid-template-columns: repeat(3, 1fr);
+    column-count: 3;
   }
 
   .wedding-footer {
@@ -1834,8 +1844,12 @@
   }
 
   .wedding-media-grid {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 0.5rem;
+    column-count: 2;
+    column-gap: 0.5rem;
+  }
+
+  .wedding-media-tile {
+    margin-bottom: 0.5rem;
   }
 
   .gallery-filter-row {
@@ -2447,16 +2461,24 @@
   .sam-nav__studio-name--script { font-size: 1.7rem; }
 }
 
-/* Large grid: two pictures per row on desktop, one per row on mobile. */
+/* Large grid: two pictures per column on desktop, one per column on mobile. */
 .wedding-media-grid.wedding-media-grid--large {
-  grid-template-columns: repeat(2, 1fr);
-  gap: 1.1rem;
+  column-count: 2;
+  column-gap: 1.1rem;
+}
+
+.wedding-media-grid.wedding-media-grid--large .wedding-media-tile {
+  margin-bottom: 1.1rem;
 }
 
 @media (max-width: 700px) {
   .wedding-media-grid.wedding-media-grid--large {
-    grid-template-columns: 1fr;
-    gap: 0.85rem;
+    column-count: 1;
+    column-gap: 0.85rem;
+  }
+
+  .wedding-media-grid.wedding-media-grid--large .wedding-media-tile {
+    margin-bottom: 0.85rem;
   }
 }
 

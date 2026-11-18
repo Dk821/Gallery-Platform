@@ -8,6 +8,7 @@ import WishlistHeart from "../components/WishlistHeart";
 import { useWishlist } from "../hooks/useWishlist";
 import { ApiRequestError } from "../services/api";
 import { GalleryMedia, galleryService } from "../services/gallery";
+import { applyMediaTileRatio } from "../utils/mediaTileRatio";
 
 const PAGE_SIZE = 60;
 
@@ -185,7 +186,10 @@ export default function Wishlist() {
                         src={galleryService.thumbnailUrl(item.id)}
                         alt={item.file_name}
                         loading="lazy"
-                        onLoad={(e) => e.currentTarget.classList.add("is-loaded")}
+                        onLoad={(e) => {
+                          e.currentTarget.classList.add("is-loaded");
+                          applyMediaTileRatio(e.currentTarget);
+                        }}
                       />
                     ) : (
                       <div className="wishlist-page__no-thumb">{isVideo ? "Video" : "Photo"}</div>

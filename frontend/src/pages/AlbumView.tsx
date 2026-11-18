@@ -10,6 +10,7 @@ import { useWishlist } from "../hooks/useWishlist";
 import { ApiRequestError } from "../services/api";
 import { GalleryAlbum, GalleryMedia, galleryService } from "../services/gallery";
 import { formatBytes, getExpiryInfo } from "../utils/format";
+import { applyMediaTileRatio } from "../utils/mediaTileRatio";
 
 const PAGE_SIZE = 60;
 
@@ -698,7 +699,10 @@ export default function AlbumView() {
                       src={getThumbnail(item)}
                       alt={item.file_name}
                       loading="lazy"
-                      onLoad={(e) => e.currentTarget.classList.add("is-loaded")}
+                      onLoad={(e) => {
+                        e.currentTarget.classList.add("is-loaded");
+                        applyMediaTileRatio(e.currentTarget);
+                      }}
                     />
                   ) : (
                     <div
