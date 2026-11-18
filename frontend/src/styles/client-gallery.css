@@ -937,8 +937,10 @@
    =========================================================================== */
 
 .wedding-media-grid {
-  column-count: 5;
-  column-gap: 0.85rem;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.85rem;
+  align-items: start;
   margin-bottom: 3.5rem;
 }
 
@@ -951,12 +953,10 @@
   cursor: pointer;
   box-shadow: 0 4px 12px rgba(20, 15, 10, 0.05);
   transition: transform 0.25s ease, box-shadow 0.25s ease;
-  /* Masonry flow: each tile keeps its own height and never splits across a
-     column. Portrait photos get their real ratio (inline, set on load); the
-     rest keep the fixed landscape frame. */
-  break-inside: avoid;
-  -webkit-column-break-inside: avoid;
-  margin-bottom: 0.85rem;
+  /* Portrait photos get their real ratio (inline, set on load); the rest keep
+     the fixed landscape frame. align-items: start lets each tile keep its own
+     height, and the DOM order stays left-to-right/top-to-bottom so every sort
+     option reads correctly. */
   width: 100%;
 }
 
@@ -1439,7 +1439,7 @@
   }
 
   .wedding-media-grid {
-    column-count: 4;
+    grid-template-columns: repeat(4, 1fr);
   }
 }
 
@@ -1486,7 +1486,7 @@
   }
 
   .wedding-media-grid {
-    column-count: 3;
+    grid-template-columns: repeat(3, 1fr);
   }
 
   .wedding-footer {
@@ -1680,12 +1680,8 @@
   }
 
   .wedding-media-grid {
-    column-count: 2;
-    column-gap: 0.5rem;
-  }
-
-  .wedding-media-tile {
-    margin-bottom: 0.5rem;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.5rem;
   }
 
   .gallery-filter-row {
@@ -2010,24 +2006,16 @@
   .sam-nav__studio-name--script { font-size: 1.7rem; }
 }
 
-/* Large grid: two pictures per column on desktop, one per column on mobile. */
+/* Large grid: two pictures per row on desktop, one per row on mobile. */
 .wedding-media-grid.wedding-media-grid--large {
-  column-count: 2;
-  column-gap: 1.1rem;
-}
-
-.wedding-media-grid.wedding-media-grid--large .wedding-media-tile {
-  margin-bottom: 1.1rem;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1.1rem;
 }
 
 @media (max-width: 700px) {
   .wedding-media-grid.wedding-media-grid--large {
-    column-count: 1;
-    column-gap: 0.85rem;
-  }
-
-  .wedding-media-grid.wedding-media-grid--large .wedding-media-tile {
-    margin-bottom: 0.85rem;
+    grid-template-columns: 1fr;
+    gap: 0.85rem;
   }
 }
 
