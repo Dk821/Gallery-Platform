@@ -942,6 +942,10 @@
   gap: 0.85rem;
   align-items: start;
   margin-bottom: 3.5rem;
+  /* Tiles are positioned by utils/masonry.ts (shortest column first), so the
+     columns pack with no gaps. grid-template-columns / gap above only tell it
+     the column count and spacing. */
+  position: relative;
 }
 
 .wedding-media-tile {
@@ -961,6 +965,7 @@
 }
 
 .wedding-media-tile--portrait {
+  /* Real ratio is set inline once the thumbnail loads; this is only a fallback. */
   aspect-ratio: 3 / 4;
 }
 

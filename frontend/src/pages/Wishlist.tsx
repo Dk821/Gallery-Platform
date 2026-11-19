@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useGalleryBase } from "../hooks/useGalleryBase";
 import ClientNav from "../components/ClientNav";
@@ -9,6 +9,7 @@ import { useWishlist } from "../hooks/useWishlist";
 import { ApiRequestError } from "../services/api";
 import { GalleryMedia, galleryService } from "../services/gallery";
 import { applyMediaTileRatio } from "../utils/mediaTileRatio";
+import { useMasonry } from "../utils/masonry";
 
 const PAGE_SIZE = 60;
 
@@ -118,6 +119,10 @@ export default function Wishlist() {
   const removedCount = items.filter((i) => !wishlist.isWishlisted(i.id)).length;
   const savedCount = Math.max(0, total - removedCount);
 
+  // Pack the tiles (each at its photo's real ratio) into gap-free columns.
+  const mediaGridRef = useRef<HTMLDivElement>(null);
+  useMasonry(mediaGridRef, [items.map((i) => i.id).join(",")]);
+
   return (
     <div className="client-shell">
       <ClientNav galleryId={galleryId} />
@@ -160,7 +165,7 @@ export default function Wishlist() {
           )}
 
           {items.length > 0 && (
-            <div className="wedding-media-grid">
+            <div ref={mediaGridRef} className="wedding-media-grid">
               {items.map((item, i) => {
                 const active = wishlist.isWishlisted(item.id);
                 const isVideo = item.file_type === "video";

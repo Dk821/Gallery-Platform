@@ -11,6 +11,7 @@ import { ApiRequestError } from "../services/api";
 import { GalleryAlbum, GalleryMedia, galleryService } from "../services/gallery";
 import { formatBytes, getExpiryInfo } from "../utils/format";
 import { applyMediaTileRatio } from "../utils/mediaTileRatio";
+import { useMasonry } from "../utils/masonry";
 
 const PAGE_SIZE = 60;
 
@@ -222,6 +223,10 @@ export default function AlbumView() {
     }
     return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   });
+
+  // Pack the tiles (each at its photo's real ratio) into gap-free columns.
+  const mediaGridRef = useRef<HTMLDivElement>(null);
+  useMasonry(mediaGridRef, [layoutMode, loading, sortedItems.map((i) => i.id).join(",")]);
 
   // Photo & video breakdown.
   //
@@ -649,7 +654,7 @@ export default function AlbumView() {
 
         {/* Media Grid or List based on layoutMode */}
         {layoutMode !== "list" ? (
-          <div className={"wedding-media-grid" + (layoutMode === "large" ? " wedding-media-grid--large" : "")}>
+          <div key="media-grid" ref={mediaGridRef} className={"wedding-media-grid" + (layoutMode === "large" ? " wedding-media-grid--large" : "")}>
             {sortedItems.map((item, i) => {
               const isSelected = selectedIds.has(item.id);
               const isVideo = item.file_type === "video";
@@ -737,7 +742,7 @@ export default function AlbumView() {
             })}
           </div>
         ) : (
-          <div className="wedding-media-list">
+          <div key="media-list" className="wedding-media-list">
             {sortedItems.map((item, i) => {
               const isSelected = selectedIds.has(item.id);
               const isVideo = item.file_type === "video";
